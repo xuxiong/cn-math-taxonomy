@@ -2126,6 +2126,28 @@ testAsync('Explain.generate：reveal 无可比对数值 -> 保留 llm（不误�
   } finally { restore(); }
 });
 
+testAsync('Explain._userPrompt：含标准答案声明（单解）', async () => {
+  const X = loadExplain();
+  const q = { id: 'o2-feed', type: 'numeric', prompt: '解方程 2(x-3)=4-(x+1)。', answer: '3' };
+  const p = X._userPrompt(T_A, q, '1');
+  assert.ok(p.indexOf('本题目标准答案：3') >= 0, 'userPrompt 应含标准答案声明: ' + p);
+  assert.ok(p.indexOf('你的 reveal 最终解值必须与此一致') >= 0, 'userPrompt 应含一致性约束提示: ' + p);
+});
+
+testAsync('Explain._userPrompt：多解答案原样拼入（全角逗号分隔）', async () => {
+  const X = loadExplain();
+  const q = { id: 'o2-feed2', type: 'numeric', prompt: '解方程 x²-x-6=0。', answer: '-2，3' };
+  const p = X._userPrompt(T_A, q, '1');
+  assert.ok(p.indexOf('本题目标准答案：-2，3') >= 0, '多解答案应原样拼入: ' + p);
+});
+
+testAsync('Explain._userPrompt：无 answer 字段时不添加答案声明', async () => {
+  const X = loadExplain();
+  const q = { id: 'o2-feed3', type: 'short', prompt: '简答题', answer: '' };
+  const p = X._userPrompt(T_A, q, '');
+  assert.ok(p.indexOf('本题目标准答案') < 0, '无 answer 时不应有答案声明: ' + p);
+});
+
 (async function () {
   for (const t of asyncTests) {
     try { await t.fn(); passed++; console.log('  ok   ' + t.name); }

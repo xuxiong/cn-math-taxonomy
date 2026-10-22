@@ -24,7 +24,8 @@
     return '你是人教版初中数学的一对一辅导老师，学生基础薄弱，需要你耐心引导。'
       + '学生答错了一道题。请用苏格拉底式三步引导帮助他，按 JSON 输出，不要任何多余文字，格式严格为：'
       + '{"prompt":"第一步：只提问引导，让学生自己发现错误，绝不能给出答案或关键数值","hint":"第二步：给出方向性线索，提示关键步骤，但不能直接写出最终答案","reveal":"第三步：完整解析，先给正确解答，再分步解释为什么"}'
-      + '要求：语言简短口语化、贴合初中生；prompt 和 hint 绝不写正确答案，hint 最多给一半思路；reveal 详细但不啰嗦。';
+      + '要求：语言简短口语化、贴合初中生；prompt 和 hint 绝不写正确答案，hint 最多给一半思路；reveal 详细但不啰嗦。'
+      + 'reveal 的最后一行请写「答案：x = …」（多解时写「答案：x1 = …，x2 = …」），方便核对。';
   }
 
   function userPrompt(topic, q, userAnswer) {
@@ -33,6 +34,7 @@
     return '题目（' + typeLabel + '）：' + q.prompt
       + '\n知识点：' + topicName
       + '\n学生答案：' + (userAnswer === '' ? '（没填）' : userAnswer)
+      + (q.answer ? '\n本题目标准答案：' + q.answer + '（你的 reveal 最终解值必须与此一致）' : '')
       + (q.explanation ? '\n可参考的标准解析（reveal 里可以展开它，但不要照抄）：' + q.explanation : '');
   }
 
@@ -170,6 +172,7 @@
     ask: ask,
     staticSteps: staticSteps,
     _cache: cache,
-    _ttl: TTL
+    _ttl: TTL,
+    _userPrompt: userPrompt
   };
 })(window);
