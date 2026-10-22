@@ -1477,5 +1477,96 @@ test('普通整章 / 单点诊断不受影响：不带 mode 的会话仍回溯�
   sum.roots.forEach((r) => assert.deepStrictEqual(r.outOfScopePrereqs, []));
 });
 
+/* ------------------------------------------------------------ 苏格拉底讲解引导
+ * socraticSteps(topic, q) -> [{kind:'prompt'|'hint'|'reveal', text}]
+ * 静态骨架版：不接 LLM，用题目数据生成三步引导；T2 再把文本换成模型生成。
+ * 原则：prompt 不给答案、hint 只给线索、reveal 才揭晓完整解析。
+ */
+
+const Q_A = { id: 'q1', type: 'numeric', prompt: '解方程 2(x-3)=4-(x+1)。', answer: '3', explanation: '去括号得 2x-6=4-x-1，移项合并得 3x=9，所以 x=3。', difficulty: 'standard' };
+const T_A = { id: 'cnm_043', name: '含括号的一元一次方程', chapter: '七上 第五章 5.2', type: 'procedural' };
+
+test('socraticSteps：返回三步，kind 顺序为 prompt→hint→reveal', () => {
+  const steps = E.socraticSteps(T_A, Q_A);
+  assert.strictEqual(steps.length, 3);
+  assert.deepStrictEqual(steps.map((s) => s.kind), ['prompt', 'hint', 'reveal']);
+});
+
+test('socraticSteps：prompt 是提问且不泄露参考答案', () => {
+  const steps = E.socraticSteps(T_A, Q_A);
+  assert.ok(steps[0].text.length > 0);
+  assert.ok(steps[0].text.indexOf(Q_A.answer) < 0, 'prompt 不能包含答案');
+  assert.ok(steps[0].text.indexOf(Q_A.explanation) < 0, 'prompt 不能包含完整解析');
+  assert.ok(steps[0].text.indexOf(T_A.name) >= 0, 'prompt 应提及知识点名');
+});
+
+test('socraticSteps：hint 只给线索，不揭晓最终答案', () => {
+  const steps = E.socraticSteps(T_A, Q_A);
+  assert.ok(steps[1].text.length > 0);
+  assert.ok(steps[1].text.indexOf(Q_A.answer) < 0, 'hint 不能包含最终答案');
+  assert.ok(steps[1].text.length < steps[2].text.length, 'hint 应短于 reveal');
+});
+
+test('socraticSteps：reveal 揭晓参考答案与解析', () => {
+  const steps = E.socraticSteps(T_A, Q_A);
+  assert.ok(steps[2].text.indexOf(Q_A.answer) >= 0, 'reveal 必须包含参考答案');
+  assert.ok(steps[2].text.indexOf(Q_A.explanation) >= 0, 'reveal 必须包含解析');
+});
+
+test('socraticSteps：选择题 hint 引导到判断依据而非答案文本', () => {
+  const qc = { id: 'q2', type: 'choice', prompt: '移项正确的是？', answer: 'B', choices: [{ key: 'A', text: '2x-5x=6-3' }, { key: 'B', text: '2x-5x=6+3' }], explanation: '移项要变号：5x 移到左边变 -5x，-3 移到右边变 +3。', difficulty: 'standard' };
+  const steps = E.socraticSteps(T_A, qc);
+  assert.strictEqual(steps[0].kind, 'prompt');
+  assert.ok(steps[2].text.indexOf('B') >= 0);
+});
+
+test('socraticSteps：缺解析时也能生成三步', () => {
+  const qNo = { id: 'q3', type: 'numeric', prompt: 'x+2=5', answer: '3' };
+  const steps = E.socraticSteps(T_A, qNo);
+  assert.strictEqual(steps.length, 3);
+  assert.ok(steps[2].text.indexOf('x+2=5') < 0 || steps[2].text.indexOf('3') >= 0, 'reveal 应至少给出答案');
+});
+
+/* ---------------- T3：pickPracticeQuestions(graph, topicId, n, doneIds) ---------------- */
+
+const G_PRAC = {
+  bank: {
+    t1: [
+      { id: 'a', difficulty: 'basic' },
+      { id: 'b', difficulty: 'advanced' },
+      { id: 'c', difficulty: 'standard' },
+      { id: 'd', difficulty: 'basic' },
+    ],
+    t2: [{ id: 'e', difficulty: 'basic' }],
+    t3: [],
+  },
+};
+
+test('pickPracticeQuestions：抽 n 道且基础优先（basic→standard→advanced）', () => {
+  const qs = E.pickPracticeQuestions(G_PRAC, 't1', 3, []);
+  assert.strictEqual(qs.length, 3);
+  assert.deepStrictEqual(qs.map((q) => q.id), ['a', 'd', 'c'], 'basic 两道在前，standard 其次');
+});
+
+test('pickPracticeQuestions：避开已做过的题（诊断/练习）', () => {
+  const qs = E.pickPracticeQuestions(G_PRAC, 't1', 3, ['a', 'd', 'c']);
+  assert.deepStrictEqual(qs.map((q) => q.id), ['b'], '只剩 advanced 的 b');
+});
+
+test('pickPracticeQuestions：全做过后仍能复用简单题（练习不能没题可出）', () => {
+  const qs = E.pickPracticeQuestions(G_PRAC, 't1', 2, ['a', 'b', 'c', 'd']);
+  assert.strictEqual(qs.length, 2);
+  assert.strictEqual(qs[0].difficulty, 'basic', '复用也从基础开始');
+});
+
+test('pickPracticeQuestions：题目少于 n 时全给；无题返回空数组', () => {
+  assert.strictEqual(E.pickPracticeQuestions(G_PRAC, 't2', 3, []).length, 1);
+  assert.deepStrictEqual(E.pickPracticeQuestions(G_PRAC, 't3', 3, []), []);
+});
+
+test('pickPracticeQuestions：n 至少为 1（不会返回空列表给练习）', () => {
+  assert.strictEqual(E.pickPracticeQuestions(G_PRAC, 't1', 0, []).length, 1);
+});
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

@@ -6,6 +6,7 @@
   const LS_SESSION_EN = 'cneDiagnose.session.v2';
   const LS_SETTINGS = 'cnmDiagnose.settings.v2';
   const LS_SEEN = 'cnmDiagnose.seen.v1';
+  const LS_PRAC = 'cnmDiagnose.practiced.v1';   // T3 练习记录 {topicId: 最近练习时间戳}
   const LIMIT_MIN = 8, LIMIT_MAX = 30;
   const SCREEN_MIN = 20, SCREEN_MAX = 60;
   const GRADES = '一二三四五六七八九'.split('');
@@ -30,7 +31,9 @@
   let session = null;      // 引擎会话
   let sessionMeta = null;  // {label, chapterKey?}
   let demo = null;         // 演示模式：{oracle}
-  let ui = { key: null, phase: 'ask', answer: '', verdict: null };
+  let prac = null;         // T3 练习模式：{topicId, list:[q], idx, pact:[]} 非 null 时渲染练习
+  let pracResult = null;   // 练习结束返回结果页带上 {topicId, ok, n}
+  let ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false };
   let subject = 'math';
   let startQuery = '';
   let startStage = '';
@@ -138,7 +141,7 @@
     if (v.indexOf(qid) < 0) { v.push(qid); lsSet(LS_SEEN, v); }
   }
   function newSeed() { return seedParam != null ? seedParam : Math.random().toString(36).slice(2, 10); }
-  function resetUi() { ui = { key: null, phase: 'ask', answer: '', verdict: null, picked: null }; }
+  function resetUi() { ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false }; }
   function clearRoot() { while (root.firstChild) root.removeChild(root.firstChild); }
   function teardownPath() {
     pathToken++;
@@ -303,9 +306,51 @@
 
   /* ------------------------------------------------------------ 渲染入口 */
   function render() {
+    if (prac) { renderQuestion(pracItem()); return; }   // T3 练习模式
     if (!session) return renderStart();
     const item = E.nextItem(D.graph, session);
     if (item) renderQuestion(item); else renderResult();
+  }
+
+  /* ------------------------------------------------------------ T3 练习模式 */
+  function pracItem() {
+    return { topicId: prac.topicId, question: prac.list[prac.idx], attempt: prac.idx + 1 };
+  }
+  function practicedMap() { const v = lsGet(LS_PRAC); return v && typeof v === 'object' ? v : {}; }
+  function markPracticed(topicId) { const o = practicedMap(); o[topicId] = Date.now(); lsSet(LS_PRAC, o); }
+  function startPractice(topicId) {
+    const list = E.pickPracticeQuestions(D.graph, topicId, 3, seenList());
+    if (!list.length) { alert('这个知识点暂时没有练习题。'); return; }
+    prac = { topicId: topicId, list: list, idx: 0, pact: [] };
+    pracResult = null;
+    resetUi();
+    render();
+  }
+  function practiceNext(result) {
+    prac.pact.push(result);
+    prac.idx++;
+    if (prac.idx >= prac.list.length) {
+      const ok = prac.pact.filter(function (r) { return r === 'correct'; }).length;
+      markPracticed(prac.topicId);
+      pracResult = { topicId: prac.topicId, ok: ok, n: prac.pact.length };
+      prac = null;
+      resetUi();
+      renderResult();   // 回到结果页
+    } else {
+      renderQuestion(pracItem());
+    }
+  }
+  function finishAnswer(result) {
+    if (prac) practiceNext(result);
+    else commit(result);
+  }
+  function practiceResultBanner() {
+    if (!pracResult) return null;
+    const t = D.graph.byId[pracResult.topicId];
+    const allRight = pracResult.ok === pracResult.n;
+    return h('div', { class: 'banner ' + (allRight ? 'ok' : ''), style: 'margin-bottom:12px' },
+      '练习完成：' + (t ? t.name : '') + ' 共 ' + pracResult.n + ' 题，答对 ' + pracResult.ok + ' 题。',
+      allRight ? '这个知识点练扎实了！' : '错了的题可以点开下方条目，用「为什么错了」再讲一遍。');
   }
 
   /* ------------------------------------------------------------ 开始页 */
@@ -542,22 +587,23 @@
     const id = item.topicId;
     const q = item.question;
     const t = D.graph.byId[id];
+    const pr = !!prac;   // T3 练习模式
     const key = id + '#' + item.attempt;
-    if (ui.key !== key) ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null };
-    const n = session.answers.length;
+    if (ui.key !== key) ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false };
+    const n = pr ? prac.idx : session.answers.length;
     const card = h('div', { class: 'card' });
     card.append(
       h('div', { class: 'row' },
-        h('span', { class: 'muted' }, '目标：' + sessionMeta.label),
+        h('span', { class: 'muted' }, pr ? '练习：' + t.name : '目标：' + sessionMeta.label),
         h('span', { class: 'grow' }),
-        h('span', { class: 'muted' }, '第 ' + (n + 1) + ' 题 / 上限 ' + session.limit)),
-      h('div', { class: 'progress' }, h('i', { style: 'width:' + Math.round(n / session.limit * 100) + '%' })),
+        h('span', { class: 'muted' }, pr ? '第 ' + (prac.idx + 1) + ' 题 / 共 ' + prac.list.length + ' 题' : '第 ' + (n + 1) + ' 题 / 上限 ' + session.limit)),
+      h('div', { class: 'progress' }, h('i', { style: 'width:' + (pr ? Math.round((prac.idx + 1) / prac.list.length * 100) : Math.round(n / session.limit * 100)) + '%' })),
       h('h2', { class: 'q-title' }, t.name, ' ', h('span', { class: 'tag', text: t.chapter })),
       h('div', { class: 'row small', style: 'margin:2px 0' },
         h('span', { class: 'tag diff-' + q.difficulty, text: DIFF_LABEL[q.difficulty] || q.difficulty }),
         h('span', { class: 'tag', text: TYPE_LABEL[q.type] || q.type }),
-        h('span', { class: 'tag', text: '本知识点第 ' + item.attempt + ' 题' })),
-      h('div', { class: 'reason', text: reasonFor(item) }),
+        h('span', { class: 'tag', text: pr ? '练习第 ' + (prac.idx + 1) + ' 题' : '本知识点第 ' + item.attempt + ' 题' })),
+      h('div', { class: 'reason', text: pr ? '针对性练习（不进诊断结果）。做完自动判定对错，答错可以点「为什么错了」看讲解。' : reasonFor(item) }),
       h('div', { class: 'q-text', id: 'q-text', text: q.prompt }));
     const stemFig = figureEl(q.figure);
     if (stemFig) {
@@ -603,14 +649,17 @@
         h('div', { class: 'verdict ' + (ok ? 'ok' : 'no') }, ok ? '自动判定：正确' : '自动判定：不正确'),
         feedbackBlock(q),
         h('div', { class: 'row' },
-          h('button', { class: 'primary', id: 'btn-next', onclick: function () { commit(ok ? 'correct' : 'wrong'); } }, '下一题'),
-          h('button', { id: 'btn-flip', onclick: function () { commit(ok ? 'wrong' : 'correct'); } }, ok ? '判错了，我其实没做对' : '判错了，我其实做对了'),
+          ok ? null : h('button', { class: 'primary', id: 'btn-explain', onclick: function () { ui.phase = 'explain'; ui.explainStep = 0; ui.aiSteps = null; ui.aiState = 'idle'; ui.aiRequested = false; renderQuestion(item); } }, '为什么错了？一起想想'),
+          h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer(ok ? 'correct' : 'wrong'); } }, '下一题'),
+          h('button', { id: 'btn-flip', onclick: function () { finishAnswer(ok ? 'wrong' : 'correct'); } }, ok ? '判错了，我其实没做对' : '判错了，我其实做对了'),
           h('button', { onclick: function () { ui.phase = 'ask'; renderQuestion(item); } }, '重新作答')));
+    } else if (ui.phase === 'explain') {
+      card.append(explainPanel(item));
     } else if (ui.phase === 'skip') {
       card.append(
         h('div', { class: 'muted' }, '你选择了「不会」。看一下答案和解析再继续：'),
         feedbackBlock(q),
-        h('div', { class: 'row' }, h('button', { class: 'primary', id: 'btn-next', onclick: function () { commit('skip'); } }, '下一题')));
+        h('div', { class: 'row' }, h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer('skip'); } }, '下一题')));
     } else {
       card.append(
         ui.answer ? h('div', { class: 'muted' }, '你的答案：' + ui.answer) : null,
@@ -618,15 +667,15 @@
           : (ui.verdict ? h('div', { class: 'muted' }, '这道题的答案无法被自动可靠地判定，请对照参考答案自己判断。') : null),
         feedbackBlock(q),
         h('div', { class: 'row' },
-          h('button', { class: 'good', id: 'btn-right', onclick: function () { commit('correct'); } }, '对（我做对了）'),
-          h('button', { class: 'bad', id: 'btn-wrong', onclick: function () { commit('wrong'); } }, '不对'),
-          h('button', { id: 'btn-skip2', onclick: function () { commit('skip'); } }, '不会')));
+          h('button', { class: 'good', id: 'btn-right', onclick: function () { finishAnswer('correct'); } }, '对（我做对了）'),
+          h('button', { class: 'bad', id: 'btn-wrong', onclick: function () { finishAnswer('wrong'); } }, '不对'),
+          h('button', { id: 'btn-skip2', onclick: function () { finishAnswer('skip'); } }, '不会')));
     }
 
     card.append(h('div', { class: 'notice' }, '提示：自动判题只是近似的（数字、分数、多个答案会做规范化后比较），一切以参考答案为准；判错了可以手动更正。'));
     card.append(h('div', { class: 'row no-print', style: 'margin-top:12px' },
-      n > 0 ? h('button', { class: 'small', onclick: function () { rebuild(session.answers.slice(0, -1)); } }, '撤销上一题') : null,
-      h('button', { class: 'small', onclick: function () { if (confirm('确定放弃当前诊断并回到开始页吗？')) restart(); } }, '重新开始')));
+      pr ? h('button', { class: 'small', onclick: function () { prac = null; pracResult = null; resetUi(); render(); } }, '退出练习')
+        : h('button', { class: 'small', onclick: function () { if (confirm('确定放弃当前诊断并回到开始页吗？')) restart(); } }, '重新开始')));
     const page = h('div');
     if (demo) page.append(demoBanner());
     page.append(card);
@@ -639,6 +688,106 @@
   function answerOfKey(q, key) {
     const c = (q.choices || []).find(function (x) { return x.key === key; });
     return c ? c.key + '. ' + c.text : key;
+  }
+
+  /* ------------------------------------------------------------ 苏格拉底讲解面板（T2：静态即时 + LLM 渐进增强） */
+  let explainTick = 0;   // 竞态令牌：只接受最后一次请求的结果
+  function explainPanel(item) {
+    const id = item.topicId;
+    const q = item.question;
+    const t = D.graph.byId[id];
+    const steps = (ui.aiSteps && ui.aiSteps.length === 3) ? ui.aiSteps : E.socraticSteps(t, q);
+    const show = ui.explainStep || 0;      // 0=prompt 1=hint 2=reveal
+    if (ui.aiState === 'idle' && !ui.aiRequested) {
+      ui.aiRequested = true;
+      ui.aiState = 'loading';
+      const tick = ++explainTick;
+      window.Explain.generate(t, q, ui.answer).then(function (res) {
+        if (tick !== explainTick || !ui || ui.phase !== 'explain') return;
+        if (res.from === 'llm') { ui.aiSteps = res.steps; ui.aiState = 'done'; }
+        else { ui.aiSteps = null; ui.aiState = 'static'; }   // 网关挂了，保持静态模板
+        renderQuestion(item);
+      });
+    }
+    const aiTag = (ui.aiSteps && ui.aiSteps.length === 3)
+      ? h('span', { class: 'ai-tag' }, 'AI 讲解')
+      : h('span', { class: 'ai-tag static' }, ui.aiState === 'loading' ? 'AI 正在生成…' : '基础讲解');
+    const box = h('div', { class: 'socratic' },
+      h('div', { class: 'soc-head' },
+        h('h3', null, '苏格拉底引导：我们一起想'), aiTag),
+      h('div', { class: 'soc-step muted' },
+        show === 0 ? '第 1 步 · 想一想（先别看答案）'
+          : show === 1 ? '第 2 步 · 提示（还差一点点）'
+            : '第 3 步 · 完整解析'));
+    if (show === 0) {
+      box.append(h('div', { class: 'q-text' }, steps[0].text));
+      box.append(h('div', { class: 'row' },
+        h('button', { class: 'good', id: 'btn-soc-got', onclick: function () {
+          ui.phase = 'ask'; ui.answer = ''; ui.explainStep = 0; renderQuestion(item);
+        } }, '我想出来了，重新做一遍'),
+        h('button', { id: 'btn-soc-hint', onclick: function () { ui.explainStep = 1; renderQuestion(item); } }, '还是卡住，给我一点提示'),
+        h('button', { class: 'small muted', onclick: function () { ui.explainStep = 2; renderQuestion(item); } }, '直接看答案')));
+    } else if (show === 1) {
+      box.append(h('div', { class: 'explain' }, steps[1].text));
+      box.append(h('div', { class: 'row' },
+        h('button', { id: 'btn-soc-reveal', onclick: function () { ui.explainStep = 2; renderQuestion(item); } }, '还是不会，看完整解析'),
+        h('button', { class: 'good', onclick: function () {
+          ui.phase = 'ask'; ui.answer = ''; ui.explainStep = 0; renderQuestion(item);
+        } }, '我明白了，重新做一遍')));
+    } else {
+      box.append(h('div', { class: 'explain' }, steps[2].text));
+      box.append(h('div', { class: 'row' },
+        h('button', { class: 'primary', id: 'btn-soc-done', onclick: function () { finishAnswer('wrong'); } }, '明白了，下一题'),
+        h('button', { class: 'good', onclick: function () {
+          ui.phase = 'ask'; ui.answer = ''; ui.explainStep = 0; renderQuestion(item);
+        } }, '我想再试一遍')));
+    }
+    /* T3.5 追问区：讲解中随时提问，AI 老师单轮答疑 */
+    box.append(askBox(item, steps));
+    return box;
+  }
+
+  function askBox(item, steps) {
+    const q = item.question;
+    const t = D.graph.byId[item.topicId];
+    const hist = h('div', { class: 'ask-hist', id: 'ask-hist' });
+    (ui.askHistory || []).forEach(function (entry) {
+      hist.append(h('div', { class: 'ask-item' },
+        h('div', { class: 'ask-q' }, '你：' + entry.q),
+        entry.pending ? h('div', { class: 'ask-a pending' }, 'AI 老师正在想…')
+          : entry.from === 'offline'
+            ? h('div', { class: 'ask-a offline' }, 'AI 老师暂时离线，没回答上。稍后再问一次试试。')
+            : h('div', { class: 'ask-a' }, '老师：' + entry.a)));
+    });
+    function sendAsk() {
+      const inp = document.getElementById('ask-input');
+      const text = (inp && inp.value || '').trim();
+      if (!text || ui.askPending) return;
+      ui.askHistory = (ui.askHistory || []).concat([{ q: text, pending: true }]);
+      ui.askPending = true;
+      const tick = ++explainTick;   // 复用竞态令牌：回答只属于当前面板
+      renderQuestion(item);
+      window.Explain.ask(t, q, ui.answer, steps, text).then(function (res) {
+        if (tick !== explainTick || !ui || ui.phase !== 'explain') return;
+        const entries = (ui.askHistory || []).slice();
+        entries[entries.length - 1] = { q: text, a: res.text, from: res.from };
+        ui.askHistory = entries;
+        ui.askPending = false;
+        renderQuestion(item);
+      });
+    }
+    const inp = h('input', {
+      type: 'text', class: 'ask-input', id: 'ask-input', autocomplete: 'off',
+      placeholder: '没看懂？问 AI 老师，例如：什么叫去括号？为什么这步要变号？',
+      value: ui.askDraft || '',
+      oninput: function (e) { ui.askDraft = e.target.value; },
+      onkeydown: function (e) { if (e.key === 'Enter' && !e.isComposing) sendAsk(); }
+    });
+    return h('div', { class: 'ask-box no-print' },
+      hist,
+      ui.askPending ? null : h('div', { class: 'row', style: 'margin-top:8px' },
+        h('span', { class: 'grow', style: 'margin-right:8px' }, inp),
+        h('button', { class: 'primary', id: 'btn-ask', onclick: sendAsk }, '问 AI 老师')));
   }
 
   function demoBanner() {
@@ -785,10 +934,10 @@
     return body;
   }
 
-  function topicItem(id, tags, extra) {
+  function topicItem(id, tags, extra, pbtn) {
     const t = D.graph.byId[id];
     return h('details', { class: 'topic' },
-      h('summary', null, tags, h('span', { text: t.name }), ' ', h('span', { class: 'muted small', text: t.external ? '小学' : t.chapter })),
+      h('summary', null, tags, h('span', { text: t.name }), ' ', h('span', { class: 'muted small', text: t.external ? '小学' : t.chapter }), ' ', pbtn || null),
       topicBody(id, extra));
   }
 
@@ -803,6 +952,16 @@
     return out;
   }
 
+  /* T3：练习按钮（结果页每个知识点条目旁） */
+  function practiceBtn(id) {
+    const t = D.graph.byId[id];
+    if (!t || !D.graph.bank[id] || !D.graph.bank[id].length) return null;   // 小学/无题点不练
+    const done = practicedMap()[id];
+    return h('button', { class: 'small no-print', style: 'margin-left:6px',
+      onclick: function (e) { e.stopPropagation(); e.preventDefault(); startPractice(id); } },
+      done ? '再练一遍' : '练习这 3 题');
+  }
+
   function renderResult() {
     const sum = E.summarize(D.graph, session);
     const rootSet = new Set(sum.roots.map(function (r) { return r.id; }));
@@ -810,6 +969,8 @@
     const targetSet = new Set(screen ? [] : session.targets);
     const page = h('div');
     if (demo) page.append(demoBanner());
+    const pracBanner = practiceResultBanner();
+    if (pracBanner) page.append(pracBanner);
 
     const targetsMastered = session.targets.every(function (id) { return E.statusOf(session, id) === 'mastered'; });
     const chapters = screen ? E.chapterSummary(D.graph, session) : null;
@@ -858,19 +1019,19 @@
         if (r.pendingPrereqs.length) notes.append(h('div', { class: 'notice', text: '它的先修「' + r.pendingPrereqs.map(nameOf).join('」「') + '」没来得及测（题量用完），真正的根因可能更靠前。' }));
         if (r.outOfScopePrereqs.length) notes.append(h('div', { class: 'notice', text: '它的先修「' + r.outOfScopePrereqs.map(nameOf).join('」「') + '」不在所选范围内，没有检查。' }));
         if (r.externalPrereqs.length) notes.append(h('div', { class: 'muted small', text: '小学先修（无诊断题，未测）：' + r.externalPrereqs.map(nameOf).join('、') }));
-        return topicItem(r.id, statusTags(r.id, rootSet, targetSet), notes);
+        return topicItem(r.id, statusTags(r.id, rootSet, targetSet), notes, practiceBtn(r.id));
       }) : h('p', { text: targetsMastered ? '没有。' : '暂未发现。' })));
 
     page.append(h('div', { class: 'card', id: 'shaky' },
       h('h2', { text: '不稳的知识点（' + sum.shaky.length + '）' }),
       h('p', { class: 'muted small' }, '第一题没答对，但第二题（同级或更容易）答对了：可能是粗心，也可能掌握得不牢。它们会出现在学习路径里需要巩固，但工具没有继续向它们的先修回溯（只有两题都错才回溯）。'),
-      sum.shaky.length ? sum.shaky.map(function (id) { return topicItem(id, statusTags(id, rootSet, targetSet)); }) : h('p', { text: '没有。' })));
+      sum.shaky.length ? sum.shaky.map(function (id) { return topicItem(id, statusTags(id, rootSet, targetSet), null, practiceBtn(id)); }) : h('p', { text: '没有。' })));
 
     page.append(h('div', { class: 'card', id: 'path' },
       h('h2', { text: '推荐学习路径' }),
       h('p', { class: 'muted small' }, '从根因（和「不稳」的点）出发到目标之间、尚未判定为掌握的知识点，按年级从低到高排列（同一年级里先修在前），从上往下学。「不稳」「未测」的点也在路径上，建议先巩固 / 自查。'),
       sum.path.length ? h('ol', { class: 'path' }, sum.path.map(function (p) {
-        return h('li', null, topicItem(p.id, statusTags(p.id, rootSet, targetSet)));
+        return h('li', null, topicItem(p.id, statusTags(p.id, rootSet, targetSet), null, practiceBtn(p.id)));
       })) : h('p', { text: '不需要补课。' })));
 
     page.append(h('div', { class: 'card', id: 'graph' },

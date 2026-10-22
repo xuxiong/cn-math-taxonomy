@@ -929,6 +929,76 @@
     }
   }
 
+  /** 取解析的一个安全线索：第一句里到第一个逗号为止（不含后续步骤，避免 hint 泄露答案）。 */
+  function firstClueOf(expl) {
+    const str = String(expl || '').trim();
+    if (!str) return '';
+    const i = str.search(/[，。；;,]/);
+    if (i < 0) return '';                       // 无标点：整句都可能是关键信息，宁可退回通用引导
+    return str.slice(0, i + 1);
+  }
+
+  /**
+   * 苏格拉底三步引导（T1 静态骨架版）。
+   * 输入知识点 + 题目对象，输出三步 [{kind: 'prompt'|'hint'|'reveal', text}]：
+   *   prompt —— 启发提问，不泄露答案/解析
+   *   hint   —— 只给第一句线索，不揭晓最终答案
+   *   reveal —— 完整参考答案 + 解析
+   * T1 用题目现有字段模板化生成；T2 将改为 LLM 生成（接口不变，进入 diagnose/explain.js）。
+   */
+  function socraticSteps(topic, q) {
+    const name = (topic && topic.name) || '这个知识点';
+    const expl = (q && q.explanation) || '';
+    const ans = (q && q.answer) || '';
+    const firstClue = firstClueOf(expl);
+    let answerText = ans;
+    if (q && q.type === 'choice') {
+      const chosen = (q.choices || []).filter((c) => c.key === ans)[0];
+      answerText = ans + (chosen ? '. ' + chosen.text : '');
+    }
+    const steps = [];
+    steps.push({
+      kind: 'prompt',
+      text: '这道题考的是「' + name + '」。先别急着看答案——你回想一下，解这类题的第一步应该先做什么？'
+    });
+    if (q && q.type === 'choice') {
+      steps.push({
+        kind: 'hint',
+        text: '这是选择题。逐个选项对照判断依据：哪个选项符合这类题目的规则？' + (firstClue ? ' 提示：' + firstClue : '')
+      });
+    } else {
+      steps.push({
+        kind: 'hint',
+        text: firstClue
+          ? firstClue + ' 想想这一步做对了吗？'
+          : '先回忆这个知识点「' + name + '」的核心步骤，再从头做一遍。'
+      });
+    }
+    steps.push({
+      kind: 'reveal',
+      text: '参考答案：' + answerText + (expl ? '。\n解析：' + expl : '')
+    });
+    return steps;
+  }
+
+  /**
+   * 练习抽题（T3）：给指定知识点抽 n 道"还没做过"的题。
+   *  - doneIds：已做过的题（诊断/练习）集合，优先避开；题不足时允许复用简单的
+   *  - 排序：basic → standard → advanced（基础薄弱孩子先练基础），同难度按原顺序
+   * 返回 [{...question}]，最多 n 道；知识点无题返回 []。
+   */
+  function pickPracticeQuestions(graph, topicId, n, doneIds) {
+    const all = (graph.bank[topicId] || []).slice();
+    if (!all.length) return [];
+    const done = doneIds || [];
+    const rank = { basic: 0, standard: 1, advanced: 2 };
+    const diff = function (q) { return rank[q.difficulty] != null ? rank[q.difficulty] : 1; };
+    const fresh = all.filter(function (q) { return done.indexOf(q.id) < 0; });
+    const pool = fresh.length ? fresh : all;   // 都练过了就复用，别让练习没题可出
+    pool.sort(function (a, b) { return diff(a) - diff(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); });
+    return pool.slice(0, Math.max(1, n));
+  }
+
   return {
     DEFAULT_LIMIT: DEFAULT_LIMIT,
     SCREEN_LIMIT: SCREEN_LIMIT,
@@ -938,10 +1008,12 @@
     buildGraph: buildGraph,
     questionById: questionById,
     pickQuestion: pickQuestion,
+    pickPracticeQuestions: pickPracticeQuestions,
     nextItem: nextItem,
     isUnconfirmed: isUnconfirmed,
     mulberry32: mulberry32,
     judgeQuestion: judgeQuestion,
+    socraticSteps: socraticSteps,
     ancestors: ancestors,
     topoSort: topoSort,
     subgraph: subgraph,
