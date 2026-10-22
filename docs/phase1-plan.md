@@ -1,6 +1,6 @@
 # 第一阶段需求文档：一元一次方程学习闭环
 
-状态：v3（T1 已完成并浏览器实测通过；D1=B 本地网关、D2=苏格拉底 已拍板）
+状态：v4（T1/T2/T3/T3.5 已完成并浏览器实测通过；D1=B 本地网关、D2=苏格拉底 已拍板；O1-O3 优化方向已列入 §7）
 日期：2026-10-22
 仓库：xuxiong/cn-math-taxonomy（fork 自 xiaoyang111222/cn-math-taxonomy）
 
@@ -74,8 +74,8 @@
   - prompt 分 system（苏格拉底三步 JSON 输出约束）+ user（题目/知识点/学生答案/标准解析），temperature 0.6，max_tokens 900
   - 解析失败/网关挂了 → 回退静态版（from='static'，不显示"AI 讲解"标签），UI 永不阻塞
   - 同题 5 分钟内存缓存（key=q.id，占位防并发重复调）；已被浏览器实测验证
-- 新增 diagnose/llm-proxy.js（node 零依赖 CORS 代理，端口 8010）： `node diagnose/llm-proxy.js`
-  - **已停用可删**：网关 2026-10-22 已原生支持 CORS（api-server commit f6f8a246c7，OPTIONS 204 + Origin 回显 + Vary），explain.js 已直连 3000
+- 新增 diagnose/llm-proxy.js（node 零依赖 CORS 代理，端口 8010）——**已删除 2026-10-22**：
+  网关原生支持 CORS（api-server commit f6f8a246c7，OPTIONS 204 + Origin 回显 + Vary）后纯冗余，explain.js 已直连 3000；文件与 /tmp 调试日志已清理
   - 运行依赖（AI 讲解要工作必须都活着）：http.server:8000 + codefree 网关:3000
 - app.js：explainPanel 接入（触发时序：先触发请求再算 aiTag，避免"AI 正在生成…"永不显示）；
   ui 状态新增 aiSteps/aiState('idle'|'loading'|'done'|'static')/aiRequested；explainTick 竞态令牌防串题
@@ -84,12 +84,23 @@
   网关挂掉回退"基础讲解"不卡 UI，全部通过
 - 模型：DeepSeek-V4-Flash-0731-Unlimited（思考模型，生成约 10-20 秒；测试要等足，别 8 秒就判失败）
 
-### T3 针对性练习（blocking: 无）
+### T3 针对性练习（✅ 已完成 2026-10-22；blocking: 无）
 - renderResult 的根因/不稳条目旁加"练习这 3 题"
-- 复用 engine 的题池（questions.json 每点 4-5 题，练习模式 allowed），抽未做过的
-- 练习模式不进诊断结果，只记 localStorage"练习过"
+- engine.js 新增 `pickPracticeQuestions(graph, topicId, n, doneIds)` 纯函数：
+  难度排序 basic→standard→advanced、避开已做题、全做过时复用基础题兜底
+- 练习模式不进诊断结果（commit→finishAnswer→practiceNext），只记 localStorage "练习过"
+- 结果页横幅"共 N 题,答对 x 题"、按钮"再练一遍"；诊断结果不被练习污染（实测验证）
 - 验收：结果页点练习 → 出 2-3 题 → 判对错 → 返回结果页
-- 文件：engine.js（练习模式判定，极小）、app.js renderResult
+- 测试：+5 个 pickPracticeQuestions 用例（96/96 全绿）；浏览器实测全闭环通过
+- 文件：engine.js、app.js renderQuestion/renderResult
+
+### T3.5 讲解中追问（✅ 已完成 2026-10-22；blocking: T2 的 explain.js）
+- explain.js 新增 `Explain.ask(topic, q, userAnswer, steps, question)` → Promise<{text, from:'llm'|'offline'}>
+  - system prompt 规则：概念疑问（什么叫去括号）直答并结合本题举例；问题本质是"答案是多少"时坚持苏格拉底引导不泄题
+  - 单轮问答带完整上下文（题目+学生答案+三步进度+标准解析），max_tokens 600，永不 reject
+- app.js：讲解面板底部 askBox（问答历史 + 输入框 + Enter 提交 + 提问中收起防并发），竞态复用 explainTick
+- 实测："什么叫去括号?"直答并点出错因（-3×-1 算成 -3）；"直接告诉我答案"被拒、引导学生自己算出 x
+- 测试：96/96 全绿 + VALIDATION PASSED
 
 ### T4 诊断结论导出（blocking: 无）
 - renderResult 已有"导出 JSON / 打印"按钮（官方已实现），补充：
@@ -110,13 +121,14 @@
 ```
 T1（讲解交互骨架）
   └─→ T2（LLM 讲解，需 D1/D2 拍板）
+        └─→ T3.5（讲解中追问，复用 explain.js）
 
 T3 练习 ── 无依赖，可与 T1 并行
 T4 导出 ── 无依赖，可与 T1 并行
 T5 入口 ── 无依赖，可与 T1 并行
 ```
 
-推荐顺序：T1 + T3 + T4 + T5 并行起手 → T2 等 D1/D2 决策后接入。
+推荐顺序：T1 + T3 + T4 + T5 并行起手 → T2 等 D1/D2 决策后接入 → T3.5 随 T2 落地。
 
 ## 6. 决策点（已拍板 2026-10-22）
 
@@ -128,7 +140,36 @@ T1 静态骨架不依赖模型，T2 实现时经 explain.js 调本地网关（�
 T1 已实现：第 1 步启发提问（不给答案）→ 第 2 步线索提示 → 第 3 步才揭晓解析。
 T2 的 LLM prompt 按此结构生成（prompt/hint/reveal 三段式，接口与 socraticSteps 对齐）。
 
-## 7. 验收方式
+## 7. 优化方向（2026-10-22 edulab 调研列入；不做第一阶段承诺，按需排期）
+
+来源：https://github.com/wy51ai/edulab（Apache-2.0，1590 stars，Claude Code 技能集合）。
+核心启示：**确定性内核（sympy 精确算数）+ LLM 只做措辞**，且"答案不规整就重抽"保证随机题
+永远可算；本仓库是纯前端 JS（无 Python/sympy），移植时按下列适配。
+
+### O1 随机出题 + 答案规整性检查（★★★ 解决题池 4-5 题容量）
+- edulab 做法：随机参数 → sympy 精确求解 → `is_clean`（复杂度 ≤7 ops、根式 ≤60、无嵌套根式、
+  无自由符号）→ 不规整重抽，50 次上限 + 兜底题（`geometry_kernel.is_clean` + `build_random_data`）
+- 本仓库适配（一元一次方程**无需通用符号引擎**）：**在根空间生成**——先定整数/简单分数根 r，
+  反推系数构造题目（如 a(x+b)=c），答案天然规整、零依赖、零校验；如需更复杂题型再考虑
+  mathjs/nerdamer 之类浏览器符号库
+- 落点：engine.js 新增生成式题库（或 gen 池），pickPracticeQuestions 优先消耗变式题
+- 价值：基础薄弱生练习量不足的根治（每点 4-5 题 → 无限变式），判题/讲解数值仍走现有引擎
+
+### O2 讲解数值由引擎保证（★★ 防 LLM 算错教错）
+- edulab 三重自检：kernel 答案 == 答案卡 == 末步骤展示值；本项目对应风险在 explain.js 的
+  reveal 是 LLM 全文生成，偶发算错会直接教错
+- 适配：prompt 把标准答案/解析作为"事实锚"要求 reveal 以该值收尾；生成后数值等价校验
+  （解析 reveal 中出现的数，与 q.answer 比较），不等则回退静态版
+- 落点：explain.js 的 generate/ask、tests/test_engine.js（校验逻辑抽纯函数可测）
+
+### O3 题目图片入口（★ 远期；几何题 90% 无配图的另一条路）
+- edulab 三入口归一：文字/图片/随机 → 同一份 problem spec；图片入口 vision 读到 spec 后
+  **回显给用户确认**（题面/参数/所求）再继续
+- 适配：诊断页加"拍照/上传题目"入口，本地网关 3000 已有视觉模型
+  （Qwen3.8-27B-TokenPlan）可支撑解析，回显确认后注入诊断流程
+- 落点：新入口 UI + 解析→spec 归一，改动面大，放第二阶段
+
+## 8. 验收方式
 
 1. 手工走查：北极星场景全流程（选点→诊断→错→讲解→练习→导出）
 2. tests/test_engine.js 保持全绿（讲解层逻辑抽成纯函数可测）
