@@ -3,6 +3,7 @@
   'use strict';
   const E = window.DiagEngine;
   const V = window.DiagVariants;
+  const LLMV = window.DiagLLMVariants;  /* O3 LLM 变式出题 */
   const LS_SESSION = 'cnmDiagnose.session.v2';
   const LS_SESSION_EN = 'cneDiagnose.session.v2';
   const LS_SETTINGS = 'cnmDiagnose.settings.v2';
@@ -35,6 +36,7 @@
   let demo = null;         // 演示模式：{oracle}
   let prac = null;         // T3 练习模式：{topicId, list:[q], idx, pact:[]} 非 null 时渲染练习
   let pracResult = null;   // 练习结束返回结果页带上 {topicId, ok, n}
+  let pracLoading = null;  // O3 LLM 变式异步加载：{topicId} 非 null 时渲染 loading
   let ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false };
   let subject = 'math';
   let startQuery = '';
@@ -308,6 +310,7 @@
 
   /* ------------------------------------------------------------ 渲染入口 */
   function render() {
+    if (pracLoading) { renderPracticeLoading(); return; }   // O3 LLM 变式加载中
     if (prac) { renderQuestion(pracItem()); return; }   // T3 练习模式
     if (!session) return renderStart();
     const item = E.nextItem(D.graph, session);
@@ -326,16 +329,63 @@
     var seqMap = variantSeqMap();
     var startIndex = seqMap[topicId] || 0;
     var bankPrompts = (D.graph.bank[topicId] || []).map(function (q) { return q.prompt; });
+
+    /* §6.1 四层共存：题库新鲜题 → O1 确定性变式 → O3 LLM 变式 → 题库复用兜底 */
     var fp = V.fillPractice(bankPicks, topicId, 3, {
       doneIds: seenList(),
       avoidPrompts: bankPrompts,
       startIndex: startIndex
     });
     if (!fp.list.length) { alert('这个知识点暂时没有练习题。'); return; }
+
+    /* O3 LLM 变式补位：O1 不够 3 道且 LLM supports 时，异步补位 */
+    var llmGap = 3 - fp.list.length;
+    if (llmGap > 0 && LLMV && LLMV.supports(topicId)) {
+      /* 先检查网关可达性（try 一次 /v1/models），不可达直接走降级，不拖慢页面 */
+      pracLoading = { topicId: topicId };
+      resetUi();
+      render();
+
+      LLMV.probeGateway().then(function (reachable) {
+        if (!reachable) {
+          /* 网关不可达：直接用 O1 结果，不阻塞 */
+          pracLoading = null;
+          _startPracticeRender(fp, topicId);
+          return;
+        }
+        /* 网关可达：异步补位 LLM 变式 */
+        LLMV.fillPracticeLLM(fp, topicId, llmGap, {
+          doneIds: seenList(),
+          avoidPrompts: bankPrompts.concat(fp.list.map(function (q) { return q.prompt; }))
+        }).then(function (fp2) {
+          pracLoading = null;
+          _startPracticeRender(fp2, topicId);
+        }).catch(function () {
+          /* LLM 补位失败：降级用 O1 结果 */
+          pracLoading = null;
+          _startPracticeRender(fp, topicId);
+        });
+      });
+    } else {
+      _startPracticeRender(fp, topicId);
+    }
+  }
+  function _startPracticeRender(fp, topicId) {
     prac = { topicId: topicId, list: fp.list, idx: 0, pact: [], usedVariants: fp.usedVariants, nextIndex: fp.nextIndex };
     pracResult = null;
     resetUi();
     render();
+  }
+  function renderPracticeLoading() {
+    var t = D.graph.byId[pracLoading.topicId];
+    root.textContent = '';
+    root.append(h('div', { class: 'card' },
+      h('div', { class: 'row' },
+        h('span', { class: 'muted' }, '练习：' + (t ? t.name : '')),
+        h('span', { class: 'grow' }),
+        h('span', { class: 'muted' }, '正在准备题目…')),
+      h('div', { class: 'progress' }, h('i', { style: 'width:30%' })),
+      h('p', { style: 'margin:12px 0;color:#888' }, '正在向 AI 网关请求变式题，请稍候…')));
   }
   function practiceNext(result) {
     prac.pact.push(result);
@@ -349,7 +399,9 @@
         seqMap[prac.topicId] = prac.nextIndex;
         lsSet(LS_VSEQ, seqMap);
       }
-      pracResult = { topicId: prac.topicId, ok: ok, n: prac.pact.length, usedVariants: prac.usedVariants || 0 };
+      /* §6.3 统计变式总数 + LLM 变式数（variantSource==='llm'） */
+      var llmCount = prac.list.filter(function (q) { return q.variantSource === 'llm'; }).length;
+      pracResult = { topicId: prac.topicId, ok: ok, n: prac.pact.length, usedVariants: prac.usedVariants || 0, usedLLM: llmCount };
       prac = null;
       resetUi();
       renderResult();   // 回到结果页
@@ -366,9 +418,10 @@
     const t = D.graph.byId[pracResult.topicId];
     const allRight = pracResult.ok === pracResult.n;
     const vCount = pracResult.usedVariants || 0;
+    const llmCount = pracResult.usedLLM || 0;
     return h('div', { class: 'banner ' + (allRight ? 'ok' : ''), style: 'margin-bottom:12px' },
       '练习完成：' + (t ? t.name : '') + ' 共 ' + pracResult.n + ' 题，答对 ' + pracResult.ok + ' 题。' +
-        (vCount > 0 ? '其中变式 ' + vCount + ' 道。' : ''),
+        (vCount > 0 ? '其中变式 ' + vCount + ' 道' + (llmCount > 0 ? '（含 LLM 变式 ' + llmCount + ' 道）' : '') + '。' : ''),
       allRight ? '这个知识点练扎实了！' : '错了的题可以点开下方条目，用「为什么错了」再讲一遍。');
   }
 
@@ -653,7 +706,7 @@
         h('span', { class: 'tag diff-' + q.difficulty, text: DIFF_LABEL[q.difficulty] || q.difficulty }),
         h('span', { class: 'tag', text: TYPE_LABEL[q.type] || q.type }),
         h('span', { class: 'tag', text: pr ? '练习第 ' + (prac.idx + 1) + ' 题' : '本知识点第 ' + item.attempt + ' 题' }),
-        q.variant ? h('span', { class: 'tag', text: '变式' }) : null),
+        q.variant ? h('span', { class: 'tag', text: q.variantSource === 'llm' ? 'LLM变式' : '变式' }) : null),
       h('div', { class: 'reason', text: pr ? '针对性练习（不进诊断结果）。做完自动判定对错，答错可以点「为什么错了」看讲解。' : reasonFor(item) }),
       h('div', { class: 'q-text', id: 'q-text', text: q.prompt }));
     const stemFig = figureEl(q.figure);

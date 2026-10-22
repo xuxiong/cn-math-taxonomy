@@ -625,6 +625,95 @@ test('userPrompt：题目文本不入 prompt（防注入）', () => {
 });
 
 /* ================================================================
+ * O3-3 接入：probeGateway / probeFunctionCalling
+ * ================================================================ */
+
+console.log('\n--- O3-3 接入：网关探测 ---');
+
+testAsync('probeGateway：网关可达 /v1/models -> true', async () => {
+  LLMV._resetProbe();
+  const real = globalThis.fetch;
+  globalThis.fetch = function (url) {
+    assert.ok(String(url).indexOf('/models') >= 0, 'probeGateway 应请求 /v1/models: ' + url);
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ data: [] }); } });
+  };
+  try {
+    const reachable = await LLMV.probeGateway();
+    assert.strictEqual(reachable, true, '网关可达应返回 true');
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+testAsync('probeGateway：网关不可达（fetch reject）-> false', async () => {
+  LLMV._resetProbe();
+  const real = globalThis.fetch;
+  globalThis.fetch = function () { return Promise.reject(new Error('ECONNREFUSED')); };
+  try {
+    const reachable = await LLMV.probeGateway();
+    assert.strictEqual(reachable, false, '网关不可达应返回 false');
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+testAsync('probeGateway：结果缓存（第二次不调 fetch）', async () => {
+  LLMV._resetProbe();
+  var callCount = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = function () { callCount++; return Promise.resolve({ ok: true, json: function () { return Promise.resolve({}); } }); };
+  try {
+    await LLMV.probeGateway();
+    await LLMV.probeGateway();
+    assert.strictEqual(callCount, 1, '第二次应命中缓存，不调 fetch');
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+testAsync('probeFunctionCalling：返回 tool_calls -> true', async () => {
+  LLMV._resetProbe();
+  const real = globalThis.fetch;
+  globalThis.fetch = function () {
+    var body = {
+      choices: [{ message: { content: null, tool_calls: [{ function: { name: 'solveCheck' } }] } }]
+    };
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve(body); } });
+  };
+  try {
+    const supports = await LLMV.probeFunctionCalling();
+    assert.strictEqual(supports, true, '返回 tool_calls 应标记支持');
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+testAsync('probeFunctionCalling：无 tool_calls 但有 content -> true（接受 tools 参数）', async () => {
+  LLMV._resetProbe();
+  const real = globalThis.fetch;
+  globalThis.fetch = function () {
+    var body = { choices: [{ message: { content: 'x=1 满足 x-1=0' } }] };
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve(body); } });
+  };
+  try {
+    const supports = await LLMV.probeFunctionCalling();
+    assert.strictEqual(supports, true, '接受 tools 参数直接回答也应标记支持');
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+testAsync('probeFunctionCalling：网关报错 -> false', async () => {
+  LLMV._resetProbe();
+  const real = globalThis.fetch;
+  globalThis.fetch = function () { return Promise.resolve({ ok: false, status: 400 }); };
+  try {
+    const supports = await LLMV.probeFunctionCalling();
+    assert.strictEqual(supports, false, '网关报错应返回 false');
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+testAsync('probeFunctionCalling：fetch reject -> false', async () => {
+  LLMV._resetProbe();
+  const real = globalThis.fetch;
+  globalThis.fetch = function () { return Promise.reject(new Error('ECONNREFUSED')); };
+  try {
+    const supports = await LLMV.probeFunctionCalling();
+    assert.strictEqual(supports, false, 'fetch reject 应返回 false');
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+/* ================================================================
  * 运行异步测试
  * ================================================================ */
 

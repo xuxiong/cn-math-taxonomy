@@ -602,6 +602,130 @@
   }
 
   /* ================================================================
+   * 网关可达性探测（§6.1 调用前检查）
+   * try 一次 /v1/models 或超时标记，不可达直接走降级，不拖慢页面。
+   * ================================================================ */
+
+  var _gatewayReachable = null;   /* null=未探测, true=可达, false=不可达 */
+
+  /**
+   * 探测网关是否可达。try 一次 /v1/models，3 秒超时。
+   * 结果缓存在 _gatewayReachable，同一次页面会话只探测一次。
+   * @returns {Promise<boolean>}
+   */
+  function probeGateway() {
+    if (_gatewayReachable !== null) return Promise.resolve(_gatewayReachable);
+    if (typeof fetch !== 'function') {
+      _gatewayReachable = false;
+      return Promise.resolve(false);
+    }
+
+    var modelsUrl = PROXY.replace('/chat/completions', '/models');
+    var controller = null;
+    var timeoutId = null;
+    if (typeof AbortController !== 'undefined') {
+      controller = new AbortController();
+      timeoutId = setTimeout(function () { controller.abort(); }, 3000);
+    }
+
+    return fetch(modelsUrl, {
+      method: 'GET',
+      signal: controller ? controller.signal : undefined
+    })
+      .then(function (res) {
+        if (timeoutId) clearTimeout(timeoutId);
+        _gatewayReachable = res.ok;
+        return _gatewayReachable;
+      })
+      .catch(function () {
+        if (timeoutId) clearTimeout(timeoutId);
+        _gatewayReachable = false;
+        return false;
+      });
+  }
+
+  /* ================================================================
+   * function calling 探测（§2.4 工具自验）
+   * 探测网关模型是否支持 function calling（OpenAI 兼容 tools 参数）。
+   * 支持 → LLM 侧 tools 接入（evaluateExpression/solveCheck/normalizeSet）。
+   * 不支持 → 记录结论，维持引擎外部验证路径（验证门仍保留为硬保证）。
+   * ================================================================ */
+
+  var _supportsTools = null;   /* null=未探测, true=支持, false=不支持 */
+
+  /**
+   * 探测网关模型是否支持 function calling。
+   * 发一个带 tools 参数的最小候选请求，看返回是否含 tool_calls。
+   * @returns {Promise<boolean>}
+   */
+  function probeFunctionCalling() {
+    if (_supportsTools !== null) return Promise.resolve(_supportsTools);
+    if (typeof fetch !== 'function') {
+      _supportsTools = false;
+      return Promise.resolve(false);
+    }
+
+    var controller = null;
+    var timeoutId = null;
+    if (typeof AbortController !== 'undefined') {
+      controller = new AbortController();
+      timeoutId = setTimeout(function () { controller.abort(); }, 5000);
+    }
+
+    var body = {
+      model: MODEL,
+      messages: [
+        { role: 'user', content: '调用 check 工具验证 x=1 是否满足 x-1=0' }
+      ],
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'solveCheck',
+          description: '代入验根：验证 candidate 是否满足 equation',
+          parameters: {
+            type: 'object',
+            properties: {
+              equation: { type: 'string', description: '方程表达式' },
+              candidate: { type: 'string', description: '候选根' }
+            },
+            required: ['equation', 'candidate']
+          }
+        }
+      }],
+      tool_choice: 'auto',
+      max_tokens: 100
+    };
+
+    return fetch(PROXY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller ? controller.signal : undefined
+    })
+      .then(function (res) {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (!res.ok) { _supportsTools = false; return false; }
+        return res.json();
+      })
+      .then(function (data) {
+        if (!data) return _supportsTools;
+        var msg = data.choices && data.choices[0] && data.choices[0].message;
+        /* 支持 function calling 的标志：返回 tool_calls 或接受 tools 参数不报错 */
+        _supportsTools = !!(msg && msg.tool_calls && msg.tool_calls.length > 0);
+        /* 如果没返回 tool_calls 但也没报错（接受 tools 参数），标记为可能支持 */
+        if (!_supportsTools && msg && msg.content) {
+          _supportsTools = true;  /* 模型接受了 tools 参数，只是选择直接回答 */
+        }
+        return _supportsTools;
+      })
+      .catch(function () {
+        if (timeoutId) clearTimeout(timeoutId);
+        _supportsTools = false;
+        return false;
+      });
+  }
+
+  /* ================================================================
    * supports / genLLMVariant / fillPracticeLLM
    * ================================================================ */
 
@@ -822,6 +946,8 @@
     solveCheck: solveCheck,
     normalizeSet: normalizeSet,
     getStats: getStats,
+    probeGateway: probeGateway,
+    probeFunctionCalling: probeFunctionCalling,
     /* 测试用内部接口 */
     _systemPrompt: _systemPrompt,
     _userPrompt: _userPrompt,
@@ -829,6 +955,7 @@
     _clearCache: _clearCache,
     _pushCache: _pushCache,
     _getCachePool: _getCachePool,
-    _recordStat: _recordStat
+    _recordStat: _recordStat,
+    _resetProbe: function () { _gatewayReachable = null; _supportsTools = null; }
   };
 });
