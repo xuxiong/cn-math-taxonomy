@@ -6,9 +6,9 @@
 
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 [![在线试用](https://img.shields.io/badge/%E5%9C%A8%E7%BA%BF%E8%AF%95%E7%94%A8-math.pansgo.com-2ea44f)](https://math.pansgo.com/)
-[![GitHub Pages 备份](https://img.shields.io/badge/备份-GitHub%20Pages-lightgrey)](https://xiaoyang111222.github.io/cn-math-taxonomy/)
+[![GitHub Pages 备份](https://img.shields.io/badge/备份-GitHub%20Pages-lightgrey)](https://xuxiong.github.io/cn-math-taxonomy/)
 
-**[→ 在线试用诊断（演示：配方法）](https://math.pansgo.com/diagnose/?target=cnm_221&demo=1)** · [首页](https://math.pansgo.com/) · [知识图谱](https://math.pansgo.com/explore/) · [诊断工具](https://math.pansgo.com/diagnose/) · [GitHub Pages 备份](https://xiaoyang111222.github.io/cn-math-taxonomy/)
+**[→ 在线试用诊断（演示：配方法）](https://math.pansgo.com/diagnose/?target=cnm_221&demo=1)** · [首页](https://math.pansgo.com/) · [知识图谱](https://math.pansgo.com/explore/) · [诊断工具](https://math.pansgo.com/diagnose/) · [GitHub Pages 备份](https://xuxiong.github.io/cn-math-taxonomy/)
 
 ![首页：三步说明、实时统计和年级入口](screenshots/06-home.png)
 
@@ -37,7 +37,7 @@
 
 数据格式参考 [Marble os-taxonomy](https://github.com/withmarbleapp/os-taxonomy)（`topics` + `dependencies`）。
 
-**反馈 / 挑错：** 题干、答案或先修关系有问题，或想提功能建议，请 [提交 Issue](https://github.com/xiaoyang111222/cn-math-taxonomy/issues/new/choose)（已提供「题目纠错」「功能建议」模板）。
+**反馈 / 挑错：** 题干、答案或先修关系有问题，或想提功能建议，请 [提交 Issue](https://github.com/xuxiong/cn-math-taxonomy/issues/new/choose)（已提供「题目纠错」「功能建议」模板）。
 
 > **状态声明：这是 AI 生成的初稿，未经任何教师审核。** 小学、初中、高中数学，以及小学、初中、高中英语都一样。
 > 知识点的拆分粒度、掌握标准、诊断题答案，尤其是**先修关系（哪些是 hard、哪些是 soft，甚至某条边该不该存在）都需要一线教师审核**后才能用于教学、诊断或学习路径推荐。小学和初中数学的诊断题有自动核验，初中数学另有盲解复核，小学数学有独立程序复核；**高中题和英语题没有做盲解**，`verify` 和答案来自同一条表达式。小学册次目录、高中课标正文和高中章节目录多数不是官方逐页核对。英语课标正文、人教 PEP、Go for it! 和人教版（2019）高中英语的单元目录都没有逐页核对，标了「待核」的不要当成官方原文或页码。
@@ -450,6 +450,6 @@ python3 -m http.server 8000
 - ✅ 可以免费用于个人学习、教学、研究，可以修改和再分发，但需署名并注明来源（本仓库链接）。
 - ❌ 不得用于商业用途（包括但不限于付费课程、付费 App、机构收费服务、售卖题库等）。
 
-**商用授权：** 如需商业使用，请联系作者获取单独授权：X（Twitter）私信 [@hassanyehiaa](https://x.com/hassanyehiaa)，或在本仓库 [提交 Issue](https://github.com/xiaoyang111222/cn-math-taxonomy/issues) 说明用途。
+**商用授权：** 如需商业使用，请联系作者获取单独授权：X（Twitter）私信 [@hassanyehiaa](https://x.com/hassanyehiaa)，或在本仓库 [提交 Issue](https://github.com/xuxiong/cn-math-taxonomy/issues) 说明用途。
 
 This project is licensed under CC BY-NC 4.0. For commercial licensing, please contact the author via X [@hassanyehiaa](https://x.com/hassanyehiaa) or open an issue.
