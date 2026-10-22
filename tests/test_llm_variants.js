@@ -714,6 +714,161 @@ testAsync('probeFunctionCalling：fetch reject -> false', async () => {
 });
 
 /* ================================================================
+ * O3-4 修复：探测判定语义 + 缓存过期重探 + 工具自验循环
+ * ================================================================ */
+
+console.log('\n--- O3-4 修复：探测判定 / 缓存过期 / 工具循环 ---');
+
+testAsync('probeFunctionCalling：HTTP 200 + 无 error + 无 tool_calls 无 content -> true（成功=200+无error）', async () => {
+  LLMV._resetProbe();
+  const real = globalThis.fetch;
+  globalThis.fetch = function () {
+    // 空 choices（无 tool_calls 也无 content），但 HTTP 200 且无 error 字段
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: null } }] }); } });
+  };
+  try {
+    const supports = await LLMV.probeFunctionCalling();
+    assert.strictEqual(supports, true, 'HTTP 200 且无 error 字段即应判定支持: ' + supports);
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+testAsync('probeFunctionCalling：HTTP 200 但含 error 字段 -> false', async () => {
+  LLMV._resetProbe();
+  const real = globalThis.fetch;
+  globalThis.fetch = function () {
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ error: { message: 'model does not support tools' } }); } });
+  };
+  try {
+    const supports = await LLMV.probeFunctionCalling();
+    assert.strictEqual(supports, false, '响应含 error 字段应判定不支持: ' + supports);
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+testAsync('probeFunctionCalling：缓存 5 分钟过期后自动重探', async () => {
+  LLMV._resetProbe();
+  let now = 1000000;
+  LLMV._setNow(function () { return now; });
+  let callCount = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = function () {
+    callCount++;
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: 'ok' } }] }); } });
+  };
+  try {
+    await LLMV.probeFunctionCalling();
+    assert.strictEqual(callCount, 1, '首次应探测一次');
+    // 未过期：命中缓存
+    await LLMV.probeFunctionCalling();
+    assert.strictEqual(callCount, 1, '未过期应命中缓存');
+    // 推进超过 5 分钟：应重新探测
+    now = 1000000 + 5 * 60 * 1000 + 1000;
+    await LLMV.probeFunctionCalling();
+    assert.strictEqual(callCount, 2, '过期应重新探测');
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+testAsync('probeGateway：缓存 5 分钟过期后自动重探', async () => {
+  LLMV._resetProbe();
+  let now = 2000000;
+  LLMV._setNow(function () { return now; });
+  let callCount = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = function () {
+    callCount++;
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ data: [] }); } });
+  };
+  try {
+    await LLMV.probeGateway();
+    assert.strictEqual(callCount, 1, '首次应探测一次');
+    await LLMV.probeGateway();
+    assert.strictEqual(callCount, 1, '未过期应命中缓存');
+    now = 2000000 + 5 * 60 * 1000 + 1000;
+    await LLMV.probeGateway();
+    assert.strictEqual(callCount, 2, '过期应重新探测');
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+testAsync('工具循环：首次响应带 tool_calls -> 执行工具 -> 二次请求返回最终题', async () => {
+  LLMV._resetStats();
+  LLMV._clearCache();
+  let callNum = 0;
+  let secondBody = null;   // 首次生成请求 body（应带 tools）
+  let thirdBody = null;    // 二次生成请求 body（应含 tool role 结果）
+  const real = globalThis.fetch;
+  globalThis.fetch = function (url, opts) {
+    callNum++;
+    if (callNum === 1) {
+      // probeFunctionCalling：HTTP 200 无 error → true
+      return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: 'probe' } }] }); } });
+    }
+    if (callNum === 2) {
+      // 首次生成请求：返回 tool_calls（solveCheck 验 x²-4=0, candidate=2）
+      secondBody = JSON.parse(opts.body);
+      return Promise.resolve({
+        ok: true,
+        json: function () {
+          return Promise.resolve({
+            choices: [{
+              message: {
+                content: null,
+                tool_calls: [{
+                  id: 'call_1', type: 'function',
+                  function: { name: 'solveCheck', arguments: '{"equation":"x²-4=0","candidate":"2"}' }
+                }]
+              }
+            }]
+          });
+        }
+      });
+    }
+    // 第三次：二次生成请求返回最终题 JSON
+    thirdBody = JSON.parse(opts.body);
+    const q = { prompt: '解方程 x²-4=0', answer: '2，-2', verifyType: 'equation', difficulty: 'standard' };
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: JSON.stringify(q) } }] }); } });
+  };
+  try {
+    const q = await LLMV.genLLMVariant('cnm_221', { difficulty: 'standard' });
+    assert.ok(q !== null, '应返回题对象: ' + JSON.stringify(q));
+    assert.strictEqual(q.verifyType, 'equation');
+    assert.strictEqual(callNum, 3, '应发生探测+两次生成共 3 次请求');
+    // 首次生成请求应带 tools
+    assert.ok(secondBody && Array.isArray(secondBody.tools) && secondBody.tools.length >= 3,
+      '首次生成请求应带 3 个工具: ' + JSON.stringify(secondBody && secondBody.tools));
+    // 二次生成请求消息应为 system/user/assistant(tool_calls)/tool(result)
+    assert.ok(thirdBody && Array.isArray(thirdBody.messages), '二次请求应有 messages');
+    assert.strictEqual(thirdBody.messages.length, 4, '二次请求消息数应为 4: ' + JSON.stringify(thirdBody.messages));
+    assert.strictEqual(thirdBody.messages[2].role, 'assistant', '第 3 条应为 assistant');
+    assert.ok(thirdBody.messages[2].tool_calls && thirdBody.messages[2].tool_calls.length === 1,
+      'assistant 消息应回带 tool_calls');
+    assert.strictEqual(thirdBody.messages[3].role, 'tool', '第 4 条应为 tool role');
+    // 工具执行结果：solveCheck('x²-4=0','2') → true
+    assert.strictEqual(thirdBody.messages[3].content, 'true', 'solveCheck 执行结果应为 true: ' + thirdBody.messages[3].content);
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+testAsync('工具循环：首次响应无 tool_calls -> 单轮直接返回', async () => {
+  LLMV._resetStats();
+  LLMV._clearCache();
+  let callNum = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = function () {
+    callNum++;
+    if (callNum === 1) {
+      // probeFunctionCalling → true
+      return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: 'probe' } }] }); } });
+    }
+    // 首次生成请求直接返回最终题（无 tool_calls）
+    const q = { prompt: '解方程 x²-2x-3=0', answer: '3，-1', verifyType: 'equation', difficulty: 'standard' };
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: JSON.stringify(q) } }] }); } });
+  };
+  try {
+    const q = await LLMV.genLLMVariant('cnm_221', { difficulty: 'standard' });
+    assert.ok(q !== null, '应返回题对象: ' + JSON.stringify(q));
+    assert.strictEqual(callNum, 2, '无 tool_calls 应单轮（探测+一次生成共 2 次请求）: ' + callNum);
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+/* ================================================================
  * 运行异步测试
  * ================================================================ */
 

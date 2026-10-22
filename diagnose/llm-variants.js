@@ -18,6 +18,10 @@
   var MODEL = 'DeepSeek-V4-Flash-0731-Unlimited';
   var MAX_RETRIES = 3;
   var TIMEOUT_MS = 10000;
+  /* O3-4：探测超时放宽到 15s（联调时网关负载大响应可能 >5s，5s 太紧导致误判 false） */
+  var PROBE_TIMEOUT_MS = 15000;
+  /* O3-4：探测结果 5 分钟 TTL，过期自动重探（避免 false 永久污染钉死功能） */
+  var PROBE_TTL_MS = 5 * 60 * 1000;
   var CACHE_KEY = 'cnmDiagnose.llmVariants.v1';
   var STATS_KEY = 'cnmDiagnose.llmVariantStats.v1';
   var POOL_MAX = 50;
@@ -607,17 +611,30 @@
    * ================================================================ */
 
   var _gatewayReachable = null;   /* null=未探测, true=可达, false=不可达 */
+  var _gatewayProbeAt = 0;        /* 上次探测时间戳（O3-4：TTL 过期自动重探） */
+  var _supportsTools = null;      /* null=未探测, true=支持, false=不支持 */
+  var _supportsToolsAt = 0;       /* 上次探测时间戳（O3-4：TTL 过期自动重探） */
+
+  /* 可注入时钟（测试推进时间用）；默认 Date.now */
+  var _nowFn = function () { return Date.now(); };
+
+  /* 探测结果是否已过期：从未探测(0)或超过 TTL 视为过期 */
+  function _probeExpired(at) {
+    return !at || (_nowFn() - at) >= PROBE_TTL_MS;
+  }
 
   /**
-   * 探测网关是否可达。try 一次 /v1/models，3 秒超时。
-   * 结果缓存在 _gatewayReachable，同一次页面会话只探测一次。
+   * 探测网关是否可达。try 一次 /v1/models，15 秒超时。
+   * 结果缓存在 _gatewayReachable，TTL 内命中缓存，过期自动重探。
    * @returns {Promise<boolean>}
    */
   function probeGateway() {
-    if (_gatewayReachable !== null) return Promise.resolve(_gatewayReachable);
     if (typeof fetch !== 'function') {
-      _gatewayReachable = false;
+      _gatewayReachable = false; _gatewayProbeAt = _nowFn();
       return Promise.resolve(false);
+    }
+    if (!_probeExpired(_gatewayProbeAt) && _gatewayReachable !== null) {
+      return Promise.resolve(_gatewayReachable);
     }
 
     var modelsUrl = PROXY.replace('/chat/completions', '/models');
@@ -625,7 +642,7 @@
     var timeoutId = null;
     if (typeof AbortController !== 'undefined') {
       controller = new AbortController();
-      timeoutId = setTimeout(function () { controller.abort(); }, 3000);
+      timeoutId = setTimeout(function () { controller.abort(); }, PROBE_TIMEOUT_MS);
     }
 
     return fetch(modelsUrl, {
@@ -635,11 +652,13 @@
       .then(function (res) {
         if (timeoutId) clearTimeout(timeoutId);
         _gatewayReachable = res.ok;
+        _gatewayProbeAt = _nowFn();
         return _gatewayReachable;
       })
       .catch(function () {
         if (timeoutId) clearTimeout(timeoutId);
         _gatewayReachable = false;
+        _gatewayProbeAt = _nowFn();
         return false;
       });
   }
@@ -649,27 +668,81 @@
    * 探测网关模型是否支持 function calling（OpenAI 兼容 tools 参数）。
    * 支持 → LLM 侧 tools 接入（evaluateExpression/solveCheck/normalizeSet）。
    * 不支持 → 记录结论，维持引擎外部验证路径（验证门仍保留为硬保证）。
+   *
+   * O3-4 修复：成功判定改为「HTTP 200 且响应无 error 字段 → 支持」，
+   * 不再依赖 tool_calls 是否出现（模型选择直接回答也算支持——探测的是
+   * 网关/模型接受 tools 参数）。超时放宽到 15s，去掉 max_tokens:100 截断。
    * ================================================================ */
 
-  var _supportsTools = null;   /* null=未探测, true=支持, false=不支持 */
+  /* §2.4 工具集：evaluateExpression / solveCheck / normalizeSet（OpenAI 兼容 schema） */
+  var TOOLS = [
+    {
+      type: 'function',
+      function: {
+        name: 'evaluateExpression',
+        description: '数值求值：在给定 x 值数组处计算表达式 expr 的数值',
+        parameters: {
+          type: 'object',
+          properties: {
+            expr: { type: 'string', description: '数学表达式' },
+            xValues: { type: 'array', items: { type: 'number' }, description: 'x 取值数组' }
+          },
+          required: ['expr', 'xValues']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'solveCheck',
+        description: '代入验根：验证 candidate 是否满足 equation',
+        parameters: {
+          type: 'object',
+          properties: {
+            equation: { type: 'string', description: '方程表达式' },
+            candidate: { type: 'string', description: '候选根' }
+          },
+          required: ['equation', 'candidate']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'normalizeSet',
+        description: '集合归一：把多值答案归一为数值集合',
+        parameters: {
+          type: 'object',
+          properties: {
+            answers: { type: 'string', description: '多值答案文本' }
+          },
+          required: ['answers']
+        }
+      }
+    }
+  ];
 
   /**
    * 探测网关模型是否支持 function calling。
-   * 发一个带 tools 参数的最小候选请求，看返回是否含 tool_calls。
+   * 发一个带 tools 参数的最小候选请求。
+   * 成功判定：HTTP 200 且响应无 error 字段 → 支持（模型接受 tools 参数）。
+   * 结果带时间戳缓存，TTL 过期自动重探。
    * @returns {Promise<boolean>}
    */
   function probeFunctionCalling() {
-    if (_supportsTools !== null) return Promise.resolve(_supportsTools);
     if (typeof fetch !== 'function') {
-      _supportsTools = false;
+      _supportsTools = false; _supportsToolsAt = _nowFn();
       return Promise.resolve(false);
+    }
+    if (!_probeExpired(_supportsToolsAt) && _supportsTools !== null) {
+      return Promise.resolve(_supportsTools);
     }
 
     var controller = null;
     var timeoutId = null;
     if (typeof AbortController !== 'undefined') {
       controller = new AbortController();
-      timeoutId = setTimeout(function () { controller.abort(); }, 5000);
+      timeoutId = setTimeout(function () { controller.abort(); }, PROBE_TIMEOUT_MS);
     }
 
     var body = {
@@ -692,8 +765,7 @@
           }
         }
       }],
-      tool_choice: 'auto',
-      max_tokens: 100
+      tool_choice: 'auto'
     };
 
     return fetch(PROXY, {
@@ -704,23 +776,25 @@
     })
       .then(function (res) {
         if (timeoutId) clearTimeout(timeoutId);
-        if (!res.ok) { _supportsTools = false; return false; }
+        /* O3-4：HTTP 200 且无 error 字段 → 支持。res.ok 覆盖 2xx。 */
+        if (!res.ok) { _supportsTools = false; _supportsToolsAt = _nowFn(); return false; }
         return res.json();
       })
       .then(function (data) {
-        if (!data) return _supportsTools;
-        var msg = data.choices && data.choices[0] && data.choices[0].message;
-        /* 支持 function calling 的标志：返回 tool_calls 或接受 tools 参数不报错 */
-        _supportsTools = !!(msg && msg.tool_calls && msg.tool_calls.length > 0);
-        /* 如果没返回 tool_calls 但也没报错（接受 tools 参数），标记为可能支持 */
-        if (!_supportsTools && msg && msg.content) {
-          _supportsTools = true;  /* 模型接受了 tools 参数，只是选择直接回答 */
-        }
-        return _supportsTools;
+        if (timeoutId) clearTimeout(timeoutId);
+        /* json 为空（无 error 也无 choices）→ 保守按不支持（无有效响应） */
+        if (!data) { _supportsTools = false; _supportsToolsAt = _nowFn(); return false; }
+        /* O3-4：响应含 error 字段 → 不支持（网关/模型拒绝 tools 参数） */
+        if (data.error) { _supportsTools = false; _supportsToolsAt = _nowFn(); return false; }
+        /* 否则：HTTP 200 且无 error → 模型接受了 tools 参数，判定支持 */
+        _supportsTools = true;
+        _supportsToolsAt = _nowFn();
+        return true;
       })
       .catch(function () {
         if (timeoutId) clearTimeout(timeoutId);
         _supportsTools = false;
+        _supportsToolsAt = _nowFn();
         return false;
       });
   }
@@ -832,29 +906,56 @@
 
   /**
    * 调用本地网关生成 1 道候选题。
+   * O3-4 工具自验循环（§2.4 效率层）：若网关支持 function calling，
+   * 首次请求带 tools；响应若有 tool_calls → 页面端执行对应 JS 函数
+   * （evaluateExpression/solveCheck/normalizeSet）→ 追加 assistant+tool 结果
+   * 消息 → 二次请求 → 取最终题。模型不返回 tool_calls 或工具执行抛错 →
+   * 照旧单层（外部验证门仍是最终硬保证，工具结果只影响生成质量）。
    * @param {string} difficulty
    * @returns {Promise<object|null>}
    */
   function _callGateway(difficulty) {
     if (typeof fetch !== 'function') return Promise.resolve(null);
 
+    return probeFunctionCalling().then(function (supportsTools) {
+      var messages = [
+        { role: 'system', content: _systemPrompt() },
+        { role: 'user', content: _userPrompt(difficulty) }
+      ];
+      var body = {
+        model: MODEL,
+        messages: messages,
+        max_tokens: 500,
+        temperature: 0.8
+      };
+      if (supportsTools) body.tools = TOOLS;
+
+      return _postOnce(body).then(function (data) {
+        if (!data || !data.choices || !data.choices[0]) return null;
+        var msg = data.choices[0].message;
+
+        /* 工具自验：响应带 tool_calls 且网关支持 → 执行工具并二次请求 */
+        if (supportsTools && msg.tool_calls && msg.tool_calls.length > 0) {
+          return _runToolLoop(messages, msg);
+        }
+        /* 单层：无 tool_calls → 直接用 content */
+        return _parseCandidate(msg.content);
+      });
+    });
+  }
+
+  /**
+   * 单次 POST 请求（带超时）。返回响应 JSON 或 null。
+   * @param {object} body
+   * @returns {Promise<object|null>}
+   */
+  function _postOnce(body) {
     var controller = null;
     var timeoutId = null;
     if (typeof AbortController !== 'undefined') {
       controller = new AbortController();
       timeoutId = setTimeout(function () { controller.abort(); }, TIMEOUT_MS);
     }
-
-    var body = {
-      model: MODEL,
-      messages: [
-        { role: 'system', content: _systemPrompt() },
-        { role: 'user', content: _userPrompt(difficulty) }
-      ],
-      max_tokens: 500,
-      temperature: 0.8
-    };
-
     return fetch(PROXY, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -866,15 +967,81 @@
         if (!res.ok) return null;
         return res.json();
       })
-      .then(function (data) {
-        if (!data || !data.choices || !data.choices[0]) return null;
-        var content = data.choices[0].message.content;
-        return _parseCandidate(content);
-      })
       .catch(function () {
         if (timeoutId) clearTimeout(timeoutId);
         return null;
       });
+  }
+
+  /**
+   * 工具自验循环：执行 tool_calls 中的 JS 函数，把 assistant tool_calls 消息
+   * + tool role 结果消息追加进 messages，发起二次请求取最终题。
+   * 任一工具执行抛错/未知工具 → 返回 null（上层回退单层 content）。
+   * @param {object[]} messages - 会原地追加 assistant + tool 结果消息
+   * @param {object} msg - 首次响应的 message（含 tool_calls）
+   * @returns {Promise<object|null>}
+   */
+  function _runToolLoop(messages, msg) {
+    var toolResults = _executeToolCalls(msg.tool_calls);
+    if (toolResults === null) {
+      /* 工具执行抛错/未知工具 → 回退单层，用首次响应已有 content */
+      return Promise.resolve(_parseCandidate(msg.content));
+    }
+    /* 追加 assistant tool_calls 消息 + tool role 结果消息 */
+    messages.push({ role: 'assistant', content: msg.content || null, tool_calls: msg.tool_calls });
+    for (var i = 0; i < toolResults.length; i++) {
+      messages.push(toolResults[i]);
+    }
+    var body = {
+      model: MODEL,
+      messages: messages,
+      max_tokens: 500,
+      temperature: 0.8
+    };
+    return _postOnce(body).then(function (data) {
+      if (!data || !data.choices || !data.choices[0]) return null;
+      return _parseCandidate(data.choices[0].message.content);
+    });
+  }
+
+  /**
+   * 执行 tool_calls 数组中的 JS 函数，构造 role:'tool' 结果消息数组。
+   * 返回 null 表示任一调用无法安全执行（未知工具/抛错）→ 上层回退单层。
+   * @param {object[]} toolCalls
+   * @returns {object[]|null}
+   */
+  function _executeToolCalls(toolCalls) {
+    var results = [];
+    try {
+      for (var i = 0; i < toolCalls.length; i++) {
+        var tc = toolCalls[i];
+        if (!tc || !tc.function || !tc.id) return null;
+        var name = tc.function.name;
+        var args = {};
+        try { args = JSON.parse(tc.function.arguments || '{}'); } catch (e) { /* 参数畸形按空对象处理 */ }
+        var out;
+        if (name === 'evaluateExpression') {
+          out = evaluateExpression(args.expr, args.xValues);
+        } else if (name === 'solveCheck') {
+          out = solveCheck(args.equation, args.candidate);
+        } else if (name === 'normalizeSet') {
+          out = normalizeSet(args.answers);
+        } else {
+          return null;  /* 未知工具 → 回退单层 */
+        }
+        /* Set → 数组序列化；数组/标量直接 JSON */
+        var content;
+        if (typeof Set !== 'undefined' && out instanceof Set) {
+          content = JSON.stringify(Array.from(out));
+        } else {
+          content = JSON.stringify(out);
+        }
+        results.push({ role: 'tool', tool_call_id: tc.id, content: content });
+      }
+      return results;
+    } catch (e) {
+      return null;
+    }
   }
 
   /**
@@ -956,6 +1123,11 @@
     _pushCache: _pushCache,
     _getCachePool: _getCachePool,
     _recordStat: _recordStat,
-    _resetProbe: function () { _gatewayReachable = null; _supportsTools = null; }
+    _resetProbe: function () {
+      _gatewayReachable = null; _gatewayProbeAt = 0;
+      _supportsTools = null; _supportsToolsAt = 0;
+      _nowFn = function () { return Date.now(); };
+    },
+    _setNow: function (fn) { _nowFn = fn || function () { return Date.now(); }; }
   };
 });
