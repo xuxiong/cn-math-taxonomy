@@ -1069,7 +1069,11 @@
 
   // 等号左边是"算式"（含运算符）时的右边值：a+b=3、17-5=12 这类真正的计算结果。
   // 左边是 3x、x 这种单项式时不算——那多半是"待解的方程"，不是最终答案。
+  // O2-3 修复：左式含变量字母（如 2(5-x)）时也不算——那是方程本身或代入验证段，
+  //   不是纯算术计算；验证段（含 验证/检验/代入/代回 关键词）整段跳过。
   const LHS_OP = /[+\-*\/×÷·±]/;
+  const LHS_VAR = /[a-z]/;
+  const VERIFY_KW = /(?:验证|检验|代入|代回)/;
   const SEG_SEP = /[，。；、,;:：\n\t]/;
 
   function computedValues(text) {
@@ -1077,6 +1081,7 @@
     if (!raw) return [];
     const out = [];
     raw.split(/[。；;\n]/).forEach(function (rawSeg) {
+      if (VERIFY_KW.test(rawSeg)) return;  // 代入验证段整段跳过
       const seg = normalizeText(rawSeg);
       const re = /=/g;
       let m;
@@ -1088,7 +1093,8 @@
         let j = m.index + 1;
         let token = '';
         while (j < seg.length && !VALUE_STOP.test(seg.charAt(j)) && token.length < 24) { token += seg.charAt(j); j++; }
-        const cv = LHS_OP.test(lhs) ? claimValueKeys(token) : null;
+        // 左式有运算符（算式）且不含变量字母（不是方程）时才算计算结果
+        const cv = (LHS_OP.test(lhs) && !LHS_VAR.test(lhs)) ? claimValueKeys(token) : null;
         if (cv) out.push({ variable: '', raw: token, keys: cv.keys, unit: cv.unit });
         re.lastIndex = j;
       }

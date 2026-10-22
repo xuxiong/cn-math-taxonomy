@@ -2055,6 +2055,31 @@ test('verifyReveal：参考答案不是数值（字母/文字）-> ok:null', () 
   assert.strictEqual(E.verifyReveal('选B，因为移项要变号。', 'B').ok, null);
 });
 
+/* ---------- O2-3：代入验证段误杀修复 ---------- */
+
+test('verifyReveal：reveal 含代入验证段 2×(5-3)=4 时不误杀正确解 x=3', () => {
+  // LLM 用算出的 x=3 代回原方程 2×(5-x) 验证：2×(5-3)=4
+  // computedValues 会提取验证段右值 4 作为候选，但正确解值是 3
+  // "得x=3" 里的"得"不在 CONCLUSION 正则 → solutionClaims 不会提取
+  // 修复前：candidates[0]=4 ≠ 3 → ok:false 误杀
+  // 修复后：代入验证段被排除，无候选 → ok:null（不误杀）
+  var v = E.verifyReveal('移项得2×(5-x)=4，解得x=3。验证：2×(5-3)=4，成立。', '3');
+  assert.ok(v.ok !== false, '代入验证段不应导致误杀: ' + JSON.stringify(v));
+});
+
+test('verifyReveal：代入验证段 2(5-3)=4 不误杀（无结论词，解值在验证段前）', () => {
+  // 变体：验证段用 2(5-3)=4 写法（省略乘号），正确解 x=3 用"得"引出
+  var v = E.verifyReveal('2(5-x)=4，得x=3。验证2(5-3)=4。', '3');
+  assert.ok(v.ok !== false, '代入验证段不应导致误杀: ' + JSON.stringify(v));
+});
+
+test('verifyReveal：代入验证段排除后仍能正确判错（真错值不被放过）', () => {
+  // x=5 是错的（答案 3），验证段 2×(5-5)=0 的右值 0 也不该当候选
+  // solutionClaims 不收"得x=5" → 排除验证段后无候选 → ok:null（不误杀，也不误判对）
+  var v = E.verifyReveal('2(5-x)=4，得x=5。验证2(5-5)=0。', '3');
+  assert.ok(v.ok !== false, '验证段右值不应误杀: ' + JSON.stringify(v));
+});
+
 /* ---------------- 与 explain.js 的集成：reveal 校验失败整轮回退静态讲解 ---------------- */
 
 function loadExplain() {
