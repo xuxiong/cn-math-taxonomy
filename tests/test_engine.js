@@ -1625,5 +1625,339 @@ test('studentAdvice：文案不含"家长/陪孩子/建议："等监督感措辞
   });
 });
 
+/* ============================================================ O1 变式生成器测试
+ * 设计文档：docs/o1-random-variants.md
+ * 实现模块：diagnose/variants.js
+ * 测试要点 20 条（§9），含独立求解器（不共享被测代码逻辑）
+ */
+const V = (function () {
+  try { return require('../diagnose/variants.js'); }
+  catch (e) { return null; }
+})();
+
+// 测试内独立求解器：从 prompt 正则解析 → 展开 → 有理数解方程 → 与 answer 比对
+function gcd(a, b) { a = Math.abs(a); b = Math.abs(b); while (b) { [a, b] = [b, a % b]; } return a || 1; }
+function reduceFrac(p, q) {
+  if (q < 0) { p = -p; q = -q; }
+  const g = gcd(p, q);
+  return { p: p / g, q: q / g };
+}
+// 从 prompt 解析四个模板的参数，返回 {recipe, a, b, c, d, e, m}
+function parsePrompt(prompt) {
+  // T1: 解方程 {a}(x{b})={c}。（只填 x 的值）
+  let m = /^解方程 (-?\d+)\(x([+-]\d+)\)=(-?\d+)。/.exec(prompt);
+  if (m) return { recipe: 'T1', a: +m[1], b: +m[2], c: +m[3] };
+  // T2: 解方程 {a}(x{b})={c}(x{d})。
+  m = /^解方程 (-?\d+)\(x([+-]\d+)\)=(-?\d+)\(x([+-]\d+)\)。/.exec(prompt);
+  if (m) return { recipe: 'T2', a: +m[1], b: +m[2], c: +m[3], d: +m[4] };
+  // T3: 解方程 {a}(x{b})-{c}(x{d})={e}。
+  m = /^解方程 (-?\d+)\(x([+-]\d+)\)-(-?\d+)\(x([+-]\d+)\)=(-?\d+)。/.exec(prompt);
+  if (m) return { recipe: 'T3', a: +m[1], b: +m[2], c: +m[3], d: +m[4], e: +m[5] };
+  // T4: 解方程 {a}(x{b})={m}-(x{d})。
+  m = /^解方程 (-?\d+)\(x([+-]\d+)\)=(-?\d+)-\(x([+-]\d+)\)。/.exec(prompt);
+  if (m) return { recipe: 'T4', a: +m[1], b: +m[2], m: +m[3], d: +m[4] };
+  return null;
+}
+// 展开成 Ax+B=Cx+D，返回 {A,B,C,D}
+function expandToLinear(p) {
+  if (p.recipe === 'T1') return { A: p.a, B: p.a * p.b, C: 0, D: p.c };
+  if (p.recipe === 'T2') return { A: p.a, B: p.a * p.b, C: p.c, D: p.c * p.d };
+  if (p.recipe === 'T3') return { A: p.a - p.c, B: p.a * p.b - p.c * p.d, C: 0, D: p.e };
+  if (p.recipe === 'T4') return { A: p.a, B: p.a * p.b, C: -1, D: p.m - p.d };
+  return null;
+}
+// 独立解方程 r=(D-B)/(A-C)，返回 {p,q}
+function solveLinear(L) {
+  return reduceFrac(L.D - L.B, L.A - L.C);
+}
+// 解析 answer 字符串为 {p,q}
+function parseAnswerStr(s) {
+  const m = /^(-?\d+)\/(\d+)$/.exec(s);
+  if (m) return reduceFrac(+m[1], +m[2]);
+  return reduceFrac(parseInt(s, 10), 1);
+}
+
+console.log('\nO1 变式生成器（diagnose/variants.js）');
+
+// 如果模块不存在，所有测试都应 FAIL（RED 阶段）
+if (V) {
+
+test('1 确定性：同(topic,index)两次生成深相等', () => {
+  const a = V.genVariant('cnm_043', 0);
+  const b = V.genVariant('cnm_043', 0);
+  assert.ok(a && b, 'genVariant 应返回非 null');
+  assert.deepStrictEqual(a, b);
+});
+
+test('2 不同 index 得到不同题', () => {
+  const ids = new Set(), prompts = new Set();
+  for (let i = 0; i < 10; i++) {
+    const q = V.genVariant('cnm_043', i);
+    assert.ok(q, 'index=' + i + ' 应返回非 null');
+    ids.add(q.id);
+    prompts.add(q.prompt);
+  }
+  assert.ok(ids.size === 10, '10 个 index 应有 10 个不同 id');
+  assert.ok(prompts.size >= 8, '应有 ≥8 种不同题面，实际 ' + prompts.size);
+});
+
+test('3 id 形状正则 + index=i → _v{i+1}', () => {
+  for (let i = 0; i < 5; i++) {
+    const q = V.genVariant('cnm_043', i);
+    assert.ok(/^cnm_043_v\d+$/.test(q.id), 'id 应匹配 ^cnm_043_v\\d+$: ' + q.id);
+    assert.ok(q.id === 'cnm_043_v' + (i + 1), 'index=' + i + ' → id=' + q.id + ' 应为 _v' + (i + 1));
+  }
+});
+
+test('4 数值正确性（独立求解器，index 0..199）', () => {
+  let bad = 0;
+  for (let i = 0; i < 200; i++) {
+    const q = V.genVariant('cnm_043', i);
+    assert.ok(q, 'index=' + i + ' 不应返回 null');
+    const parsed = parsePrompt(q.prompt);
+    assert.ok(parsed, '无法解析题面: ' + q.prompt);
+    const L = expandToLinear(parsed);
+    const expected = solveLinear(L);
+    const actual = parseAnswerStr(q.answer);
+    if (expected.p !== actual.p || expected.q !== actual.q) {
+      bad++;
+      if (bad <= 3) console.log('    MISMATCH idx=' + i + ' prompt=' + q.prompt + ' expected=' + expected.p + '/' + expected.q + ' actual=' + q.answer);
+    }
+  }
+  assert.ok(bad === 0, '独立求解器应全部匹配，bad=' + bad);
+});
+
+test('5 题面与内部展开一致（系数范围 + A≠C）', () => {
+  for (let i = 0; i < 200; i++) {
+    const q = V.genVariant('cnm_043', i);
+    const p = parsePrompt(q.prompt);
+    assert.ok(p, '无法解析: ' + q.prompt);
+    // 系数范围检查
+    assert.ok(Math.abs(p.a) >= 2 && Math.abs(p.a) <= 6, 'a 范围: ' + p.a + ' idx=' + i);
+    if (p.recipe === 'T2' || p.recipe === 'T3') {
+      assert.ok(Math.abs(p.c) >= 2 && Math.abs(p.c) <= 6, 'c 范围: ' + p.c + ' idx=' + i);
+    }
+    assert.ok(Math.abs(p.b) >= 1 && Math.abs(p.b) <= 9, 'b 范围: ' + p.b + ' idx=' + i);
+    if (p.d != null) {
+      assert.ok(Math.abs(p.d) >= 1 && Math.abs(p.d) <= 9, 'd 范围: ' + p.d + ' idx=' + i);
+    }
+    const L = expandToLinear(p);
+    assert.ok(L.A !== L.C, 'A≠C: A=' + L.A + ' C=' + L.C + ' idx=' + i);
+  }
+});
+
+test('6 单一解不变量（classifyLinear 全部为 unique）', () => {
+  for (let i = 0; i < 200; i++) {
+    const q = V.genVariant('cnm_043', i);
+    const p = parsePrompt(q.prompt);
+    const L = expandToLinear(p);
+    assert.strictEqual(V.classifyLinear(L), 'unique', 'idx=' + i + ' 应为 unique');
+  }
+});
+
+test('7 三分类工具（contradiction/identity/unique）', () => {
+  assert.strictEqual(V.classifyLinear({ A: 2, B: 3, C: 2, D: 5 }), 'contradiction');
+  assert.strictEqual(V.classifyLinear({ A: 2, B: 3, C: 2, D: 3 }), 'identity');
+  assert.strictEqual(V.classifyLinear({ A: 2, B: 3, C: 1, D: 4 }), 'unique');
+});
+
+test('8 答案规整（整数或最简分数，无小数点无空格）', () => {
+  for (let i = 0; i < 200; i++) {
+    const q = V.genVariant('cnm_043', i);
+    assert.ok(/^-?\d+$/.test(q.answer) || /^-?\d+\/[234]$/.test(q.answer), 'answer 格式: ' + q.answer + ' idx=' + i);
+    assert.ok(q.answer.indexOf('.') < 0, 'answer 不含小数点: ' + q.answer);
+    assert.ok(q.answer.indexOf(' ') < 0, 'answer 不含空格: ' + q.answer);
+    // 分数必最简
+    const m = /^(-?\d+)\/(\d+)$/.exec(q.answer);
+    if (m) {
+      const p = parseInt(m[1], 10), qq = parseInt(m[2], 10);
+      assert.strictEqual(gcd(p, qq), 1, '分数应最简: ' + q.answer);
+      assert.ok(qq > 0, '分母为正: ' + qq);
+    }
+  }
+});
+
+test('9 无分数/小数系数（prompt 只含整数与运算符）', () => {
+  const allowed = /^解方程 [-+0-9()x=。]+（只填 x 的值）$/;
+  for (let i = 0; i < 200; i++) {
+    const q = V.genVariant('cnm_043', i);
+    assert.ok(allowed.test(q.prompt), 'prompt 只含允许字符: ' + q.prompt + ' idx=' + i);
+    assert.ok(q.prompt.indexOf('.') < 0, 'prompt 不含小数点: ' + q.prompt);
+    assert.ok(q.prompt.indexOf('√') < 0, 'prompt 不含根号');
+  }
+});
+
+test('10 难度分布与 recipe 归档', () => {
+  const counts = { basic: 0, standard: 0, advanced: 0 };
+  const recipes = {};
+  for (let i = 0; i < 300; i++) {
+    const q = V.genVariant('cnm_043', i);
+    counts[q.difficulty]++;
+    recipes[q.variantRecipe] = (recipes[q.variantRecipe] || 0) + 1;
+    if (q.difficulty === 'basic') {
+      assert.strictEqual(q.variantRecipe, 'T1', 'basic 应全为 T1: idx=' + i + ' recipe=' + q.variantRecipe);
+      assert.ok(!/\//.test(q.answer), 'basic answer 全整数: ' + q.answer);
+    }
+    if (q.difficulty === 'advanced') {
+      // advanced 中 T3 占绝大多数，剩余兜底必须标 basic
+      assert.ok(q.variantRecipe === 'T3' || q.difficulty === 'basic', 'advanced 中应为 T3: idx=' + i);
+    }
+  }
+  // 三档各占 80-120（1/3 均衡）
+  ['basic', 'standard', 'advanced'].forEach(function (d) {
+    assert.ok(counts[d] >= 80 && counts[d] <= 120, d + ' 档应在 80-120: ' + counts[d]);
+  });
+});
+
+test('11 分数根与整数根都出现', () => {
+  let fracAdv = 0, fracBasic = 0;
+  for (let i = 0; i < 200; i++) {
+    const q = V.genVariant('cnm_043', i);
+    if (/\//.test(q.answer)) {
+      if (q.difficulty === 'advanced') fracAdv++;
+      if (q.difficulty === 'basic') fracBasic++;
+    }
+  }
+  assert.ok(fracAdv >= 5, 'advanced 应有 ≥5 个分数根: ' + fracAdv);
+  assert.ok(fracBasic === 0, 'basic 应 0 个分数根: ' + fracBasic);
+});
+
+test('12 accept 语义（存在时 judgeQuestion 判 correct 且 reason=identical）', () => {
+  let found = false;
+  for (let i = 0; i < 300 && !found; i++) {
+    const q = V.genVariant('cnm_043', i);
+    if (q.accept && q.accept.length) {
+      found = true;
+      assert.ok(q.accept[0].indexOf('.') >= 0, 'accept 应含小数点: ' + q.accept[0]);
+      const r = E.judgeQuestion(q, q.accept[0]);
+      assert.strictEqual(r.verdict, 'correct', 'accept 应判 correct');
+      assert.strictEqual(r.reason, 'identical', 'accept reason 应为 identical: ' + r.reason);
+    }
+  }
+  assert.ok(found, '200 个序号中应至少有一个带 accept 的分数根变式');
+});
+
+test('13 判题链兼容（answer / x=answer / 等价小数 / 错值）', () => {
+  const q = V.genVariant('cnm_043', 0);
+  assert.ok(q);
+  // answer 本身
+  assert.strictEqual(E.judgeQuestion(q, q.answer).verdict, 'correct');
+  // x=answer
+  assert.strictEqual(E.judgeQuestion(q, 'x=' + q.answer).verdict, 'correct');
+  // 等价小数（分数根时）
+  if (/\//.test(q.answer) && q.accept && q.accept.length) {
+    assert.strictEqual(E.judgeQuestion(q, q.accept[0]).verdict, 'correct');
+  }
+  // 错值
+  const wrong = q.answer === '0' ? '1' : '0';
+  assert.strictEqual(E.judgeQuestion(q, wrong).verdict, 'wrong');
+});
+
+test('14 解析结构（步骤关键词 + 末句 x={answer}）', () => {
+  for (let i = 0; i < 50; i++) {
+    const q = V.genVariant('cnm_043', i);
+    assert.ok(q.explanation.indexOf('去括号') >= 0, '解析含"去括号": idx=' + i);
+    assert.ok(q.explanation.indexOf('系数化为 1 得 x=' + q.answer + '。') >= 0,
+      '解析末句 x=' + q.answer + ' idx=' + i + ' expl=' + q.explanation);
+    // T2/T3/T4 应含"合并同类项"
+    if (q.variantRecipe !== 'T1') {
+      assert.ok(q.explanation.indexOf('合并同类项') >= 0, '非T1含"合并同类项": idx=' + i + ' recipe=' + q.variantRecipe);
+    }
+    // T1 应含"移项"
+    if (q.variantRecipe === 'T1') {
+      assert.ok(q.explanation.indexOf('移项') >= 0, 'T1含"移项": idx=' + i);
+    }
+  }
+});
+
+test('15 首句不泄露（socraticSteps hint 不含 x=answer 且不含"系数化为"）', () => {
+  const topic = { id: 'cnm_043', name: '含括号的一元一次方程' };
+  for (let i = 0; i < 50; i++) {
+    const q = V.genVariant('cnm_043', i);
+    const steps = E.socraticSteps(topic, q);
+    const hint = steps[1].text;
+    // 不含 x=<answer>
+    const ansRe = new RegExp('x\\s*=\\s*' + q.answer.replace('/', '\\/'));
+    assert.ok(!ansRe.test(hint), 'hint 不含 x=' + q.answer + ': idx=' + i + ' hint=' + hint);
+    assert.ok(hint.indexOf('系数化为') < 0, 'hint 不含"系数化为": idx=' + i);
+  }
+});
+
+test('16 撞题去重 + 确定性', () => {
+  // ① avoidPrompts 含自己的 prompt 时，生成不同 prompt
+  const q1 = V.genVariant('cnm_043', 0);
+  const q2 = V.genVariant('cnm_043', 0, { avoidPrompts: [q1.prompt] });
+  assert.ok(q2, '撞题去重后仍应返回题');
+  assert.ok(q2.prompt !== q1.prompt, '应生成不同 prompt');
+  // ② 非撞题场景下，传 [] 与传题库 prompts 结果深相等
+  const bankPrompts = [
+    '解方程 2(x-3)=4-(x+1)。（只填 x 的值）',
+    '解方程 3(x-1)=9。（只填 x 的值）',
+    '解方程 5(x+2)-3(2x-1)=4。（只填 x 的值）',
+    '解方程 2x-3(x-1)=-2(x+1)+7。（只填 x 的值）'
+  ];
+  const q3 = V.genVariant('cnm_043', 5, { avoidPrompts: [] });
+  const q4 = V.genVariant('cnm_043', 5, { avoidPrompts: bankPrompts });
+  assert.deepStrictEqual(q3, q4, '非撞题时 avoidPrompts 不影响结果');
+});
+
+test('17 未支持 topic 的失败语义', () => {
+  assert.strictEqual(V.genVariant('cnm_045', 0), null);
+  assert.deepStrictEqual(V.variantSet('cnm_045', 0, 3), []);
+  // fillPractice 不抛错
+  const r = V.fillPractice([], 'cnm_045', 3, {});
+  assert.ok(r && r.list && r.list.length === 0);
+});
+
+test('18 共存策略：充足时不混变式', () => {
+  // bankPicks 已由 pickPracticeQuestions 排好序（basic→standard→advanced）
+  const bankPicks = [
+    { id: 'cnm_043_q2', topicId: 'cnm_043', difficulty: 'basic', type: 'numeric', prompt: 'q2', answer: '4' },
+    { id: 'cnm_043_q1', topicId: 'cnm_043', difficulty: 'standard', type: 'numeric', prompt: 'q1', answer: '3' },
+    { id: 'cnm_043_q3', topicId: 'cnm_043', difficulty: 'standard', type: 'numeric', prompt: 'q3', answer: '9' },
+    { id: 'cnm_043_q4', topicId: 'cnm_043', difficulty: 'advanced', type: 'numeric', prompt: 'q4', answer: '2' }
+  ];
+  const r = V.fillPractice(bankPicks, 'cnm_043', 3, { doneIds: [] });
+  assert.strictEqual(r.list.length, 3, '应返回 3 题');
+  assert.strictEqual(r.usedVariants, 0, '不应用变式');
+  // 全是题库题
+  r.list.forEach(function (q) { assert.ok(!q.variant, '应为题库题: ' + q.id); });
+  // 顺序与传入一致（basic 先）
+  assert.strictEqual(r.list[0].id, 'cnm_043_q2'); // basic 先
+});
+
+test('19 共存策略：耗尽后补位', () => {
+  const bankPicks = [
+    { id: 'cnm_043_q1', topicId: 'cnm_043', difficulty: 'standard', type: 'numeric', prompt: 'q1', answer: '3' },
+    { id: 'cnm_043_q2', topicId: 'cnm_043', difficulty: 'basic', type: 'numeric', prompt: 'q2', answer: '4' },
+    { id: 'cnm_043_q3', topicId: 'cnm_043', difficulty: 'standard', type: 'numeric', prompt: 'q3', answer: '9' },
+    { id: 'cnm_043_q4', topicId: 'cnm_043', difficulty: 'advanced', type: 'numeric', prompt: 'q4', answer: '2' }
+  ];
+  const allDone = ['cnm_043_q1', 'cnm_043_q2', 'cnm_043_q3', 'cnm_043_q4'];
+  const r = V.fillPractice(bankPicks, 'cnm_043', 3, { doneIds: allDone });
+  assert.strictEqual(r.list.length, 3, '应返回 3 题');
+  assert.strictEqual(r.usedVariants, 3, '应用 3 道变式');
+  r.list.forEach(function (q) { assert.ok(q.variant === true, '应全为变式: ' + q.id); });
+  const ids = new Set(r.list.map(function (q) { return q.id; }));
+  assert.strictEqual(ids.size, 3, 'id 互不相同');
+  assert.strictEqual(r.nextIndex, 3, 'nextIndex 应为 3');
+});
+
+test('20 无副作用 / 性能护栏', () => {
+  const beforeKeys = new Set(Object.keys(globalThis));
+  const t0 = Date.now();
+  for (let i = 0; i < 200; i++) {
+    V.genVariant('cnm_043', i);
+  }
+  const dt = Date.now() - t0;
+  assert.ok(dt < 500, '200 次生成应 < 500ms: ' + dt + 'ms');
+  const afterKeys = new Set(Object.keys(globalThis));
+  // 不应新增全局键（UMD 注册的除外）
+  const newKeys = Array.from(afterKeys).filter(function (k) { return !beforeKeys.has(k); });
+  assert.ok(newKeys.length === 0, '不应新增全局键: ' + JSON.stringify(newKeys));
+});
+
+} // end if (V)
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
