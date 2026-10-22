@@ -390,6 +390,39 @@
     };
   }
 
+  /* ------------------------------------------------------------------ 学习小结 */
+
+  /**
+   * 把诊断结论压缩成几行可复制的纯文本（孩子视角，不进练习轮）。
+   * sum: summarize() 的返回；nameOf(id) -> 知识点名。
+   * 规则：根因取前 2 个；无根因时看「不稳」；只有答错没判出根因时提示再测；
+   * 都没有时区分「已掌握」和「没测完」（前者要求 untested 为空，不能让答错过的点混进来）。
+   * 措辞对孩子说话，不出现"家长/陪孩子"等监督感内容。
+   */
+  function studentAdvice(sum, nameOf) {
+    const rootIds = sum.roots.slice(0, 2).map(function (r) { return r.id; });
+    const roots = rootIds.map(nameOf);
+    const lines = [];
+    if (roots.length) {
+      lines.push('卡点在：' + roots.join('、'));
+      lines.push('先练【' + roots[0] + '】' + (roots.length > 1 ? '，再练【' + roots[1] + '】' : '') +
+        '。练熟后回来再测一次，就能过关啦！');
+    } else if (sum.shaky.length) {
+      lines.push('有几个点还不太稳：' + sum.shaky.slice(0, 3).map(nameOf).join('、'));
+      lines.push('点「练习这 3 题」练熟它们，再测一次。');
+    } else if (sum.weak.length) {
+      lines.push('有几题答错了，卡点还没找出来。');
+      lines.push('多答几题找找卡点，或点「为什么错了」再讲一遍。');
+    } else if (!sum.untested.length) {
+      lines.push('都掌握啦，真棒！');
+      lines.push('可以进入下一个知识点，继续加油～');
+    } else {
+      lines.push('还有没测完的点。');
+      lines.push('继续作答，测完就能看到结果啦。');
+    }
+    return lines.join('\n');
+  }
+
   /* ------------------------------------------------------------------ 路径图布局 */
 
   /**
@@ -1024,6 +1057,7 @@
     replay: replay,
     statusOf: statusOf,
     summarize: summarize,
+    studentAdvice: studentAdvice,
     layout: layout,
     parseChapter: parseChapter,
     gradeRank: gradeRank,

@@ -1568,5 +1568,62 @@ test('pickPracticeQuestions：n 至少为 1（不会返回空列表给练习）'
   assert.strictEqual(E.pickPracticeQuestions(G_PRAC, 't1', 0, []).length, 1);
 });
 
+/* ------------------------------------------------------------ studentAdvice（学习小结） */
+function mkSum(extra) {
+  return Object.assign({
+    mode: 'target', targets: ['T'], asked: 3, limit: 10, finished: true, limitReached: false,
+    mastered: [], shaky: [], weak: [], unconfirmed: [], untested: [], roots: [], path: []
+  }, extra || {});
+}
+const sumName = (id) => ({ T: '目标', A: '移项', B: '去括号', C: '合并同类项' }[id] || id);
+
+test('studentAdvice：2 个根因给前两个名字并给补学建议', () => {
+  const s = mkSum({ roots: [{ id: 'A' }, { id: 'B' }], weak: ['A', 'B'] });
+  const text = E.studentAdvice(s, sumName);
+  assert.ok(text.indexOf('卡点在：移项、去括号') >= 0, text);
+  assert.ok(text.indexOf('【移项】') >= 0 && text.indexOf('【去括号】') >= 0, text);
+  assert.ok(text.indexOf('再测一次') >= 0, text);
+});
+
+test('studentAdvice：只有 1 个根因不强加第二个', () => {
+  const s = mkSum({ roots: [{ id: 'A' }], weak: ['A'] });
+  const text = E.studentAdvice(s, sumName);
+  assert.ok(text.indexOf('卡点在：移项') >= 0, text);
+  assert.ok(text.indexOf('【去括号】') < 0, text);
+});
+
+test('studentAdvice：无根因有不稳时给巩固建议', () => {
+  const s = mkSum({ shaky: ['C'] });
+  const text = E.studentAdvice(s, sumName);
+  assert.ok(text.indexOf('不太稳') >= 0 && text.indexOf('练习这 3 题') >= 0, text);
+});
+
+test('studentAdvice：有答错但没判出根因时提示再测', () => {
+  const s = mkSum({ weak: ['A'], roots: [] });
+  const text = E.studentAdvice(s, sumName);
+  assert.ok(text.indexOf('卡点还没找出来') >= 0 && text.indexOf('多答几题') >= 0, text);
+});
+
+test('studentAdvice：全部掌握时无需复习', () => {
+  const s = mkSum({ mastered: ['T'], untested: [] });
+  const text = E.studentAdvice(s, sumName);
+  assert.ok(text.indexOf('都掌握啦') >= 0, text);
+});
+
+test('studentAdvice：没测完时提示继续作答', () => {
+  const s = mkSum({ untested: ['C'] });
+  const text = E.studentAdvice(s, sumName);
+  assert.ok(text.indexOf('没测完') >= 0, text);
+});
+
+test('studentAdvice：文案不含"家长/陪孩子/建议："等监督感措辞', () => {
+  const withRoots = E.studentAdvice(mkSum({ roots: [{ id: 'A' }], weak: ['A'] }), sumName);
+  const allDone = E.studentAdvice(mkSum({ mastered: ['T'] }), sumName);
+  ['家长', '陪孩子', '建议：'].forEach(function (w) {
+    assert.ok(withRoots.indexOf(w) < 0, '有根因文案不应含 ' + w + ': ' + withRoots);
+    assert.ok(allDone.indexOf(w) < 0, '全掌握文案不应含 ' + w + ': ' + allDone);
+  });
+});
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

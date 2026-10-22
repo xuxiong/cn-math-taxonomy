@@ -353,6 +353,37 @@
       allRight ? '这个知识点练扎实了！' : '错了的题可以点开下方条目，用「为什么错了」再讲一遍。');
   }
 
+  /* ------------------------------------------------------------ 学习小结卡 */
+  function adviceCard(sum) {
+    const text = E.studentAdvice(sum, nameOf);
+    const lines = text.split('\n');
+    return h('div', { class: 'card', id: 'advice-summary' },
+      h('h2', { text: '接下来练什么' }),
+      lines.map(function (line) { return h('p', { style: 'margin:2px 0' }, line); }),
+      h('p', { class: 'no-print', style: 'margin-top:8px' },
+        h('button', { class: 'small', onclick: function (e) {
+          copyText(text);
+          const b = e.target;
+          b.textContent = '已复制 ✓';
+          setTimeout(function () { b.textContent = '复制小结'; }, 2000);
+        } }, '复制小结')));
+  }
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(function () { fallbackCopy(text); });
+    } else fallbackCopy(text);
+  }
+  function fallbackCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.append(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) { /* 隐私模式等 */ }
+    ta.remove();
+  }
+
   /* ------------------------------------------------------------ 开始页 */
   function stageButton(value, label) {
     return h('button', {
@@ -971,6 +1002,7 @@
     if (demo) page.append(demoBanner());
     const pracBanner = practiceResultBanner();
     if (pracBanner) page.append(pracBanner);
+    else page.append(adviceCard(sum));
 
     const targetsMastered = session.targets.every(function (id) { return E.statusOf(session, id) === 'mastered'; });
     const chapters = screen ? E.chapterSummary(D.graph, session) : null;
