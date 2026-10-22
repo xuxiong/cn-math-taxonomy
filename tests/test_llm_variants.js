@@ -744,6 +744,56 @@ testAsync('probeFunctionCalling：HTTP 200 但含 error 字段 -> false', async 
   } finally { globalThis.fetch = real; LLMV._resetProbe(); }
 });
 
+/* O3-5 回归：探测请求体不含 max_tokens（或 >=512），防止 100 token 截断 tool_calls */
+testAsync('probeFunctionCalling：探测请求体不含 max_tokens 或 >=512（防截断）', async () => {
+  LLMV._resetProbe();
+  let capturedBody = null;
+  const real = globalThis.fetch;
+  globalThis.fetch = function (url, opts) {
+    capturedBody = JSON.parse(opts.body);
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: 'ok' } }] }); } });
+  };
+  try {
+    await LLMV.probeFunctionCalling();
+    assert.ok(capturedBody, '应捕获到请求体');
+    // max_tokens 不存在 或 >=512（行为契约：不能用小值截断 tool_calls arguments）
+    assert.ok(!('max_tokens' in capturedBody) || capturedBody.max_tokens >= 512,
+      '探测请求体不应含 max_tokens 或应 >=512: ' + JSON.stringify({ max_tokens: capturedBody.max_tokens }));
+    // 探测必须带 tools 字段（否则探测无意义）
+    assert.ok(Array.isArray(capturedBody.tools) && capturedBody.tools.length >= 1,
+      '探测请求体应带 tools 字段: ' + JSON.stringify(capturedBody.tools));
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+/* O3-5 回归：HTTP 500 → false（原仅测 400，补 500 覆盖非 200 全系） */
+testAsync('probeFunctionCalling：HTTP 500 -> false', async () => {
+  LLMV._resetProbe();
+  const real = globalThis.fetch;
+  globalThis.fetch = function () { return Promise.resolve({ ok: false, status: 500 }); };
+  try {
+    const supports = await LLMV.probeFunctionCalling();
+    assert.strictEqual(supports, false, 'HTTP 500 应返回 false: ' + supports);
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+/* O3-5 回归：probeGateway 请求体不含 max_tokens（GET /v1/models，无 body） */
+testAsync('probeGateway：请求为 GET /v1/models，无 max_tokens 截断风险', async () => {
+  LLMV._resetProbe();
+  let capturedOpts = null;
+  let capturedUrl = null;
+  const real = globalThis.fetch;
+  globalThis.fetch = function (url, opts) {
+    capturedUrl = url;
+    capturedOpts = opts;
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ data: [] }); } });
+  };
+  try {
+    await LLMV.probeGateway();
+    assert.ok(String(capturedUrl).indexOf('/models') >= 0, '应请求 /v1/models: ' + capturedUrl);
+    assert.ok(!capturedOpts || !capturedOpts.body, 'GET 请求不应有 body（无 max_tokens 风险）');
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
 testAsync('probeFunctionCalling：缓存 5 分钟过期后自动重探', async () => {
   LLMV._resetProbe();
   let now = 1000000;
