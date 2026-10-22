@@ -110,6 +110,17 @@
       .catch(function () { return { text: null, from: 'offline' }; });
   }
 
+  /** reveal 里声明的最终解值是否与标准答案一致（O2）。
+   *  true/false 都是明确结论，null 表示无法判断（答案非数值 / reveal 没给明确解值）。 */
+  function checkReveal(q, steps) {
+    const ref = q && q.answer;
+    const E = global.DiagEngine;
+    if (!ref || !E || typeof E.verifyReveal !== 'function') return { ok: null, reason: 'no-verifier' };
+    let reveal = '';
+    for (let i = 0; i < steps.length; i++) if (steps[i].kind === 'reveal') { reveal = steps[i].text; break; }
+    return E.verifyReveal(reveal, ref);
+  }
+
   async function llmSteps(topic, q, userAnswer) {
     const body = {
       model: MODEL,
@@ -130,6 +141,8 @@
     const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
     const steps = parseSteps(content);
     if (!steps) throw new Error('llm bad json');
+    // 数值校验：reveal 的最终解值与标准答案不一致就整轮作废（抛错 -> generate 回退静态讲解）
+    if (checkReveal(q, steps).ok === false) throw new Error('llm reveal mismatch');
     return steps;
   }
 
@@ -149,7 +162,7 @@
         if (qid) cache.set(qid, { ts: Date.now(), steps: steps, from: 'llm' });
         return { steps: steps, from: 'llm' };
       })
-      .catch(() => ({ steps: fallback, from: 'static' }));   // 网关挂了就用静态版
+      .catch(() => ({ steps: fallback, from: 'static' }));   // 网关挂了 / reveal 数值校验没过，都用静态版
   }
 
   global.Explain = {

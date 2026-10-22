@@ -1959,5 +1959,178 @@ test('20 无副作用 / 性能护栏', () => {
 
 } // end if (V)
 
-console.log('\n' + passed + ' passed, ' + failed + ' failed');
-process.exit(failed ? 1 : 0);
+/* ------------------------------------------------------------ O2：讲解 reveal 数值校验
+ * 讲解文本由 LLM 全文生成，偶发算错会直接教错。校验只做一件事：
+ * 把 reveal 里“明确声明的最终解值”抽出来，与标准答案做数值等价比较。
+ * 拿不准（无可比对声明 / 答案不是数值）时返回 ok:null，绝不误杀正常讲解。
+ */
+
+test('numericEqual：分数与小数互认（1/3 ≈ 0.333、0.5 = 1/2）', () => {
+  assert.strictEqual(E.numericEqual('1/3', '0.333'), true);
+  assert.strictEqual(E.numericEqual('0.5', '1/2'), true);
+  assert.strictEqual(E.numericEqual('2', '4/2'), true);
+});
+
+test('numericEqual：0.33 与 1/3 不算等价（误差超出舍入容差）', () => {
+  assert.strictEqual(E.numericEqual('0.33', '1/3'), false);
+});
+
+test('numericEqual：符号与括号归一（-3、−3、（-3）同一值）', () => {
+  assert.strictEqual(E.numericKey('-3'), E.numericKey('−3'));
+  assert.strictEqual(E.numericKey('（-3）'), E.numericKey('-3'));
+  assert.strictEqual(E.numericEqual('-3', '−3'), true);
+  assert.strictEqual(E.numericEqual('-3', '3'), false);
+});
+
+test('numericEqual：无法解析的文本返回 null（不做判断）', () => {
+  assert.strictEqual(E.numericKey('x=3'), null);
+  assert.strictEqual(E.numericEqual('三', '3'), null);
+});
+
+test('verifyReveal：reveal 给出正确解值 -> ok', () => {
+  const v = E.verifyReveal('去括号得2x-6=4-x-1，移项合并得3x=9，所以x=3。', '3');
+  assert.strictEqual(v.ok, true, JSON.stringify(v));
+});
+
+test('verifyReveal：方程中间步骤不算解值（2x=6 不等于 x=6）', () => {
+  const v = E.verifyReveal('由2x=6，两边同除以2，所以x=3。', '3');
+  assert.strictEqual(v.ok, true, JSON.stringify(v));
+});
+
+test('verifyReveal：中途一步的赋值不算解值（得x=6 不代表答案是错的）', () => {
+  const v = E.verifyReveal('解析：17-5=12，2x=12，得x=6。', '12');
+  assert.strictEqual(v.ok, true, JSON.stringify(v));   // 12 作为算式的右边出现 -> 判对，不误杀
+});
+
+test('verifyReveal：待解的方程右边不当成答案（3x=3 里的 3 不能替 x=1 顶罪）', () => {
+  const v = E.verifyReveal('移项合并得3x=3，所以x=1。', '3');
+  assert.strictEqual(v.ok, false, JSON.stringify(v));
+});
+
+test('verifyReveal：reveal 给出错值 -> 判为不一致', () => {
+  const v = E.verifyReveal('移项合并得3x=3，所以x=1。', '3');
+  assert.strictEqual(v.ok, false, JSON.stringify(v));
+  assert.ok(v.expected.indexOf('3/1') >= 0, JSON.stringify(v));
+});
+
+test('verifyReveal：负号不能漏（参考 -3，写 x=3 判错）', () => {
+  assert.strictEqual(E.verifyReveal('所以x=-3。', '-3').ok, true);
+  assert.strictEqual(E.verifyReveal('所以x=3。', '-3').ok, false);
+});
+
+test('verifyReveal：± 参考答案接受正负两解，其他值仍判错', () => {
+  assert.strictEqual(E.verifyReveal('所以x=3或x=-3。', '±3').ok, true);
+  assert.strictEqual(E.verifyReveal('所以x=3。', '±3').ok, true);
+  assert.strictEqual(E.verifyReveal('所以x=5。', '±3').ok, false);
+  assert.strictEqual(E.verifyReveal('所以x=3。', 'x=±3').ok, true);
+  assert.strictEqual(E.verifyReveal('所以x=2。', 'x=±3').ok, false);
+});
+
+test('verifyReveal：无序多解按集合比较（顺序无关，集合外判错）', () => {
+  assert.strictEqual(E.verifyReveal('所以x=3或x=2。', '2，3').ok, true);
+  assert.strictEqual(E.verifyReveal('所以x=2或x=5。', '2，3').ok, false);
+});
+
+test('verifyReveal：分数与小数写法不同但等价', () => {
+  assert.strictEqual(E.verifyReveal('所以x=0.5。', '1/2').ok, true);
+  assert.strictEqual(E.verifyReveal('所以x=1/2。', '0.5').ok, true);
+});
+
+test('verifyReveal：不同变量各对各（x=3，y=2）', () => {
+  assert.strictEqual(E.verifyReveal('所以x=3，y=2。', 'x=3，y=2').ok, true);
+  assert.strictEqual(E.verifyReveal('所以x=2，y=3。', 'x=3，y=2').ok, false);
+});
+
+test('verifyReveal：单位冲突判错，单位一致判对', () => {
+  assert.strictEqual(E.verifyReveal('答案是3cm。', '3cm').ok, true);
+  assert.strictEqual(E.verifyReveal('答案是3m。', '3cm').ok, false);
+});
+
+test('verifyReveal：reveal 没有明确解值 -> ok:null（不误判）', () => {
+  const v = E.verifyReveal('先想想移项要变号，再合并同类项。', '3');
+  assert.strictEqual(v.ok, null, JSON.stringify(v));
+});
+
+test('verifyReveal：参考答案不是数值（字母/文字）-> ok:null', () => {
+  assert.strictEqual(E.verifyReveal('选B，因为移项要变号。', 'B').ok, null);
+});
+
+/* ---------------- 与 explain.js 的集成：reveal 校验失败整轮回退静态讲解 ---------------- */
+
+function loadExplain() {
+  const g = globalThis;
+  g.window = g;
+  g.DiagEngine = E;
+  delete require.cache[require.resolve('../diagnose/explain.js')];
+  require('../diagnose/explain.js');
+  return g.Explain;
+}
+
+function mockLLM(revealText) {
+  const body = { choices: [{ message: { content: JSON.stringify({ prompt: '先想想第一步？', hint: '移项要变号。', reveal: revealText }) } }] };
+  const real = globalThis.fetch;
+  globalThis.fetch = function () { return Promise.resolve({ ok: true, json: function () { return Promise.resolve(body); } }); };
+  return function () { globalThis.fetch = real; };
+}
+
+const asyncTests = [];
+function testAsync(name, fn) { asyncTests.push({ name: name, fn: fn }); }
+
+testAsync('Explain.generate：reveal 数值正确 -> from=llm', async () => {
+  const X = loadExplain();
+  X._cache.clear();
+  const q = { id: 'o2-ok', type: 'numeric', prompt: '解方程 2(x-3)=4-(x+1)。', answer: '3' };
+  const restore = mockLLM('去括号得2x-6=4-x-1，移项合并得3x=9，所以x=3。');
+  try {
+    const r = await X.generate(T_A, q, '1');
+    assert.strictEqual(r.from, 'llm');
+    assert.strictEqual(r.steps.length, 3);
+    assert.ok(r.steps[2].text.indexOf('x=3') >= 0);
+  } finally { restore(); }
+});
+
+testAsync('Explain.generate：reveal 数值算错 -> 整轮回退静态讲解（from=static）', async () => {
+  const X = loadExplain();
+  X._cache.clear();
+  const q = { id: 'o2-bad', type: 'numeric', prompt: '解方程 2(x-3)=4-(x+1)。', answer: '3' };
+  const wrong = '去括号得2x-6=4-x-1，移项合并得3x=3，所以x=1。';
+  const restore = mockLLM(wrong);
+  try {
+    const r = await X.generate(T_A, q, '1');
+    assert.strictEqual(r.from, 'static');
+    assert.deepStrictEqual(r.steps, E.socraticSteps(T_A, q));
+    assert.ok(r.steps[2].text.indexOf(wrong.slice(-4)) < 0, '错值讲解不能留在 steps 里');
+  } finally { restore(); }
+});
+
+testAsync('Explain.generate：网关异常仍回退静态（契约不变：永不 reject）', async () => {
+  const X = loadExplain();
+  X._cache.clear();
+  const q = { id: 'o2-offline', type: 'numeric', prompt: 'x+2=5', answer: '3' };
+  const real = globalThis.fetch;
+  globalThis.fetch = function () { return Promise.reject(new Error('econnrefused')); };
+  try {
+    const r = await X.generate(T_A, q, '1');
+    assert.strictEqual(r.from, 'static');
+  } finally { globalThis.fetch = real; }
+});
+
+testAsync('Explain.generate：reveal 无可比对数值 -> 保留 llm（不误杀）', async () => {
+  const X = loadExplain();
+  X._cache.clear();
+  const q = { id: 'o2-noclaim', type: 'numeric', prompt: 'x+2=5', answer: '3' };
+  const restore = mockLLM('先看未知数在哪一边，再想要不要移项。');
+  try {
+    const r = await X.generate(T_A, q, '1');
+    assert.strictEqual(r.from, 'llm');
+  } finally { restore(); }
+});
+
+(async function () {
+  for (const t of asyncTests) {
+    try { await t.fn(); passed++; console.log('  ok   ' + t.name); }
+    catch (e) { failed++; console.log('  FAIL ' + t.name + '\n       ' + (e && e.stack || e).split('\n').slice(0, 4).join('\n       ')); }
+  }
+  console.log('\n' + passed + ' passed, ' + failed + ' failed');
+  process.exit(failed ? 1 : 0);
+})();

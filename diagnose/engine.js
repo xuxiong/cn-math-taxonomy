@@ -962,6 +962,208 @@
     }
   }
 
+  /* -------------------------------------------------- 讲解 reveal 数值校验（O2）
+   * 讲解由 LLM 全文生成，偶发算错会直接教错。这里只做一件事：把 reveal 里
+   * “明确声明的最终解值”抽出来，跟标准答案做数值等价比较。
+   * 判不准（没有明确声明 / 答案不是数值）一律 ok:null —— 宁可放过，不可误杀正常讲解。
+   */
+
+  const EQ_TOL = 1e-3;   // 1/3 与 0.333 这类三位小数舍入视为同一值；绝对容差，避免 1000/1001 判等
+
+  function keyValue(key) {
+    const i = key.indexOf('/');
+    return Number(key.slice(0, i)) / Number(key.slice(i + 1));
+  }
+
+  /** 两个已归一的数值键是否等值（精确相同，或在舍入容差内）。 */
+  function keyEqual(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const x = keyValue(a), y = keyValue(b);
+    if (!isFinite(x) || !isFinite(y)) return false;
+    return Math.abs(x - y) <= EQ_TOL;
+  }
+
+  /** 分数/小数/整数/带符号/带括号 -> 最简分数键 "n/d"；解析失败返回 null。 */
+  function numericKey(text) {
+    const n = parseNumeric(normalizeText(text));
+    return n ? n.key : null;
+  }
+
+  /** 两个数值文本是否等价；任一侧不可解析返回 null（不做判断）。 */
+  function numericEqual(a, b) {
+    const ka = numericKey(a), kb = numericKey(b);
+    if (!ka || !kb) return null;
+    return keyEqual(ka, kb);
+  }
+
+  function negateKey(key) {
+    const i = key.indexOf('/');
+    const num = key.slice(0, i);
+    return (num.charAt(0) === '-' ? num.slice(1) : '-' + num) + key.slice(i);
+  }
+
+  // 解值声明的结束符：遇到这些就认为这个值写完了
+  const VALUE_STOP = /[，。；、,;:：\n\t或和与及()（）\[\]【】]/;
+  // 只认"强结论位置"的赋值：中间步骤（17-5=12、2x=12、得x=6）里的赋值不算解值声明。
+  // 弱标记（得/得到/得出/解得）故意不收：分不清是中途一步还是最终解，宁可放过不误杀。
+  const CONCLUSION = /(?:所以|因此|故|即|最后|综上|答案|最终|结果)/;
+
+  function claimValueKeys(raw) {
+    if (!raw) return null;
+    let t = raw;
+    let both = false;
+    if (t.charAt(0) === '±') { both = true; t = t.slice(1); }
+    const n = parseNumeric(t);
+    if (!n) return null;
+    const keys = [n.key];
+    if (both) keys.push(negateKey(n.key));
+    return { keys: keys, unit: n.unit };
+  }
+
+  /**
+   * 从自由文本里抽取“解值声明”：
+   *   x=3 / 所以x=-1/2 / 所以 x=±3      -> 带变量的声明（要落在结论位置）
+   *   答案：3 / 正确答案是 2 或 -2      -> 不带变量的声明
+   * 方程形态（2x=6、4-x=1）不算声明——那里的 x 前面紧挨着系数或负号。
+   */
+  function solutionClaims(text) {
+    const raw = String(text == null ? '' : text);
+    if (!raw) return [];
+    const claims = [];
+    raw.split(/[。；;\n]/).forEach(function (rawSeg) {
+      if (!rawSeg) return;
+      const seg = normalizeText(rawSeg);
+      const re = /([a-z])=/g;
+      let m;
+      while ((m = re.exec(seg)) !== null) {
+        const before = m.index > 0 ? seg.charAt(m.index - 1) : '';
+        if (/[0-9a-z*\/^+\-.=]/.test(before)) { re.lastIndex = m.index + 1; continue; }
+        const concluding = CONCLUSION.test(seg.slice(0, m.index));
+        let i = m.index + 2;
+        let raw = '';
+        while (i < seg.length && !VALUE_STOP.test(seg.charAt(i)) && raw.length < 24) { raw += seg.charAt(i); i++; }
+        const cv = claimValueKeys(raw);
+        if (cv && concluding) claims.push({ variable: m[1], raw: m[1] + '=' + raw, keys: cv.keys, unit: cv.unit });
+        re.lastIndex = i;
+      }
+      // 在原文里找标记：normalizeText 会剥掉段首「答案:」，所以在原文上定位、只归一化值本身
+      const am = /(?:参考答案|正确答案|答案)/.exec(rawSeg);
+      if (am) {
+        const rest = normalizeText(rawSeg.slice(am.index + am[0].length)).replace(/^[是为等于:：]+/, '');
+        rest.split(/[或,]/).forEach(function (tok) {
+          const cv = claimValueKeys(tok.trim());
+          if (cv) claims.push({ variable: '', raw: tok.trim(), keys: cv.keys, unit: cv.unit });
+        });
+      }
+    });
+    return claims;
+  }
+
+  /** ±3 展开成 3或-3（x=±3 展开成 x=3或x=-3），好让两侧都当两个解处理。 */
+  function expandPlusMinus(text) {
+    return String(text == null ? '' : text)
+      .replace(/([a-z])=±\s*([^，,;；或和与及]+)/g, '$1=$2或$1=-$2')
+      .replace(/±\s*([^，,;；或和与及]+)/g, '$1或-$1');
+  }
+
+  // 等号左边是"算式"（含运算符）时的右边值：a+b=3、17-5=12 这类真正的计算结果。
+  // 左边是 3x、x 这种单项式时不算——那多半是"待解的方程"，不是最终答案。
+  const LHS_OP = /[+\-*\/×÷·±]/;
+  const SEG_SEP = /[，。；、,;:：\n\t]/;
+
+  function computedValues(text) {
+    const raw = String(text == null ? '' : text);
+    if (!raw) return [];
+    const out = [];
+    raw.split(/[。；;\n]/).forEach(function (rawSeg) {
+      const seg = normalizeText(rawSeg);
+      const re = /=/g;
+      let m;
+      while ((m = re.exec(seg)) !== null) {
+        // 左式只回看到上一个分隔符为止，别把上一句的算式算进来
+        let k = m.index - 1;
+        while (k >= 0 && !SEG_SEP.test(seg.charAt(k))) k--;
+        const lhs = seg.slice(k + 1, m.index);
+        let j = m.index + 1;
+        let token = '';
+        while (j < seg.length && !VALUE_STOP.test(seg.charAt(j)) && token.length < 24) { token += seg.charAt(j); j++; }
+        const cv = LHS_OP.test(lhs) ? claimValueKeys(token) : null;
+        if (cv) out.push({ variable: '', raw: token, keys: cv.keys, unit: cv.unit });
+        re.lastIndex = j;
+      }
+    });
+    return out;
+  }
+
+  function claimMatches(claim, key, target) {
+    if (!keyEqual(key, target.key)) return false;
+    return !(claim.unit.name && target.unit.name && claim.unit.name !== target.unit.name);
+  }
+
+  function claimHits(c, refParts, byVar) {
+    const targets = (c.variable && byVar[c.variable]) ? byVar[c.variable] : refParts;
+    return c.keys.some(function (k) {
+      return targets.some(function (t) { return claimMatches(c, k, t); });
+    });
+  }
+
+  /**
+   * 参考答案切分：先按顶层分隔符切（保住坐标 (1,2) 里的逗号），再各自归一化解析。
+   * 不走 parseAnswer：normalizeText 的千分位归一会把「40，130」这样的多解答案并成 40130。
+   */
+  function referenceParts(rawAnswer) {
+    const parts = [];
+    splitTop(expandPlusMinus(rawAnswer), ',;，；、').forEach(function (chunk) {
+      String(chunk).split(/或者|或|和|与|及/).forEach(function (tok) {
+        const n = normalizeText(tok).trim();
+        if (n) parts.push(analyzePart(n));
+      });
+    });
+    return parts;
+  }
+
+  /**
+   * 校验讲解 reveal 的最终解值与标准答案是否一致。
+   * 返回 {ok: true|false|null, reason, claim?, expected?}：
+   *   true  —— 说明里给出的解值与答案等值
+   *   false —— 给出的解值都对不上答案（调用方应整轮回退静态讲解）
+   *   null  —— 无法判断（无答案 / 答案非数值 / reveal 没给明确解值），照用 llm
+   * 单解答案用"任一命中即对"（同一步里常先写中途参数再写结果，不能因为参数对不上就枪毙）；
+   * 多解答案按集合比，声明值必须全部落在答案集合里，不要求写全、不要求顺序。
+   */
+  function verifyReveal(revealText, referenceAnswer) {
+    const parts = referenceParts(referenceAnswer);
+    if (!parts.length) return { ok: null, reason: 'no-reference' };
+    const refParts = parts.filter(function (p) { return p.kind === 'num' || p.kind === 'tuple'; });
+    if (refParts.length !== parts.length) return { ok: null, reason: 'non-numeric' };
+    const claims = solutionClaims(revealText);
+    const byVar = Object.create(null);   // 同一变量可能有多个解（x=3 或 x=-3）
+    refParts.forEach(function (p) {
+      if (!p.variable) return;
+      if (!byVar[p.variable]) byVar[p.variable] = [];
+      byVar[p.variable].push(p);
+    });
+    const expected = refParts.map(function (p) { return p.variable ? p.variable + '=' + p.key : p.key; });
+
+    if (refParts.length === 1) {
+      const candidates = claims.concat(computedValues(revealText));
+      if (!candidates.length) return { ok: null, reason: 'no-claim' };
+      for (let i = 0; i < candidates.length; i++) {
+        if (claimHits(candidates[i], refParts, byVar)) return { ok: true, reason: 'match', claims: candidates.length };
+      }
+      return { ok: false, reason: 'mismatch', claim: candidates[0].raw, expected: expected };
+    }
+
+    if (!claims.length) return { ok: null, reason: 'no-claim' };
+    for (let i = 0; i < claims.length; i++) {
+      if (!claimHits(claims[i], refParts, byVar)) {
+        return { ok: false, reason: 'mismatch', claim: claims[i].raw, expected: expected };
+      }
+    }
+    return { ok: true, reason: 'match', claims: claims.length };
+  }
+
   /** 取解析的一个安全线索：第一句里到第一个逗号为止（不含后续步骤，避免 hint 泄露答案）。 */
   function firstClueOf(expl) {
     const str = String(expl || '').trim();
@@ -1063,6 +1265,10 @@
     gradeRank: gradeRank,
     resolveTargets: resolveTargets,
     normalizeText: normalizeText,
+    numericKey: numericKey,
+    numericEqual: numericEqual,
+    solutionClaims: solutionClaims,
+    verifyReveal: verifyReveal,
     judgeAnswer: judgeAnswer
   };
 });
