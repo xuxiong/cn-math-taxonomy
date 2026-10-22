@@ -2,11 +2,13 @@
 (function () {
   'use strict';
   const E = window.DiagEngine;
+  const V = window.DiagVariants;
   const LS_SESSION = 'cnmDiagnose.session.v2';
   const LS_SESSION_EN = 'cneDiagnose.session.v2';
   const LS_SETTINGS = 'cnmDiagnose.settings.v2';
   const LS_SEEN = 'cnmDiagnose.seen.v1';
   const LS_PRAC = 'cnmDiagnose.practiced.v1';   // T3 练习记录 {topicId: 最近练习时间戳}
+  const LS_VSEQ = 'cnmDiagnose.variantSeq.v1';  // O1 变式序号 {topicId: nextIndex}
   const LIMIT_MIN = 8, LIMIT_MAX = 30;
   const SCREEN_MIN = 20, SCREEN_MAX = 60;
   const GRADES = '一二三四五六七八九'.split('');
@@ -318,21 +320,36 @@
   }
   function practicedMap() { const v = lsGet(LS_PRAC); return v && typeof v === 'object' ? v : {}; }
   function markPracticed(topicId) { const o = practicedMap(); o[topicId] = Date.now(); lsSet(LS_PRAC, o); }
+  function variantSeqMap() { const v = lsGet(LS_VSEQ); return v && typeof v === 'object' ? v : {}; }
   function startPractice(topicId) {
-    const list = E.pickPracticeQuestions(D.graph, topicId, 3, seenList());
-    if (!list.length) { alert('这个知识点暂时没有练习题。'); return; }
-    prac = { topicId: topicId, list: list, idx: 0, pact: [] };
+    var bankPicks = E.pickPracticeQuestions(D.graph, topicId, 3, seenList());
+    var seqMap = variantSeqMap();
+    var startIndex = seqMap[topicId] || 0;
+    var bankPrompts = (D.graph.bank[topicId] || []).map(function (q) { return q.prompt; });
+    var fp = V.fillPractice(bankPicks, topicId, 3, {
+      doneIds: seenList(),
+      avoidPrompts: bankPrompts,
+      startIndex: startIndex
+    });
+    if (!fp.list.length) { alert('这个知识点暂时没有练习题。'); return; }
+    prac = { topicId: topicId, list: fp.list, idx: 0, pact: [], usedVariants: fp.usedVariants, nextIndex: fp.nextIndex };
     pracResult = null;
     resetUi();
     render();
   }
   function practiceNext(result) {
     prac.pact.push(result);
+    markSeen(prac.list[prac.idx].id);   // §6.4：练习题也记 seen，下次不重复
     prac.idx++;
     if (prac.idx >= prac.list.length) {
       const ok = prac.pact.filter(function (r) { return r === 'correct'; }).length;
       markPracticed(prac.topicId);
-      pracResult = { topicId: prac.topicId, ok: ok, n: prac.pact.length };
+      if (prac.usedVariants > 0) {   // 存回变式序号，下次从新序号继续
+        var seqMap = variantSeqMap();
+        seqMap[prac.topicId] = prac.nextIndex;
+        lsSet(LS_VSEQ, seqMap);
+      }
+      pracResult = { topicId: prac.topicId, ok: ok, n: prac.pact.length, usedVariants: prac.usedVariants || 0 };
       prac = null;
       resetUi();
       renderResult();   // 回到结果页
@@ -348,8 +365,10 @@
     if (!pracResult) return null;
     const t = D.graph.byId[pracResult.topicId];
     const allRight = pracResult.ok === pracResult.n;
+    const vCount = pracResult.usedVariants || 0;
     return h('div', { class: 'banner ' + (allRight ? 'ok' : ''), style: 'margin-bottom:12px' },
-      '练习完成：' + (t ? t.name : '') + ' 共 ' + pracResult.n + ' 题，答对 ' + pracResult.ok + ' 题。',
+      '练习完成：' + (t ? t.name : '') + ' 共 ' + pracResult.n + ' 题，答对 ' + pracResult.ok + ' 题。' +
+        (vCount > 0 ? '其中变式 ' + vCount + ' 道。' : ''),
       allRight ? '这个知识点练扎实了！' : '错了的题可以点开下方条目，用「为什么错了」再讲一遍。');
   }
 
@@ -633,7 +652,8 @@
       h('div', { class: 'row small', style: 'margin:2px 0' },
         h('span', { class: 'tag diff-' + q.difficulty, text: DIFF_LABEL[q.difficulty] || q.difficulty }),
         h('span', { class: 'tag', text: TYPE_LABEL[q.type] || q.type }),
-        h('span', { class: 'tag', text: pr ? '练习第 ' + (prac.idx + 1) + ' 题' : '本知识点第 ' + item.attempt + ' 题' })),
+        h('span', { class: 'tag', text: pr ? '练习第 ' + (prac.idx + 1) + ' 题' : '本知识点第 ' + item.attempt + ' 题' }),
+        q.variant ? h('span', { class: 'tag', text: '变式' }) : null),
       h('div', { class: 'reason', text: pr ? '针对性练习（不进诊断结果）。做完自动判定对错，答错可以点「为什么错了」看讲解。' : reasonFor(item) }),
       h('div', { class: 'q-text', id: 'q-text', text: q.prompt }));
     const stemFig = figureEl(q.figure);
