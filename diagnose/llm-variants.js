@@ -27,9 +27,13 @@
   var POOL_MAX = 50;
   var EPS = 1e-9;
 
-  /* 试点族 recipe：当前仅 cnm_221（配方法） */
+  /* LLM 变式 recipe：族 = 知识点 id → 形态配置。
+   * cnm_221 配方法 / cnm_222 公式法 / cnm_224 因式分解法（同为"解二次方程"，答案=两根）。
+   * verifyType 由 prompt 侧指定：equation（代入验根）为主；配方加常数/formParam 为配方法特有。 */
   var RECIPES = {
-    'cnm_221': { difficulties: ['basic', 'standard', 'advanced'] }
+    'cnm_221': { difficulties: ['basic', 'standard', 'advanced'] },
+    'cnm_222': { difficulties: ['basic', 'standard', 'advanced'] },
+    'cnm_224': { difficulties: ['basic', 'standard', 'advanced'] }
   };
 
   /* ================================================================
@@ -427,6 +431,26 @@
   }
 
   /**
+   * 族方法词校验：题面必须体现该知识点的方法（防"练公式法却题面写配方法"）。
+   * cnm_221 basic(completeSquare) 的题面是"需要加上的常数是多少"，没有"配方"二字，
+   * 但题型本身即配方，故放行。
+   * @param {string} topicId
+   * @param {string} difficulty
+   * @param {object} candidate
+   * @returns {boolean}
+   */
+  function _methodWordMatches(topicId, difficulty, candidate) {
+    var fam = FAMILY[topicId];
+    if (!fam || !fam.methodWords || fam.methodWords.length === 0) return true;
+    if (topicId === 'cnm_221' && difficulty === 'basic') return true;
+    var text = String((candidate && (candidate.prompt || '')) || '');
+    for (var i = 0; i < fam.methodWords.length; i++) {
+      if (text.indexOf(fam.methodWords[i]) >= 0) return true;
+    }
+    return false;
+  }
+
+  /**
    * 解析答案中的根值列表（支持多解、±、根式）。
    * @param {string} answer
    * @returns {number[]|null}
@@ -447,42 +471,103 @@
   }
 
   /* ================================================================
-   * prompt 模板（§4）
+   * prompt 模板（§4）——按族（知识点）参数化：family 描述 + 三档难度指令 + answer 格式。
    * ================================================================ */
 
-  function _systemPrompt() {
-    return '你是人教版初中数学出题老师。请按照要求出一道「配方法」练习题。'
-      + '\n\n要求：'
-      + '\n1. 题目必须是「用配方法解一元二次方程」或「配方相关」的数值题。'
-      + '\n2. 系数必须是整数，判别式必须非负（保证有实数根）。'
-      + '\n3. 答案如果是根式（如 2±√5），判别式不能是完全平方数。'
-      + '\n4. 答案如果是有理数（如 1，-7），判别式必须是完全平方数。'
-      + '\n5. 不要照抄任何已有题目，每次用不同的系数。'
+  /* 各族的 system 指令与分档 user 指令。
+   * 族名：cnm_221 配方法 / cnm_222 公式法 / cnm_224 因式分解法 */
+  var FAMILY = {
+    'cnm_221': {
+      methodWords: ['配方'],
+      system: '你是人教版初中数学出题老师。请按照要求出一道「配方法」练习题。'
+        + '\n\n要求：'
+        + '\n1. 题目必须是「用配方法解一元二次方程」或「配方相关」的数值题。'
+        + '\n2. 系数必须是整数，判别式必须非负（保证有实数根）。'
+        + '\n3. 答案如果是根式（如 2±√5），判别式不能是完全平方数。'
+        + '\n4. 答案如果是有理数（如 1，-7），判别式必须是完全平方数。'
+        + '\n5. 不要照抄任何已有题目，每次用不同的系数。',
+      difficulty: {
+        basic: '出一道基础题：给定一个二次多项式 x²+bx，问"需要加上的常数是多少"。'
+          + '\n答案格式：一个整数（即 (b/2)²）。'
+          + '\nverifyType: "completeSquare"'
+          + '\n难度: basic',
+        advanced: '出一道进阶题，从以下两种中选一种：'
+          + '\nA) 二次项系数≠1的配方：如 "把 2x²-8x+1=0 配方成 2(x-m)²=n，依次求 m 与 n"'
+          + '\n   答案格式：如 "2，7"，verifyType: "formParam"'
+          + '\nB) 判别式非完全平方的解方程：如 "用配方法解 x²-4x-1=0"'
+          + '\n   答案格式：如 "2±√5"，verifyType: "equation"'
+          + '\n难度: advanced',
+        standard: '出一道标准题：用配方法解一个一元二次方程 x²+bx+c=0（b 为偶数，使配方干净）。'
+          + '\n要求判别式为完全平方数（答案是有理数），两个根用逗号隔开。'
+          + '\n答案格式：如 "1，-7"'
+          + '\nverifyType: "equation"'
+          + '\n难度: standard'
+      }
+    },
+    'cnm_222': {
+      methodWords: ['公式法'],
+      system: '你是人教版初中数学出题老师。请按照要求出一道「公式法（求根公式）解一元二次方程」练习题。'
+        + '\n\n要求：'
+        + '\n1. 题目必须是「用公式法解一元二次方程 ax²+bx+c=0」的数值题，a≠0，a/b/c 均为整数。'
+        + '\n2. 判别式 Δ=b²-4ac 必须非负（保证有实数根）；结果必须是有限小数或分数（不能有根式）。'
+        + '\n3. 优先选 Δ 是完全平方数（答案是有理数）；也可选 Δ 为正的非完全平方数但答案写成小数。'
+        + '\n4. 不要照抄任何已有题目，每次用不同的系数。',
+      difficulty: {
+        basic: '出一道基础题：a=1 且 Δ 为完全平方数（两个根都是整数），如 "用公式法解 x²-7x+12=0"。'
+          + '\n答案格式：两个根用逗号隔开，如 "3，4"'
+          + '\nverifyType: "equation"'
+          + '\n难度: basic',
+        advanced: '出一道进阶题：a≠1 且 Δ 为完全平方数（根可以含分母），如 "用公式法解 2x²-3x-2=0"。'
+          + '\n答案格式：两个根用逗号隔开，分数写成 "a/b" 形式，如 "2，-1/2"'
+          + '\nverifyType: "equation"'
+          + '\n难度: advanced',
+        standard: '出一道标准题：a=1 且 Δ 为完全平方数（两个根都是整数），如 "用公式法解 x²+5x+6=0"。'
+          + '\n答案格式：两个根用逗号隔开，如 "-2，-3"'
+          + '\nverifyType: "equation"'
+          + '\n难度: standard'
+      }
+    },
+    'cnm_224': {
+      methodWords: ['因式分解'],
+      system: '你是人教版初中数学出题老师。请按照要求出一道「因式分解法解一元二次方程」练习题。'
+        + '\n\n要求：'
+        + '\n1. 题目必须是「用因式分解法解一元二次方程」的数值题，a/b/c 均为整数。'
+        + '\n2. 方程必须能十字相乘或提公因式分解成两个一次因式（根必须是整数或简单分数）。'
+        + '\n3. 判别式必须是非负完全平方数（保证可整数/简单分数因式分解）。'
+        + '\n4. 不要照抄任何已有题目，每次用不同的系数。',
+      difficulty: {
+        basic: '出一道基础题：a=1、常数项可分解为两个整数因式（根为整数），如 "用因式分解法解方程 x²-5x+6=0"。'
+          + '\n题面必须出现「因式分解法」四个字。'
+          + '\n答案格式：两个根用逗号隔开，如 "2，3"'
+          + '\nverifyType: "equation"'
+          + '\n难度: basic',
+        advanced: '出一道进阶题：a≠1 且可十字相乘（根为整数或简单分数），如 "用因式分解法解方程 2x²+5x-3=0"。'
+          + '\n题面必须出现「因式分解法」四个字。'
+          + '\n答案格式：两个根用逗号隔开，分数写成 "a/b" 形式，如 "1/2，-3"'
+          + '\nverifyType: "equation"'
+          + '\n难度: advanced',
+        standard: '出一道标准题：a=1、常数项分解（根为整数），如 "用因式分解法解方程 x²+5x+6=0"。'
+          + '\n题面必须出现「因式分解法」四个字。'
+          + '\n答案格式：两个根用逗号隔开，如 "-2，-3"'
+          + '\nverifyType: "equation"'
+          + '\n难度: standard'
+      }
+    }
+  };
+
+  function FAMILY_KEYS() { return Object.keys(FAMILY); }
+
+  function _systemPrompt(topicId) {
+    var fam = FAMILY[topicId] || FAMILY['cnm_221'];
+    return fam.system
       + '\n\n输出格式严格为 JSON，不要任何多余文字：'
       + '\n{"prompt":"题面文本","answer":"答案","explanation":"分步解析","verifyType":"equation|completeSquare|formParam","difficulty":"basic|standard|advanced"}';
   }
 
-  function _userPrompt(difficulty) {
-    if (difficulty === 'basic') {
-      return '出一道基础题：给定一个二次多项式 x²+bx，问"需要加上的常数是多少"。'
-        + '\n答案格式：一个整数（即 (b/2)²）。'
-        + '\nverifyType: "completeSquare"'
-        + '\n难度: basic';
-    }
-    if (difficulty === 'advanced') {
-      return '出一道进阶题，从以下两种中选一种：'
-        + '\nA) 二次项系数≠1的配方：如 "把 2x²-8x+1=0 配方成 2(x-m)²=n，依次求 m 与 n"'
-        + '\n   答案格式：如 "2，7"，verifyType: "formParam"'
-        + '\nB) 判别式非完全平方的解方程：如 "用配方法解 x²-4x-1=0"'
-        + '\n   答案格式：如 "2±√5"，verifyType: "equation"'
-        + '\n难度: advanced';
-    }
-    /* standard 默认 */
-    return '出一道标准题：用配方法解一个一元二次方程 x²+bx+c=0（b 为偶数，使配方干净）。'
-      + '\n要求判别式为完全平方数（答案是有理数），两个根用逗号隔开。'
-      + '\n答案格式：如 "1，-7"'
-      + '\nverifyType: "equation"'
-      + '\n难度: standard';
+  function _userPrompt(topicId, difficulty) {
+    var fam = FAMILY[topicId] || FAMILY['cnm_221'];
+    var d = fam.difficulty[difficulty] || fam.difficulty.standard;
+    return d;
   }
 
   /* ================================================================
@@ -855,7 +940,7 @@
 
     var statKey = topicId + ':' + difficulty;
 
-    return _callGateway(difficulty)
+    return _callGateway(topicId, difficulty)
       .then(function (candidate) {
         if (!candidate) {
           _recordStat(statKey, false, 'no-candidate');
@@ -864,7 +949,7 @@
 
         /* 验证门校验 */
         var result = validateLLMQuestion(candidate);
-        if (result.ok === true) {
+        if (result.ok === true && _methodWordMatches(topicId, difficulty, candidate)) {
           _recordStat(statKey, true);
           /* 构建题对象 */
           var pool = _getCachePool(topicId);
@@ -914,13 +999,13 @@
    * @param {string} difficulty
    * @returns {Promise<object|null>}
    */
-  function _callGateway(difficulty) {
+  function _callGateway(topicId, difficulty) {
     if (typeof fetch !== 'function') return Promise.resolve(null);
 
     return probeFunctionCalling().then(function (supportsTools) {
       var messages = [
-        { role: 'system', content: _systemPrompt() },
-        { role: 'user', content: _userPrompt(difficulty) }
+        { role: 'system', content: _systemPrompt(topicId) },
+        { role: 'user', content: _userPrompt(topicId, difficulty) }
       ];
       var body = {
         model: MODEL,
@@ -1118,6 +1203,7 @@
     /* 测试用内部接口 */
     _systemPrompt: _systemPrompt,
     _userPrompt: _userPrompt,
+    _methodWordMatches: _methodWordMatches,
     _resetStats: _resetStats,
     _clearCache: _clearCache,
     _pushCache: _pushCache,

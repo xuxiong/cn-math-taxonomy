@@ -500,6 +500,12 @@ test('supports：cnm_221 -> true（试点族）', () => {
   assert.strictEqual(LLMV.supports('cnm_221'), true);
 });
 
+test('supports：cnm_222 / cnm_224 -> true（扩族：公式法 / 因式分解法）', () => {
+  LLMV._resetStats();
+  assert.strictEqual(LLMV.supports('cnm_222'), true);
+  assert.strictEqual(LLMV.supports('cnm_224'), true);
+});
+
 test('supports：cnm_043 -> false（O1 的 topic 不归 O3）', () => {
   assert.strictEqual(LLMV.supports('cnm_043'), false);
 });
@@ -596,30 +602,39 @@ test('健康指标：attempts < 10 时不判（小样本不拦）', () => {
 
 console.log('\n--- prompt 模板 ---');
 
-test('systemPrompt：含固定"答案："格式要求和 JSON 输出约束', () => {
-  var sp = LLMV._systemPrompt();
-  assert.ok(sp.indexOf('JSON') >= 0, 'systemPrompt 应要求 JSON 输出');
-  assert.ok(sp.indexOf('verifyType') >= 0, 'systemPrompt 应提及 verifyType 字段');
+test('systemPrompt：含 JSON 输出约束，按族分野', () => {
+  var sp221 = LLMV._systemPrompt('cnm_221');
+  assert.ok(sp221.indexOf('JSON') >= 0, 'systemPrompt 应要求 JSON 输出');
+  assert.ok(sp221.indexOf('verifyType') >= 0, 'systemPrompt 应提及 verifyType 字段');
+  assert.ok(sp221.indexOf('配方法') >= 0, 'cnm_221 system 应含配方法: ' + sp221);
+  var sp222 = LLMV._systemPrompt('cnm_222');
+  assert.ok(sp222.indexOf('公式法') >= 0, 'cnm_222 system 应含公式法: ' + sp222);
+  var sp224 = LLMV._systemPrompt('cnm_224');
+  assert.ok(sp224.indexOf('因式分解法') >= 0, 'cnm_224 system 应含因式分解法: ' + sp224);
 });
 
-test('userPrompt：基础难度含 completeSquare', () => {
-  var up = LLMV._userPrompt('basic');
-  assert.ok(up.indexOf('completeSquare') >= 0 || up.indexOf('配方') >= 0, 'basic 应含配方/completeSquare: ' + up);
+test('userPrompt：基础难度含 completeSquare（221）或整数根约束（222/224）', () => {
+  var up = LLMV._userPrompt('cnm_221', 'basic');
+  assert.ok(up.indexOf('completeSquare') >= 0 || up.indexOf('配方') >= 0, '221 basic 应含配方/completeSquare: ' + up);
+  var up222 = LLMV._userPrompt('cnm_222', 'basic');
+  assert.ok(up222.indexOf('公式法') >= 0, '222 basic 应提公式法: ' + up222);
+  var up224 = LLMV._userPrompt('cnm_224', 'basic');
+  assert.ok(up224.indexOf('因式分解') >= 0 || up224.indexOf('解方程') >= 0, '224 basic 应提因式分解/解方程: ' + up224);
 });
 
 test('userPrompt：标准难度含 equation', () => {
-  var up = LLMV._userPrompt('standard');
+  var up = LLMV._userPrompt('cnm_221', 'standard');
   assert.ok(up.indexOf('equation') >= 0 || up.indexOf('解') >= 0, 'standard 应含解方程/equation: ' + up);
 });
 
 test('userPrompt：进阶难度含 formParam 或 equation', () => {
-  var up = LLMV._userPrompt('advanced');
+  var up = LLMV._userPrompt('cnm_221', 'advanced');
   assert.ok(up.indexOf('formParam') >= 0 || up.indexOf('equation') >= 0, 'advanced 应含 formParam 或 equation: ' + up);
 });
 
 test('userPrompt：题目文本不入 prompt（防注入）', () => {
   // userPrompt 不应包含任何题库的具体题目文本
-  var up = LLMV._userPrompt('standard');
+  var up = LLMV._userPrompt('cnm_221', 'standard');
   assert.ok(up.indexOf('x²+6x-7') < 0, 'userPrompt 不应含具体题目 x²+6x-7: ' + up);
   assert.ok(up.indexOf('x²+8x+12') < 0, 'userPrompt 不应含具体题目 x²+8x+12: ' + up);
 });
@@ -873,7 +888,7 @@ testAsync('工具循环：首次响应带 tool_calls -> 执行工具 -> 二次�
     }
     // 第三次：二次生成请求返回最终题 JSON
     thirdBody = JSON.parse(opts.body);
-    const q = { prompt: '解方程 x²-4=0', answer: '2，-2', verifyType: 'equation', difficulty: 'standard' };
+    const q = { prompt: '用配方法解方程 x²-4=0', answer: '2，-2', verifyType: 'equation', difficulty: 'standard' };
     return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: JSON.stringify(q) } }] }); } });
   };
   try {
@@ -908,13 +923,109 @@ testAsync('工具循环：首次响应无 tool_calls -> 单轮直接返回', asy
       return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: 'probe' } }] }); } });
     }
     // 首次生成请求直接返回最终题（无 tool_calls）
-    const q = { prompt: '解方程 x²-2x-3=0', answer: '3，-1', verifyType: 'equation', difficulty: 'standard' };
+    const q = { prompt: '用配方法解方程 x²-2x-3=0', answer: '3，-1', verifyType: 'equation', difficulty: 'standard' };
     return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: JSON.stringify(q) } }] }); } });
   };
   try {
     const q = await LLMV.genLLMVariant('cnm_221', { difficulty: 'standard' });
     assert.ok(q !== null, '应返回题对象: ' + JSON.stringify(q));
     assert.strictEqual(callNum, 2, '无 tool_calls 应单轮（探测+一次生成共 2 次请求）: ' + callNum);
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+/* ================================================================
+ * 11. 扩族：cnm_222（公式法）/ cnm_224（因式分解法）方法词校验
+ * ================================================================ */
+
+test('_methodWordMatches：cnm_221 题面含"配方"通过', () => {
+  assert.strictEqual(LLMV._methodWordMatches('cnm_221', 'standard', { prompt: '用配方法解方程 x²-4x-12=0' }), true);
+});
+
+test('_methodWordMatches：cnm_221 basic（completeSquare 无"配方"字样）放行', () => {
+  assert.strictEqual(LLMV._methodWordMatches('cnm_221', 'basic', { prompt: '给定 x²+6x，需要加上的常数是多少' }), true);
+});
+
+test('_methodWordMatches：cnm_221 题面写错方法（公式法）拒绝', () => {
+  assert.strictEqual(LLMV._methodWordMatches('cnm_221', 'standard', { prompt: '用公式法解方程 x²-4x-12=0' }), false);
+});
+
+test('_methodWordMatches：cnm_222 题面须含"公式法"', () => {
+  assert.strictEqual(LLMV._methodWordMatches('cnm_222', 'standard', { prompt: '用公式法解方程 x²-7x+12=0' }), true);
+  assert.strictEqual(LLMV._methodWordMatches('cnm_222', 'standard', { prompt: '用配方法解方程 x²-7x+12=0' }), false);
+});
+
+test('_methodWordMatches：cnm_224 题面须含"因式分解"', () => {
+  assert.strictEqual(LLMV._methodWordMatches('cnm_224', 'standard', { prompt: '用因式分解法解方程 x²-5x+6=0' }), true);
+  assert.strictEqual(LLMV._methodWordMatches('cnm_224', 'standard', { prompt: '解方程 x²-5x+6=0' }), false);
+});
+
+test('_methodWordMatches：未知族（无 methodWords 配置）放行', () => {
+  assert.strictEqual(LLMV._methodWordMatches('cnm_999', 'standard', { prompt: '随便什么题' }), true);
+});
+
+testAsync('扩族生成：cnm_222 mock 题面含"公式法"通过验证门', async () => {
+  LLMV._resetStats();
+  LLMV._clearCache();
+  let callNum = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = function () {
+    callNum++;
+    if (callNum === 1) {
+      // probeFunctionCalling → true
+      return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: 'probe' } }] }); } });
+    }
+    // 首次生成：题面含公式法，答案 7x12=0 → 根 3,4
+    const q = { prompt: '用公式法解方程 x²-7x+12=0', answer: '3，4', verifyType: 'equation', difficulty: 'standard' };
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: JSON.stringify(q) } }] }); } });
+  };
+  try {
+    const q = await LLMV.genLLMVariant('cnm_222', { difficulty: 'standard' });
+    assert.ok(q !== null, 'cnm_222 应生成成功: ' + JSON.stringify(q));
+    assert.strictEqual(q.topicId, 'cnm_222');
+    assert.strictEqual(q.verifyType, 'equation');
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+testAsync('扩族生成：cnm_222 题面缺方法词（配方法）→ 重试后仍不通过 → null', async () => {
+  LLMV._resetStats();
+  LLMV._clearCache();
+  let callNum = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = function () {
+    callNum++;
+    if (callNum === 1) {
+      // probeFunctionCalling → true
+      return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: 'probe' } }] }); } });
+    }
+    // 每次生成都给出"用配方法"的题面（方法词错误，验证门应拒绝所有重试）
+    const q = { prompt: '用配方法解方程 x²-7x+12=0', answer: '3，4', verifyType: 'equation', difficulty: 'standard' };
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: JSON.stringify(q) } }] }); } });
+  };
+  try {
+    const q = await LLMV.genLLMVariant('cnm_222', { difficulty: 'standard' });
+    assert.strictEqual(q, null, '方法词错误应重试耗尽返回 null');
+    // MAX_RETRIES=3 → 探测 1 次 + 生成 3 次
+    assert.strictEqual(callNum, 4, '应探测 1 次 + 生成重试 3 次: ' + callNum);
+  } finally { globalThis.fetch = real; LLMV._resetProbe(); }
+});
+
+testAsync('扩族生成：cnm_224 mock 题面含"因式分解"通过验证门', async () => {
+  LLMV._resetStats();
+  LLMV._clearCache();
+  let callNum = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = function () {
+    callNum++;
+    if (callNum === 1) {
+      return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: 'probe' } }] }); } });
+    }
+    const q = { prompt: '用因式分解法解方程 x²-5x+6=0', answer: '2，3', verifyType: 'equation', difficulty: 'standard' };
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ choices: [{ message: { content: JSON.stringify(q) } }] }); } });
+  };
+  try {
+    const q = await LLMV.genLLMVariant('cnm_224', { difficulty: 'standard' });
+    assert.ok(q !== null, 'cnm_224 应生成成功: ' + JSON.stringify(q));
+    assert.strictEqual(q.topicId, 'cnm_224');
   } finally { globalThis.fetch = real; LLMV._resetProbe(); }
 });
 
