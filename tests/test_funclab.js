@@ -439,11 +439,25 @@ test('labFor：方程章（cnm_220）+ 解方程题面 → 参数', function () 
   assert.deepStrictEqual(F.labFor(t('cnm_220'), q('cnm_220_q1')), { type: 'quadratic', a: 1, h: 1, k: -9 });
 });
 
-test('labFor：配方法章（cnm_221）答的不是根 → 整体不挂（cnm_221_q3 虽然是"解方程"也不挂）', function () {
-  // 修复前 cnm_221_q3 会画出 y=(x+3)²-16，绿点 1/-7 恰好等于答案，但这属于
-  // "答案语义 ≠ 画板零点"的章节：同章 q1 答选项、q2 答配方常数 9、q4 答 m/n，
-  // 一半题挂一半题不挂会让学生以为"有画板 = 这道题答根"。整章不挂更稳。
+test('labFor：配方法章（cnm_221）只有 q3（答案就是根）放行，q1/q2/q4 不挂', function () {
+  // 逐题白名单，不是整章：q1 答选项 C、q2 答配方常数 9、q4 答 m/n —— 画板与答案无关；
+  // 而 q3「用配方法解方程 x²+6x-7=0」的答案 1、-7 就是画板的两个绿点，不挂等于丢了准确图。
+  assert.deepStrictEqual(F.labFor(t('cnm_221'), q('cnm_221_q3'), { itemId: 'cnm_221_q3' }),
+    { type: 'quadratic', a: 1, h: -3, k: -16 });
+  assert.strictEqual(F.labFor(t('cnm_221'), q('cnm_221_q1'), { itemId: 'cnm_221_q1' }), null);
+  assert.strictEqual(F.labFor(t('cnm_221'), q('cnm_221_q2'), { itemId: 'cnm_221_q2' }), null);
+  assert.strictEqual(F.labFor(t('cnm_221'), q('cnm_221_q4'), { itemId: 'cnm_221_q4' }), null);
+});
+
+test('labFor：章级封禁必须靠 itemId 才放行 —— 不给 itemId 时 cnm_221 一律不挂（含 q3）', function () {
+  // app.js 传 {itemId: q.id}；不传就退化成最保守的"整章不挂"，不会因为缺参而误挂同章非根题
   assert.strictEqual(F.labFor(t('cnm_221'), q('cnm_221_q3')), null);
+  assert.strictEqual(F.labFor(t('cnm_221'), q('cnm_221_q3'), {}), null);
+  assert.strictEqual(F.labFor(t('cnm_221'), q('cnm_221_q3'), { itemId: 'cnm_221_q1' }), null);
+});
+
+test('labFor：白名单按题目粒度生效 —— 把 q3 题面挂到未放行的 cnm_223 章仍不挂', function () {
+  assert.strictEqual(F.labFor(t('cnm_223'), q('cnm_221_q3'), { itemId: 'cnm_221_q3' }), null);
 });
 
 test('labFor：判别式章（cnm_223）答案不是根 → 不挂（判别式/根的情况/k 范围）', function () {
@@ -482,8 +496,12 @@ test('labFor：题面无法解析 → null 而非抛错', function () {
  * 绿点的数学来源 = annotate() 里画的 x 轴交点：x = h ± √(-k/a)（disc = -k/a）。
  * 答案来源 = 题库 verify 表达式（这是出题时就写好的独立真值，不是本模块算的，
  * 所以这条断言不是"用实现验证实现"）。两边都是分数都转成精确有理数 + 归一化后比对。
+ *
+ * 扫描集合 = 一切可能挂画板的一元二次方程章，**含 cnm_221（配方法）**。
+ * 曾把 cnm_221 排除在外，于是"答案就是根却因整章封禁不挂"的误伤（cnm_221_q3）
+ * 永远不可能被断言发现 —— 扫描集合必须与 chapter 判定同源。
  */
-const EQ_CHAPTERS = ['cnm_220', 'cnm_222', 'cnm_224'];
+const EQ_CHAPTERS = ['cnm_220', 'cnm_221', 'cnm_222', 'cnm_223', 'cnm_224'];
 
 /** 极简分数 [num, den]，只支持题库 verify 里出现的算式子集（够用即可，算不了就抛错） */
 function toFrac(x) {
@@ -524,9 +542,11 @@ function evalVerify(src) {
   return new Function('Fraction', 'isqrt', 'roots2', 'return (' + src + ');')(Fraction, isqrt, roots2);
 }
 
-/** 题库答案的精确分数集合（verify 求值 → 归一化）；不是"根"型答案返回 null */
+/** 题库答案的精确分数集合（verify 求值 → 归一化）；不是"根"型答案返回 null
+ *  answer 形如 "1，-7" / "2，-1/2" 才算根；含 m/n 之类字母（"m=2，n=7"）不是根集合。 */
 function answerRootSet(item) {
   if (!item.verify) return null;
+  if (/[a-zA-Z]/.test(String(item.answer))) return null;
   let v;
   try { v = evalVerify(item.verify); } catch (e) { return null; }   // 判别式/配方常数/max(range) 之类不是根
   if (!Array.isArray(v)) return null;                                // 单值答案（判别式、面积）不是根集合
@@ -548,9 +568,10 @@ function labRootSet(p) {
 test('[必修4] 方程章{cns}：所有挂载题目的画板绿点集合 == 题库答案数字集合'.replace('{cns}', EQ_CHAPTERS.join('/')), function () {
   const problems = [];
   let checked = 0;
+  EQ_CHAPTERS.forEach(function (tid) { assert.ok(t(tid)); });   // 扫描集合里的章必须真实存在
   for (const item of QUESTIONS) {
     if (EQ_CHAPTERS.indexOf(item.topicId) < 0) continue;
-    const p = F.labFor(item.topicId, item.prompt);
+    const p = F.labFor(item.topicId, item.prompt, { itemId: item.id });
     if (!p) continue;                                   // 不挂载的题不产生错图，交给下面的"必须挂载"断言
     const want = answerRootSet(item);
     const got = labRootSet(p);
@@ -573,20 +594,55 @@ test('[必修4] 方程章{cns}：所有挂载题目的画板绿点集合 == 题�
       problems.push(item.id + ' 画板绿点 {' + gotStr + '} ≠ 答案 {' + wantStr + '}（答案 ' + item.answer + '）');
     }
   }
-  assert.ok(checked >= 8, '方程章挂载数异常少：' + checked);
+  assert.ok(checked >= 9, '方程章挂载数异常少：' + checked);
+  assert.ok(EQ_CHAPTERS.indexOf('cnm_221') >= 0, '扫描集合必须含配方法章，否则整章封禁的误伤不可见');
+  // cnm_221 只有 q3 是"答案就是根"的题，它必须落在 checked 里（绿点已与答案对上）
+  const q3 = QMAP.get('cnm_221_q3');
+  assert.ok(F.labFor('cnm_221', q3.prompt, { itemId: 'cnm_221_q3' }), 'cnm_221_q3 答案 1、-7 就是绿点，必须挂载');
   assert.deepStrictEqual(problems, [], '挂载的方程题画板与答案不一致：\n  ' + problems.join('\n  '));
 });
 
-test('[必修3] 方程章{cns}：答案就是根且能解析的题必须挂上（不能因为门禁过严全灭）'.replace('{cns}', EQ_CHAPTERS.join('/')), function () {
+/** 整章封禁（答案语义与画板零点无关的章）：cnm_221 只有个例放行、cnm_223 整章（判别式/根的情况/k 范围） */
+const EQ_CHAPTER_BANNED = ['cnm_221', 'cnm_223'];
+
+test('[必修3] 方程章{cns}：答案就是根的题必须挂上（不能因为门禁过严全灭）'.replace('{cns}', EQ_CHAPTERS.join('/')), function () {
   const missed = [];
   for (const item of QUESTIONS) {
     if (EQ_CHAPTERS.indexOf(item.topicId) < 0) continue;
+    if (EQ_CHAPTER_BANNED.indexOf(item.topicId) >= 0) continue;   // 整章不放行的章不要求挂（cnm_221_q3 由下面单独锁）
     const want = answerRootSet(item);
     if (!want) continue;                                  // 非根型答案（选项/判别式）不需要挂
     if (!F.fromPrompt(item.prompt)) continue;             // 题面本身解析不出（如 (x-2)²=3(x-2)）不强求
-    if (!F.labFor(item.topicId, item.prompt)) missed.push(item.id + '（' + item.answer + '）');
+    if (!F.labFor(item.topicId, item.prompt, { itemId: item.id })) missed.push(item.id + '（' + item.answer + '）');
   }
   assert.deepStrictEqual(missed, [], '这些题答案就是根却没挂画板：' + missed.join('、'));
+});
+
+test('[必修3b] 个例放行的题（cnm_221_q3）也必须在扫描范围内，且答案集合 == 绿点集合', function () {
+  const item = QMAP.get('cnm_221_q3');
+  assert.ok(item, '题库里找不到 cnm_221_q3');
+  const want = answerRootSet(item);
+  assert.ok(want, 'cnm_221_q3 的答案应当是根集合');
+  const p = F.labFor(item.topicId, item.prompt, { itemId: item.id });
+  assert.ok(p, 'cnm_221_q3 答案 1、-7 就是绿点，不该被整章封禁误伤');
+  const got = labRootSet(p);
+  assert.deepStrictEqual(Array.from(got).sort(), Array.from(want).sort(), '绿点 ≠ 答案');
+});
+
+test('[必修3c] 必挂的根型题不允许被误伤：每一章里"答案=根"且可解析的题逐题校验', function () {
+  // 按 item.verify 是否为 Array 判根型（独立于答案文字），对已放行章做逐题正断言
+  const missed = [];
+  for (const item of QUESTIONS) {
+    if (EQ_CHAPTERS.indexOf(item.topicId) < 0) continue;
+    if (EQ_CHAPTER_BANNED.indexOf(item.topicId) >= 0) continue;
+    if (!item.verify) continue;
+    let v;
+    try { v = evalVerify(item.verify); } catch (e) { continue; }
+    if (!Array.isArray(v)) continue;
+    if (!F.fromPrompt(item.prompt)) continue;
+    if (!F.labFor(item.topicId, item.prompt, { itemId: item.id })) missed.push(item.id);
+  }
+  assert.deepStrictEqual(missed, [], '根型题被门禁误伤：' + missed.join('、'));
 });
 
 test('labFor：真实题库全量扫——支持的章节不抛错，且返回类型必经双门禁', function () {
@@ -596,7 +652,7 @@ test('labFor：真实题库全量扫——支持的章节不抛错，且返回�
     const kind = F.topicKind(tid);
     if (!kind) continue;
     let r;
-    assert.doesNotThrow(function () { r = F.labFor(tid, item.prompt); }, item.id);
+    assert.doesNotThrow(function () { r = F.labFor(tid, item.prompt, { itemId: item.id }); }, item.id);
     if (r !== null) {
       assert.strictEqual(r.type, kind, item.id + ' 返回类型与知识点不一致');
     }
@@ -608,7 +664,7 @@ test('labFor：真实题库里"能挂画板"的比例是有限的（防止正则
   for (const item of QUESTIONS) {
     if (!item.topicId || !F.topicKind(item.topicId)) continue;
     supported++;
-    if (F.labFor(item.topicId, item.prompt)) mounted++;
+    if (F.labFor(item.topicId, item.prompt, { itemId: item.id })) mounted++;
   }
   assert.ok(supported > 50, '支持章节的题目数异常少：' + supported);
   const ratio = mounted / supported;
@@ -729,7 +785,7 @@ test('formatFormula：全部真实题库可解析题面都能被格式化且不�
   let n = 0;
   for (const item of QUESTIONS) {
     if (!item.topicId || !F.topicKind(item.topicId)) continue;
-    const r = F.labFor(item.topicId, item.prompt);
+    const r = F.labFor(item.topicId, item.prompt, { itemId: item.id });
     if (!r) continue;
     n++;
     let s;
@@ -860,6 +916,24 @@ test('[稳定性] h/k 计算不产出 -0（deepStrictEqual/标注都干净）', 
   assert.strictEqual(Object.is(r.k, 2), true);
   const r2 = F.fromPrompt('x²=0');
   assert.strictEqual(Object.is(r2.k, 0), true, 'k 应为 +0');
+});
+
+test('[缺陷10] 放行 cnm_221_q3 后，q4 的"配方成 2(x-m)²=n 的形式"仍不挂（求的是 m/n，不是根）', function () {
+  // q4 的题面能解析出 {a:2,h:2,k:-7}，但画板会把 k=-7 当作"n"，而正确答案是 n=+7（方向相反），
+  // 绿点 0.13/3.87 与答案 m=2、n=7 毫无关系 → 必须由形态门禁挡住。
+  const prompt = q('cnm_221_q4');
+  assert.deepStrictEqual(F.fromPrompt(prompt), { type: 'quadratic', a: 2, h: 2, k: -7 });
+  assert.strictEqual(F.labFor('cnm_221', prompt, { itemId: 'cnm_221_q4' }), null);
+  // 同一题面放到已放行章 cnm_222 也必须被挡住：门禁不能只依赖章白名单
+  assert.strictEqual(F.labFor('cnm_222', prompt), null);
+  // 用能解析的等价题面再锁一次"…的形式"判定本身
+  assert.deepStrictEqual(F.fromPrompt('把 2x²-8x+1=0 配方成 2(x-m)²=n 的形式'), { type: 'quadratic', a: 2, h: 2, k: -7 });
+  assert.strictEqual(F.labFor('cnm_222', '把 2x²-8x+1=0 配方成 2(x-m)²=n 的形式'), null);
+});
+
+test('[缺陷10b] 形态门禁不误伤正常题面：以「解方程」「用配方法解」开头的题照常挂载', function () {
+  assert.deepStrictEqual(F.labFor('cnm_221', q('cnm_221_q3'), { itemId: 'cnm_221_q3' }), { type: 'quadratic', a: 1, h: -3, k: -16 });
+  assert.deepStrictEqual(F.labFor('cnm_222', q('cnm_222_q2'), { itemId: 'cnm_222_q2' }), { type: 'quadratic', a: 1, h: 0.5, k: -6.25 });
 });
 
 /* ================================================================

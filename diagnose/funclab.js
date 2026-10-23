@@ -152,21 +152,33 @@
    *
    * 学生看图会把 x 轴交点（绿点）当答案 —— 答案若其实是判别式、配方常数、m/n、k 的范围，
    * 画板就与答案无关，比没画板更糟（Review 1 缺陷 7：cnm_221 由"无画板"变成"画板与答案无关"）。
-   * 各章答案语义（依据 data/questions.json 实际答案，不是猜的）：
-   *   cnm_220（直接开平方）：q1/q2/q3 答根，q4 答 k 的范围
-   *   cnm_221（配方法）：q1 答选项、q2 答配方常数、q3 答根、q4 答 m/n → 一半题不是根，整章不放行
-   *   cnm_222（公式法）：q1/q2/q4 答根，q3 答无理根的选项 → 由下面的"无理零点"判断处理
-   *   cnm_223（根的判别式）：答判别式/根的情况/k 范围 → 整章不放行
-   *   cnm_224（因式分解法）：全部答根
    *
-   * 同时要求题面里有方程语境（等号/解/根/配方……），避免把应用题里的算式当方程画。
+   * 判定是**逐题**的，不是逐章的：同一章里"答根"的题必须挂（绿点就是答案），"答别的"的题必须不挂。
+   * 各章答案语义（依据 data/questions.json 实际答案，不是猜的）：
+   *   cnm_220（直接开平方）：q1/q2/q3 答根，q4 答 k 的范围 → 放行，q4 由解析/门禁挡下
+   *   cnm_221（配方法）：q1 答选项、q2 答配方常数、q4 答 m/n → 不放行；q3 答根 1、-7 → 逐题放行
+   *   cnm_222（公式法）：q1/q2/q4 答根，q3 答无理根的选项 → 放行，无理零点由 hasCleanRoots 挡下
+   *   cnm_223（根的判别式）：答判别式/根的情况/k 范围 → 整章不放行
+   *   cnm_224（因式分解法）：全部答根 → 放行
+   *
+   * 同时要求题面里有方程语境（等号/解/根/配方……），避免把应用题里的算式当方程画；
+   * 并要求题面是"解方程"形态 —— "配方成 2(x-m)²=n 的形式" 这类问的是形态参数 m/n，
+   * 画板会把 n 显示成顶点纵坐标 -7（正确是 +7，方向相反），所以形态标签题统一不挂。
    */
   const EQUATION_CHAPTERS = {
     cnm_220: true,
+    cnm_221: true,      // 章级放行，但下面 EQUATION_ITEM_ALLOW 之外的题一律不挂
     cnm_222: true,
     cnm_224: true
   };
+  /** 章级封禁 → 只按题目 id 放行（键是 questions.json 的题 id） */
+  const CHAPTERS_ITEM_ONLY = { cnm_221: true };
+  const EQUATION_ITEM_ALLOW = {
+    cnm_221_q3: true    // 用配方法解方程 x²+6x-7=0，答案 1、-7 == 画板绿点
+  };
   const EQUATION_WORDS = /解|根|配方|方程|或|=|求\s*x|两个|交点|平方/;
+  /** 形态标签题（求"配方成 … 的形式"里的 m/n），画板表达不了，直接不挂 */
+  const EQUATION_FORM_LABEL = /的形式/;
 
   /**
    * 零点是否为"干净"的有限小数/整数。无理根（√37 之类）画板只能标近似小数，
@@ -185,22 +197,30 @@
     });
   }
 
-  /** 方程题是否该挂画板（只在"答案就是根"的章节 + 题面确实是方程 + 根能精确标注） */
-  function equationAllowed(topicId, prompt, parsed) {
+  /**
+   * 方程题是否该挂画板（只在"答案就是根"的章节 + 题面确实是方程 + 根能精确标注）。
+   * itemId 可选：给了就参与"章级封禁、逐题放行"的判定（cnm_221 只放 q3）。
+   */
+  function equationAllowed(topicId, prompt, parsed, itemId) {
     if (!EQUATION_CHAPTERS[topicId]) return false;
-    if (!EQUATION_WORDS.test(normalize(prompt))) return false;
+    if (CHAPTERS_ITEM_ONLY[topicId] && !EQUATION_ITEM_ALLOW[String(itemId || '')]) return false;
+    const norm = normalize(prompt);
+    if (EQUATION_FORM_LABEL.test(norm)) return false;        // "配方成 … 的形式"问的是 m/n，不是根
+    if (!EQUATION_WORDS.test(norm)) return false;
     return hasCleanRoots(parsed.a, parsed.k);
   }
 
-  /** 组合入口：知识点支持 && 题面能解析 && 类型匹配 && 题面门禁 → 参数对象，否则 null */
-  function labFor(topicId, prompt) {
+  /** 组合入口：知识点支持 && 题面能解析 && 类型匹配 && 题面门禁 → 参数对象，否则 null
+   *  opts.itemId 可选（题库题 id）：方程章里决定个别题是否放行（cnm_221_q3） */
+  function labFor(topicId, prompt, opts) {
     const kind = topicKind(topicId);
     if (!kind) return null;
     const r = fromPrompt(prompt);
     if (!r || r.type !== kind) return null;
     // 一元二次方程章：答案必须是根，且根要能被绿点精确标出来
     if (/^cnm_22[0-4]$/.test(String(topicId)) && r.type === 'quadratic') {
-      if (!equationAllowed(String(topicId), prompt, r)) return null;
+      const itemId = opts && opts.itemId;
+      if (!equationAllowed(String(topicId), prompt, r, itemId)) return null;
     }
     return r;
   }
