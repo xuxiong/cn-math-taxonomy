@@ -890,6 +890,21 @@
 
   const MANUAL_EMPTY = { verdict: 'manual', reason: 'empty' };
 
+  /** 算术表达式安全求值（O3 定稿 §3.3：白名单 + new Function，自用场景）。
+   *  - normalizeText 先转全角/×÷/² 等，白名单再拦一切字母（未知数、函数名、原型链构造）
+   *  - 求值结果必须是有穷 number；任何不安全/抛错/非数值 → null（保持 manual，不误判）
+   *  - 供判题用：学生写 (100-(40-30)×5)×(40-30) 这类思路式子时能跟参考答案数值比较 */
+  function evalExpr(input) {
+    if (input == null) return null;
+    let s = normalizeText(input);
+    if (!/^[0-9+\-*/().^%, ]+$/.test(s)) return null;   // 无字母白名单
+    s = s.replace(/\^/g, '**').replace(/,/g, '.');
+    try {
+      const v = Function('"use strict";return (' + s + ');')();
+      return (typeof v === 'number' && isFinite(v)) ? v : null;
+    } catch (e) { return null; }
+  }
+
   function judgeChoice(user, q) {
     const raw = String(user == null ? '' : user).trim();
     if (!raw) return MANUAL_EMPTY;
@@ -934,6 +949,16 @@
     if (r.verdict === 'correct') return r;
     for (let i = 1; i < refs.length; i++) {
       if (judgeAnswer(user, refs[i]).verdict === 'correct') return { verdict: 'correct', reason: 'accept' };
+    }
+    /* 学生写的是思路式子（如 (100-(40-30)×5)×(40-30)），标准解析判不了 → 安全求值比较。
+     * 只在参考答案是单个数值时做；求值失败返回 manual（保持原行为，不误判）。 */
+    if (r.verdict === 'manual' && main.parts.length === 1 && main.parts[0].kind === 'num') {
+      const uv = evalExpr(user);
+      if (uv !== null) {
+        const rv = keyValue(main.parts[0].key);
+        if (Math.abs(uv - rv) <= EQ_TOL) return { verdict: 'correct', reason: 'expr-eval' };
+        return { verdict: 'wrong', reason: 'expr-mismatch' };
+      }
     }
     return r;
   }
@@ -1254,6 +1279,7 @@
     isUnconfirmed: isUnconfirmed,
     mulberry32: mulberry32,
     judgeQuestion: judgeQuestion,
+    evalExpr: evalExpr,
     socraticSteps: socraticSteps,
     ancestors: ancestors,
     topoSort: topoSort,

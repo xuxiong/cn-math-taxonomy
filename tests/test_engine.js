@@ -2173,6 +2173,47 @@ testAsync('Explain._userPrompt：无 answer 字段时不添加答案声明', asy
   assert.ok(p.indexOf('本题目标准答案') < 0, '无 answer 时不应有答案声明: ' + p);
 });
 
+/* ============================================ 表达式判题（O4：思路式子安全求值） */
+test('表达式判题：思路式子等价 → correct(expr-eval)', () => {
+  const q = { id: 'x1', type: 'numeric', prompt: '某商品进价30元…求最大利润。', answer: '1125' };
+  const r = E.judgeQuestion(q, '(10+5)*(100-5*5)');
+  assert.strictEqual(r.verdict, 'correct');
+  assert.strictEqual(r.reason, 'expr-eval');
+});
+
+test('表达式判题：思路式子算错 → wrong(expr-mismatch)', () => {
+  const q = { id: 'x2', type: 'numeric', prompt: '某商品进价30元…求最大利润。', answer: '1125' };
+  const r = E.judgeQuestion(q, '(100-(40-30)*5)*(40-30)');   // =500
+  assert.strictEqual(r.verdict, 'wrong');
+  assert.strictEqual(r.reason, 'expr-mismatch');
+});
+
+test('表达式判题：全角符号与乘号被归一（×→*、全角括号）', () => {
+  const q = { id: 'x3', type: 'numeric', prompt: '计算', answer: '15' };
+  assert.strictEqual(E.judgeQuestion(q, '（10＋5）').verdict, 'correct');
+  assert.strictEqual(E.judgeQuestion(q, '10+5×1').verdict, 'correct');
+});
+
+test('表达式判题：分数/小数等价在容差内 → correct', () => {
+  const q = { id: 'x4', type: 'numeric', prompt: '计算', answer: '1/3' };
+  assert.strictEqual(E.judgeQuestion(q, '1÷3').verdict, 'correct');
+  const q2 = { id: 'x5', type: 'numeric', prompt: '计算', answer: '2' };
+  assert.strictEqual(E.judgeQuestion(q2, '4/2').verdict, 'correct');
+});
+
+test('表达式判题：含字母/危险输入 → 拒绝求值，回 manual（不误判）', () => {
+  const q = { id: 'x6', type: 'numeric', prompt: '计算', answer: '3' };
+  assert.strictEqual(E.judgeQuestion(q, 'globalThis.process').verdict, 'manual');
+  assert.strictEqual(E.judgeQuestion(q, 'x+1').verdict, 'manual');
+  assert.strictEqual(E.judgeQuestion(q, 'constructor.constructor("return 1")()').verdict, 'manual');
+});
+
+test('表达式判题：调试用 evalExpr 导出存在', () => {
+  assert.strictEqual(typeof E.evalExpr, 'function');
+  assert.strictEqual(E.evalExpr('(100-(40-30)*5)*(40-30)'), 500);
+  assert.strictEqual(E.evalExpr('x+1'), null);
+});
+
 (async function () {
   for (const t of asyncTests) {
     try { await t.fn(); passed++; console.log('  ok   ' + t.name); }
