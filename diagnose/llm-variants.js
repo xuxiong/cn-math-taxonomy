@@ -27,6 +27,13 @@
   var POOL_MAX = 50;
   var EPS = 1e-9;
 
+  /* O3-6：max_tokens 单一出处（各文件自持，关键是一处定义、多处引用）。
+   * GEN  —— 出题：一道题 JSON（题面+答案+解析），扩族后题面变长，500 会撞截断，取 1024
+   * TOOL —— 工具轮：只需返回 tool_calls 参数，不需要长文本，取 512（也是 >=512 下限）
+   * 改这两个值之前先看 tests/test_llm_variants.js 的 max_tokens 契约断言。 */
+  var GEN_MAX_TOKENS = 1024;
+  var TOOL_MAX_TOKENS = 512;
+
   /* LLM 变式 recipe：族 = 知识点 id → 形态配置。
    * cnm_221 配方法 / cnm_222 公式法 / cnm_224 因式分解法（同为"解二次方程"，答案=两根）。
    * verifyType 由 prompt 侧指定：equation（代入验根）为主；配方加常数/formParam 为配方法特有。 */
@@ -1010,7 +1017,7 @@
       var body = {
         model: MODEL,
         messages: messages,
-        max_tokens: 500,
+        max_tokens: GEN_MAX_TOKENS,
         temperature: 0.8
       };
       if (supportsTools) body.tools = TOOLS;
@@ -1080,7 +1087,7 @@
     var body = {
       model: MODEL,
       messages: messages,
-      max_tokens: 500,
+      max_tokens: TOOL_MAX_TOKENS,
       temperature: 0.8
     };
     return _postOnce(body).then(function (data) {

@@ -1030,6 +1030,132 @@ testAsync('扩族生成：cnm_224 mock 题面含"因式分解"通过验证门', 
 });
 
 /* ================================================================
+ * O3-6 回归：max_tokens 校准（防「多处散落改一处漏一处」+ 防过度放大/截断）
+ * 行为契约：所有发往网关的请求体 max_tokens >= 512（防 100 这类截断值）；
+ *           出题 = 1024、工具轮 = 512。
+ * ================================================================ */
+
+const fs = require('fs');
+
+/** 挂一个捕获所有请求体到 bodies[] 的 fetch。返回 restore()。 */
+function captureFetch(bodies, responder) {
+  const real = globalThis.fetch;
+  let n = 0;
+  globalThis.fetch = function (url, opts) {
+    n++;
+    if (opts && opts.body) bodies.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve(responder(n, bodies[bodies.length - 1])); } });
+  };
+  return function () { globalThis.fetch = real; };
+}
+
+console.log('\n--- O3-6：max_tokens 校准 ---');
+
+/**
+ * 找出文件里「裸数字的 max_tokens 字面量」。
+ * 先把块注释内容替换成等长空白（保留换行，行号不漂），再逐行检查：
+ * 允许 `max_tokens: SOME_CONST` / `max_tokens: SOME_CONST,` 与常量定义行，
+ * 其余含 max_tokens 的行都算违规（说明有人在请求体里直接写死了数字）。
+ * @param {string} src
+ * @returns {string[]} 违规行 "行号: 内容"
+ */
+function findBareMaxTokens(src) {
+  const stripped = src
+    .replace(/\/\*[\s\S]*?\*\//g, function (m) { return m.replace(/[^\n]/g, ' '); })
+    .replace(/(^|[^:])\/\/.*$/gm, function (m, p1) { return p1 + ' '.repeat(m.length - p1.length); });
+  const offenders = [];
+  stripped.split('\n').forEach(function (line, i) {
+    if (line.indexOf('max_tokens') < 0) return;
+    if (/max_tokens\s*:\s*[A-Z][A-Z0-9_]*\s*,?/.test(line)) return;                 // 请求体引用常量
+    if (/^\s*(?:const|var|let)\s+[A-Z][A-Z0-9_]*\s*=\s*\d+\s*;/.test(line)) return;  // 常量定义（同行不含 max_tokens 亦可）
+    offenders.push((i + 1) + ': ' + line.trim());
+  });
+  return offenders;
+}
+
+testAsync('出题请求 max_tokens = 1024（避免扩族后题面变长撞 500）', async () => {
+  LLMV._resetProbe();
+  LLMV._resetStats();
+  LLMV._clearCache();
+  const bodies = [];
+  const q = { prompt: '用配方法解方程 x²+6x-7=0', answer: '1，-7', verifyType: 'equation', difficulty: 'standard' };
+  const restore = captureFetch(bodies, function (n) {
+    if (n === 1) return { choices: [{ message: { content: 'probe' } }] };   // probeFunctionCalling
+    return { choices: [{ message: { content: JSON.stringify(q) } }] };
+  });
+  try {
+    await LLMV.genLLMVariant('cnm_221', { difficulty: 'standard' });
+    // 最后一次请求是出题请求（前面可能有探测请求）
+    const gen = bodies[bodies.length - 1];
+    assert.ok(gen.messages, '捕获到出题请求体');
+    assert.strictEqual(gen.max_tokens, 1024, '出题 max_tokens 应为 1024: ' + gen.max_tokens);
+  } finally { restore(); LLMV._resetProbe(); }
+});
+
+testAsync('工具轮请求 max_tokens = 512（只需返回 tool_calls 参数）', async () => {
+  LLMV._resetProbe();
+  LLMV._resetStats();
+  LLMV._clearCache();
+  const bodies = [];
+  const q = { prompt: '用配方法解方程 x²+6x-7=0', answer: '1，-7', verifyType: 'equation', difficulty: 'standard' };
+  const restore = captureFetch(bodies, function (n) {
+    if (n === 1) return { choices: [{ message: { content: 'probe' } }] };
+    if (n === 2) {
+      // 首次生成响应带 tool_calls → 触发工具自验循环
+      return { choices: [{ message: {
+        content: null,
+        tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'solveCheck', arguments: JSON.stringify({ expr: 'x^2+6x-7', xValues: [1, -7] }) } }]
+      } }] };
+    }
+    return { choices: [{ message: { content: JSON.stringify(q) } }] };
+  });
+  try {
+    await LLMV.genLLMVariant('cnm_221', { difficulty: 'standard' });
+    const msgs = bodies.map(function (b) { return b.messages || []; });
+    const toolIdx = msgs.findIndex(function (m) {
+      return m.some(function (x) { return x.role === 'tool'; });
+    });
+    assert.ok(toolIdx >= 0, '应捕获到工具轮请求（messages 含 role:tool）: ' + bodies.length + ' 个请求体');
+    assert.strictEqual(bodies[toolIdx].max_tokens, 512, '工具轮 max_tokens 应为 512: ' + bodies[toolIdx].max_tokens);
+    assert.ok(bodies[toolIdx].max_tokens >= 512, '工具轮不得低于 512');
+  } finally { restore(); LLMV._resetProbe(); }
+});
+
+testAsync('所有发往网关的请求体 max_tokens 均 >= 512（防 100 这类截断值回归）', async () => {
+  LLMV._resetProbe();
+  LLMV._resetStats();
+  LLMV._clearCache();
+  const bodies = [];
+  const q = { prompt: '用配方法解方程 x²+6x-7=0', answer: '1，-7', verifyType: 'equation', difficulty: 'standard' };
+  const restore = captureFetch(bodies, function (n) {
+    if (n === 1) return { choices: [{ message: { content: 'probe' } }] };
+    return { choices: [{ message: { content: JSON.stringify(q) } }] };
+  });
+  try {
+    await LLMV.genLLMVariant('cnm_221', { difficulty: 'standard' });
+    await LLMV.probeFunctionCalling();
+    await LLMV.probeGateway();
+    assert.ok(bodies.length >= 2, '应捕获到多个请求体: ' + bodies.length);
+    for (const b of bodies) {
+      if (!('max_tokens' in b)) continue;   // 探测/GET 请求不带 max_tokens 是允许的
+      assert.ok(b.max_tokens >= 512,
+        '任何请求体 max_tokens 不得 < 512（防截断）: ' + b.max_tokens + ' @ ' + JSON.stringify(b.messages && b.messages[0] && b.messages[0].role));
+    }
+  } finally { restore(); LLMV._resetProbe(); }
+});
+
+test('单一出处：llm-variants.js 内 max_tokens 字面量只出现在常量定义处', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'llm-variants.js'), 'utf8');
+  assert.deepStrictEqual(findBareMaxTokens(src), [], '存在裸数字 max_tokens 字面量:\n' + findBareMaxTokens(src).join('\n'));
+});
+
+test('单一出处：llm-variants.js 定义 GEN_MAX_TOKENS=1024 与 TOOL_MAX_TOKENS=512', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'llm-variants.js'), 'utf8');
+  assert.ok(/var\s+GEN_MAX_TOKENS\s*=\s*1024\s*;/.test(src), '应定义 GEN_MAX_TOKENS = 1024');
+  assert.ok(/var\s+TOOL_MAX_TOKENS\s*=\s*512\s*;/.test(src), '应定义 TOOL_MAX_TOKENS = 512');
+});
+
+/* ================================================================
  * 运行异步测试
  * ================================================================ */
 

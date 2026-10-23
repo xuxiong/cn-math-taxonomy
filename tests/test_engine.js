@@ -2302,6 +2302,69 @@ testAsync('Explain.ask：LaTeX 命令在追问里也被转换', async () => {
   } finally { globalThis.fetch = real; }
 });
 
+/* ============================================ O3-6：max_tokens 校准（讲解/追问） */
+const fsExplain = require('fs');
+
+/** 捕获 explain.js 发出的请求体。返回 {restore, bodies}。 */
+function captureExplainFetch(content) {
+  const bodies = [];
+  const real = globalThis.fetch;
+  const body = { choices: [{ message: { content: content } }] };
+  globalThis.fetch = function (url, opts) {
+    if (opts && opts.body) bodies.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: true, json: function () { return Promise.resolve(body); } });
+  };
+  return { bodies: bodies, restore: function () { globalThis.fetch = real; } };
+}
+
+testAsync('Explain.generate：讲解请求 max_tokens = 2048 且 <= 4096（防 16384 过度放大）', async () => {
+  const X = loadExplain();
+  X._cache.clear();
+  const q = { id: 'mt-1', type: 'numeric', prompt: '解方程 2(x-3)=4-(x+1)。', answer: '3' };
+  const cap = captureExplainFetch(JSON.stringify({ prompt: '先想想？', hint: '移项变号。', reveal: '得x=3。' }));
+  try {
+    const r = await X.generate(T_A, q, '1');
+    assert.strictEqual(r.from, 'llm');
+    assert.strictEqual(cap.bodies.length, 1, '应捕获 1 个讲解请求体');
+    assert.strictEqual(cap.bodies[0].max_tokens, 2048, '讲解 max_tokens 应为 2048: ' + cap.bodies[0].max_tokens);
+    assert.ok(cap.bodies[0].max_tokens <= 4096, '讲解 max_tokens 不得超过 4096: ' + cap.bodies[0].max_tokens);
+  } finally { cap.restore(); }
+});
+
+testAsync('Explain.ask：追问请求 max_tokens = 1024 且 <= 4096（防 16384 过度放大）', async () => {
+  const X = loadExplain();
+  const q = { id: 'mt-2', type: 'numeric', prompt: 'x+2=5', answer: '3' };
+  const cap = captureExplainFetch('移项就是把数挪到另一边，注意变号。');
+  try {
+    const r = await X.ask(T_A, q, '1', [], '什么叫移项？');
+    assert.strictEqual(r.from, 'llm');
+    assert.strictEqual(cap.bodies.length, 1, '应捕获 1 个追问请求体');
+    assert.strictEqual(cap.bodies[0].max_tokens, 1024, '追问 max_tokens 应为 1024: ' + cap.bodies[0].max_tokens);
+    assert.ok(cap.bodies[0].max_tokens <= 4096, '追问 max_tokens 不得超过 4096: ' + cap.bodies[0].max_tokens);
+  } finally { cap.restore(); }
+});
+
+test('单一出处：explain.js 内 max_tokens 字面量只出现在常量定义处', () => {
+  const src = fsExplain.readFileSync(path.join(__dirname, '..', 'diagnose', 'explain.js'), 'utf8');
+  const offenders = [];
+  const stripped = src
+    .replace(/\/\*[\s\S]*?\*\//g, function (m) { return m.replace(/[^\n]/g, ' '); })
+    .replace(/(^|[^:])\/\/.*$/gm, function (m, p1) { return p1 + ' '.repeat(m.length - p1.length); });
+  stripped.split('\n').forEach(function (line, i) {
+    if (line.indexOf('max_tokens') < 0) return;
+    if (/max_tokens\s*:\s*[A-Z][A-Z0-9_]*\s*,?/.test(line)) return;                  // 请求体引用常量
+    if (/^\s*(?:const|var|let)\s+[A-Z][A-Z0-9_]*\s*=\s*\d+\s*;/.test(line)) return;  // 常量定义
+    offenders.push((i + 1) + ': ' + line.trim());
+  });
+  assert.deepStrictEqual(offenders, [], '存在裸数字 max_tokens 字面量:\n' + offenders.join('\n'));
+});
+
+test('单一出处：explain.js 定义 EXPLAIN_MAX_TOKENS=2048 与 FOLLOWUP_MAX_TOKENS=1024', () => {
+  const src = fsExplain.readFileSync(path.join(__dirname, '..', 'diagnose', 'explain.js'), 'utf8');
+  assert.ok(/const\s+EXPLAIN_MAX_TOKENS\s*=\s*2048\s*;/.test(src), '应定义 EXPLAIN_MAX_TOKENS = 2048');
+  assert.ok(/const\s+FOLLOWUP_MAX_TOKENS\s*=\s*1024\s*;/.test(src), '应定义 FOLLOWUP_MAX_TOKENS = 1024');
+});
+
 /* ============================================ 函数实验室 fromPrompt 解析 */
 const Funclab = require('../diagnose/funclab.js');
 
