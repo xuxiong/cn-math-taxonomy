@@ -2214,6 +2214,51 @@ test('表达式判题：调试用 evalExpr 导出存在', () => {
   assert.strictEqual(E.evalExpr('x+1'), null);
 });
 
+/* ============================================ Markdown 残留清理（孩子看不懂 **、`、#） */
+testAsync('Explain.generate：reveal 里的 ** 加粗标记被剥掉', async () => {
+  const X = loadExplain();
+  X._cache.clear();
+  const q = { id: 'md-1', type: 'numeric', prompt: '用配方法说明二次式的最值。', answer: '3' };
+  const restore = mockLLM('配方法就是**配成完全平方**的意思，目标是变成`a(x-h)²+k`的样子。');
+  try {
+    const r = await X.generate(T_A, q, '1');
+    assert.strictEqual(r.from, 'llm');
+    assert.ok(r.steps[2].text.indexOf('**') < 0, '不应有 **: ' + r.steps[2].text);
+    assert.ok(r.steps[2].text.indexOf('配成完全平方') >= 0, '加粗内容应保留: ' + r.steps[2].text);
+    assert.ok(r.steps[2].text.indexOf('`') < 0, '不应有反引号: ' + r.steps[2].text);
+    assert.ok(r.steps[2].text.indexOf('a(x-h)²+k') >= 0, '公式应保留: ' + r.steps[2].text);
+  } finally { restore(); }
+});
+
+testAsync('Explain.generate：`#` 标题与行首列表符被剥掉', async () => {
+  const X = loadExplain();
+  X._cache.clear();
+  const q = { id: 'md-2', type: 'numeric', prompt: '解方程 x+2=5', answer: '3' };
+  const restore = mockLLM('# 完整解析\n- 第一步移项\n> 注意变号\n所以 x=3。');
+  try {
+    const r = await X.generate(T_A, q, '1');
+    assert.strictEqual(r.from, 'llm');
+    assert.ok(r.steps[2].text.indexOf('#') < 0, '不应有 #: ' + r.steps[2].text);
+    assert.ok(r.steps[2].text.indexOf('- 第一步') < 0, '列表符应剥掉: ' + r.steps[2].text);
+    assert.ok(r.steps[2].text.indexOf('>') < 0, '不应有 >: ' + r.steps[2].text);
+    assert.ok(r.steps[2].text.indexOf('第一步移项') >= 0, '正文应保留: ' + r.steps[2].text);
+  } finally { restore(); }
+});
+
+testAsync('Explain.ask：追问回答里的 ** 也被剥掉', async () => {
+  const X = loadExplain();
+  const q = { id: 'md-3', type: 'numeric', prompt: 'x+2=5', answer: '3' };
+  const body = { choices: [{ message: { content: '移项就是**把数挪到另一边**，注意`变号`。' } }] };
+  const real = globalThis.fetch;
+  globalThis.fetch = function () { return Promise.resolve({ ok: true, json: function () { return Promise.resolve(body); } }); };
+  try {
+    const r = await X.ask(T_A, q, '1', [], '什么叫移项？');
+    assert.strictEqual(r.from, 'llm');
+    assert.ok(r.text.indexOf('**') < 0, '追问回答不应有 **: ' + r.text);
+    assert.ok(r.text.indexOf('把数挪到另一边') >= 0, '内容应保留: ' + r.text);
+  } finally { globalThis.fetch = real; }
+});
+
 (async function () {
   for (const t of asyncTests) {
     try { await t.fn(); passed++; console.log('  ok   ' + t.name); }

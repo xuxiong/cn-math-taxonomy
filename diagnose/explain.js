@@ -25,7 +25,9 @@
       + '学生答错了一道题。请用苏格拉底式三步引导帮助他，按 JSON 输出，不要任何多余文字，格式严格为：'
       + '{"prompt":"第一步：只提问引导，让学生自己发现错误，绝不能给出答案或关键数值","hint":"第二步：给出方向性线索，提示关键步骤，但不能直接写出最终答案","reveal":"第三步：完整解析，先给正确解答，再分步解释为什么"}'
       + '要求：语言简短口语化、贴合初中生；prompt 和 hint 绝不写正确答案，hint 最多给一半思路；reveal 详细但不啰嗦。'
-      + 'reveal 的最后一行请写「答案：x = …」（多解时写「答案：x1 = …，x2 = …」），方便核对。';
+      + 'reveal 的最后一行请写「答案：x = …」（多解时写「答案：x1 = …，x2 = …」），方便核对。'
+      + '重要：输出必须是纯文本，禁止任何 Markdown 标记（不要用 **、*、`、#、> 等符号）；'
+      + '公式用普通文字写，如 "a(x-h)²+k" 直接写，不要加粗、不要用代码块。';
   }
 
   function userPrompt(topic, q, userAnswer) {
@@ -38,6 +40,23 @@
       + (q.explanation ? '\n可参考的标准解析（reveal 里可以展开它，但不要照抄）：' + q.explanation : '');
   }
 
+  /**
+   * 清理 LLM 输出里的 Markdown 残留（模型即使被要求纯文本也可能输出 **、`、# 等）。
+   * 孩子看不懂这些标记，展示层必须兜底剥掉：
+   *   **xxx** / *xxx* -> xxx（去掉星号）；`xxx` -> xxx；行首 #、> 剥掉。
+   * @param {string} text
+   * @returns {string}
+   */
+  function cleanMarkdown(text) {
+    return String(text || '')
+      .replace(/\*\*([^*]*)\*\*/g, '$1')   // **加粗** -> 加粗
+      .replace(/\*([^*]*)\*/g, '$1')        // *斜体* -> 斜体
+      .replace(/`([^`]*)`/g, '$1')          // `代码` -> 代码
+      .replace(/^[#>]+\s*/gm, '')           // 行首 # / >
+      .replace(/^[-*+]\s+/gm, '')           // 行首列表符
+      .trim();
+  }
+
   function parseSteps(content) {
     let m = String(content || '').match(/\{[\s\S]*\}/);
     if (!m) return null;
@@ -45,7 +64,7 @@
     const kinds = ['prompt', 'hint', 'reveal'];
     const steps = [];
     for (const k of kinds) {
-      const text = (j[k] || '').trim();
+      const text = cleanMarkdown(j[k] || '');
       if (!text) return null;
       steps.push({ kind: k, text: text });
     }
@@ -61,7 +80,8 @@
       + '1) 直接回答他问的那个点，讲清楚、口语化、简短，贴合初中生；'
       + '2) 如果问题本质是「这道题怎么做/答案是多少」，沿用苏格拉底法引导他自己算，不要直接给最终答案；'
       + '3) 如果问题是对概念的疑问（如「什么叫移项」「为什么去括号要变号」），直接解释，可以结合当前题目举例；'
-      + '4) 不要输出 JSON 或任何标记，只输出回答文本。';
+      + '4) 不要输出 JSON 或任何标记，只输出回答文本；'
+      + '5) 回答是纯文本，禁止 Markdown（不要用 **、*、`、#、> 等符号），公式直接用文字写。';
   }
 
   function askUserPrompt(topic, q, userAnswer, steps, question) {
@@ -97,7 +117,7 @@
       return resp.json();
     }).then(function (data) {
       const c = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-      const text = String(c || '').trim();
+      const text = cleanMarkdown(c);
       if (!text) throw new Error('llm empty');
       return text;
     });
