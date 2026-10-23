@@ -6,7 +6,6 @@ body.page-explore {
   flex-direction: column;
   overflow: hidden;
 }
-body.page-explore .top-banner,
 body.page-explore .site-header,
 body.page-explore .site-footer { flex: none; }
 .explore {

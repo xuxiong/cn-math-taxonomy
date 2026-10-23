@@ -112,8 +112,6 @@ details.chap-sum > summary { display: flex; flex-wrap: wrap; align-items: center
 .chap-names { margin: 6px 0; overflow-wrap: anywhere; }
 #out-of-scope { margin-top: 4px; }
 #log { overflow-x: auto; max-width: 100%; }
-.iq-line { margin: 8px 0 0; overflow-wrap: anywhere; }
-.iq-line a { color: var(--brand-strong); font-weight: 700; }
 body.share-open { overflow: hidden; }
 .share-modal {
   position: fixed;

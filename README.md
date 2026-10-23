@@ -5,10 +5,9 @@
 **范围：数学高中做到必修和选择性必修，并且只用人民教育出版社 A 版（2019）；英语做到三年级到高中（人教版 2019 必修三册、选择性必修四册）。这是 AI 生成的初稿。** 7.3「复数的三角表示」仍按教材选学处理，没有单独建点。定积分不在选择性必修的内容要求里，没有建点。英语不出听力和口语题。
 
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
-[![在线试用](https://img.shields.io/badge/%E5%9C%A8%E7%BA%BF%E8%AF%95%E7%94%A8-math.pansgo.com-2ea44f)](https://math.pansgo.com/)
 [![GitHub Pages 备份](https://img.shields.io/badge/备份-GitHub%20Pages-lightgrey)](https://xuxiong.github.io/cn-math-taxonomy/)
 
-**[→ 在线试用诊断（演示：配方法）](https://math.pansgo.com/diagnose/?target=cnm_221&demo=1)** · [首页](https://math.pansgo.com/) · [知识图谱](https://math.pansgo.com/explore/) · [诊断工具](https://math.pansgo.com/diagnose/) · [GitHub Pages 备份](https://xuxiong.github.io/cn-math-taxonomy/)
+**[→ 在线试用诊断（演示：配方法）](https://xuxiong.github.io/cn-math-taxonomy/diagnose/?target=cnm_221&demo=1)** · [首页](https://xuxiong.github.io/cn-math-taxonomy/) · [知识图谱](https://xuxiong.github.io/cn-math-taxonomy/explore/) · [诊断工具](https://xuxiong.github.io/cn-math-taxonomy/diagnose/)
 
 ![首页：三步说明、实时统计和年级入口](screenshots/06-home.png)
 
@@ -408,7 +407,7 @@ python3 -m http.server 8000
 
 **知识图谱**（`explore/`）：左侧搜索，以及学段（全部 / 小学 / 初中 / 高中）/ 年级 / 领域筛选，结果按年级·册·章折叠。英语页的学段是全部 / 小学 / 初中 / 高中，年级从三年级到九年级，再加上必修第一册到必修第三册、选择性必修第一册到第四册（不出现「高一」）。领域是语音、词汇、语法、日常表达、读写。选「小学」时清掉初中和高中，选「初中」时清掉小学和高中，选「高中」时只留必修和选择性必修。手机上目录收在顶部抽屉里。中间用 Cytoscape + dagre 只画**当前知识点的局部图**：默认向上 2 层先修（可改 1 / 2 / 3 层或全部祖先），向下 1 层。硬先修实线、软先修虚线，小学、初中、高中节点颜色不同（图例里写明），点节点即可换选中项，可缩放、拖动和「适配画面」。选「全部」时如果超过 40 个点，会先按年级收起，点「共 N 个，点此展开全部」再画每一个点，并对准当前知识点（避免缩成无法辨认的全图）。不会默认铺开全部知识点。名称过长在图上省略，悬停或点按可看全名。右侧（窄屏在图下方）是详情：名称、年级册章、领域、类型、描述、掌握标准、课标条目、样题（答案折叠）、先修列表，以及「被哪些知识点依赖」。大按钮「诊断这个知识点」进入 `diagnose/?target=<id>`；英语会带上 `subject=english`。
 
-**诊断**（`diagnose/`）：开始页先按学段筛选并搜索，册章列表仍在，但默认折叠。数学按年级整体诊断包含一至九年级，以及高一、高二、选必一、选必二、选必三。高中不提供上下册：必修两册的范围按钮写「必修整册」，选择性必修写「整册」。URL 用 `grade=高一`、`grade=高二`、`grade=选必二`（也接受 `高一必修`、`选择性必修第二册` 这类写法）。英语是 `?subject=english`，年级从三年级到九年级，再加上必修一到必修三、选必一到选必四。整册例如 `grade=四上`、`grade=八上`、`grade=选必一`（也接受 `选择性必修第一册`、`必修第一册`）。九年级英语只有全一册，范围按钮是「全一册」，URL 用 `grade=九全`。高中英语不提供上下册：必修三册的范围按钮是「必修整册」，选择性必修是「整册」。不带 `subject` 时 `grade=必修一` 或 `选择性必修第四册` 不会选到数学。数学和英语的诊断进度分开存在本机（`cnmDiagnose.session.v2` 与 `cneDiagnose.session.v2`），题量设置仍共用。答题卡片和选项加大（触控不小于 44px）。结果页把根因、不稳和学习路径分成卡片。路径图用与知识图谱相同的 Cytoscape：小学 / 初中 / 高中分色，硬先修实线，软先修虚线，薄弱根因红框标出；文字版路径列表仍在。导出 JSON 和打印保留。结果页可以「生成分享图」：在浏览器里用 canvas 画一张 1080×1920 的竖图，写上站名、学科和诊断范围、已掌握 / 不稳 / 薄弱 / 未测、最薄弱的 2–3 章或知识点、1–2 个根因和日期。底部二维码指向 `https://math.pansgo.com/?from=share`，旁边是「扫码打开本站」，页脚注明「AI 生成初稿，仅供参考」。图上没有孩子姓名，也不涉及付费。桌面端弹层里下载，手机端长按图片保存。二维码用仓库里的 qrcode-generator 2.0.4（MIT）本地绘制。图例仍是小学、初中、高中三色，选择性必修和必修同用高中色；英语页同样保留这三色，高中英语用高中色。分享图写上学科（英语）和诊断范围（例如选必一），不把英语册次写成高一。
+**诊断**（`diagnose/`）：开始页先按学段筛选并搜索，册章列表仍在，但默认折叠。数学按年级整体诊断包含一至九年级，以及高一、高二、选必一、选必二、选必三。高中不提供上下册：必修两册的范围按钮写「必修整册」，选择性必修写「整册」。URL 用 `grade=高一`、`grade=高二`、`grade=选必二`（也接受 `高一必修`、`选择性必修第二册` 这类写法）。英语是 `?subject=english`，年级从三年级到九年级，再加上必修一到必修三、选必一到选必四。整册例如 `grade=四上`、`grade=八上`、`grade=选必一`（也接受 `选择性必修第一册`、`必修第一册`）。九年级英语只有全一册，范围按钮是「全一册」，URL 用 `grade=九全`。高中英语不提供上下册：必修三册的范围按钮是「必修整册」，选择性必修是「整册」。不带 `subject` 时 `grade=必修一` 或 `选择性必修第四册` 不会选到数学。数学和英语的诊断进度分开存在本机（`cnmDiagnose.session.v2` 与 `cneDiagnose.session.v2`），题量设置仍共用。答题卡片和选项加大（触控不小于 44px）。结果页把根因、不稳和学习路径分成卡片。路径图用与知识图谱相同的 Cytoscape：小学 / 初中 / 高中分色，硬先修实线，软先修虚线，薄弱根因红框标出；文字版路径列表仍在。导出 JSON 和打印保留。结果页可以「生成分享图」：在浏览器里用 canvas 画一张 1080×1920 的竖图，写上站名、学科和诊断范围、已掌握 / 不稳 / 薄弱 / 未测、最薄弱的 2–3 章或知识点、1–2 个根因和日期。底部二维码指向 `https://xuxiong.github.io/cn-math-taxonomy/?from=share`，旁边是「扫码打开本站」，页脚注明「AI 生成初稿，仅供参考」。图上没有孩子姓名，也不涉及付费。桌面端弹层里下载，手机端长按图片保存。二维码用仓库里的 qrcode-generator 2.0.4（MIT）本地绘制。图例仍是小学、初中、高中三色，选择性必修和必修同用高中色；英语页同样保留这三色，高中英语用高中色。分享图写上学科（英语）和诊断范围（例如选必一），不把英语册次写成高一。
 
 ![数学诊断分享图：五年级上册](screenshots/38-share-math.png)
 
@@ -431,9 +430,9 @@ python3 -m http.server 8000
 3. 用真实学生答题数据校准诊断题与先修强度。
 
 
-## 部署（Cloudflare Pages）
+## 部署（GitHub Pages）
 
-生产站点：https://math.pansgo.com/ （Pages 项目 `cn-math-taxonomy`，备用 https://cn-math-taxonomy.pages.dev/）。
+生产站点：https://xuxiong.github.io/cn-math-taxonomy/ （GitHub Pages）。
 
 本仓库更新后，在本机执行一次即可重新发布静态页：
 

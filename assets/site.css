@@ -193,35 +193,6 @@ code { overflow-wrap: anywhere; }
   *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
 }
 
-.top-banner {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
-  min-height: 34px;
-  padding: 5px 12px;
-  background: #17191f;
-  color: #f4f5f7;
-  font-size: 14px;
-  font-weight: 650;
-  line-height: 1.3;
-  text-align: center;
-  text-decoration: none;
-  white-space: nowrap;
-  overflow: hidden;
-  letter-spacing: 0;
-}
-.top-banner:hover { background: var(--brand-strong); color: var(--on-brand); }
-@media (max-width: 420px) {
-  .top-banner { font-size: 12.5px; padding: 5px 8px; }
-}
-@media print {
-  .top-banner { display: none !important; }
-}
-
 .site-header {
   display: flex;
   flex-wrap: wrap;
@@ -509,7 +480,7 @@ textarea { min-height: 96px; }
 }
 .stat-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .grade-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.stat-card, a.grade-card, a.iq-card {
+.stat-card, a.grade-card {
   background: var(--bg-elev);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -519,7 +490,7 @@ textarea { min-height: 96px; }
 .stat-num { font-size: 1.7rem; font-weight: 750; line-height: 1.1; letter-spacing: -0.03em; color: var(--text); }
 .stat-label { color: var(--muted); font-weight: 650; font-size: 0.92rem; }
 .stat-note { color: var(--muted); margin: 8px 0 0; font-size: 0.92rem; }
-a.grade-card, a.iq-card {
+a.grade-card {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -531,11 +502,8 @@ a.grade-card, a.iq-card {
 }
 a.grade-card.is-junior { border-top-color: var(--node-junior); }
 a.grade-card.is-senior { border-top-color: var(--node-senior); }
-a.grade-card:hover, a.iq-card:hover { border-color: var(--brand); }
-a.grade-card strong, a.iq-card strong { font-size: 1.08rem; letter-spacing: -0.02em; }
-a.iq-card { margin-top: 22px; gap: 4px; max-width: 100%; border-top-color: var(--brand); }
-a.iq-card .iq-sub { font-weight: 650; overflow-wrap: anywhere; }
-a.iq-card .iq-note { color: var(--muted); font-size: 0.82rem; font-weight: 650; overflow-wrap: anywhere; }
+a.grade-card:hover { border-color: var(--brand); }
+a.grade-card strong { font-size: 1.08rem; letter-spacing: -0.02em; }
 .grade-stage { color: var(--muted); font-size: 0.82rem; font-weight: 650; }
 .grade-count { font-weight: 650; }
 .load-error {
