@@ -1650,9 +1650,9 @@ function parsePrompt(prompt) {
   // T2: 解方程 {a}(x{b})={c}(x{d})。
   m = /^解方程 (-?\d+)\(x([+-]\d+)\)=(-?\d+)\(x([+-]\d+)\)。/.exec(prompt);
   if (m) return { recipe: 'T2', a: +m[1], b: +m[2], c: +m[3], d: +m[4] };
-  // T3: 解方程 {a}(x{b})-{c}(x{d})={e}。
-  m = /^解方程 (-?\d+)\(x([+-]\d+)\)-(-?\d+)\(x([+-]\d+)\)=(-?\d+)。/.exec(prompt);
-  if (m) return { recipe: 'T3', a: +m[1], b: +m[2], c: +m[3], d: +m[4], e: +m[5] };
+  // T3: 解方程 {a}(x{b}){-|+}{c}(x{d})={e}。（c<0 时显示为 +|c|）
+  m = /^解方程 (-?\d+)\(x([+-]\d+)\)([+-])(\d+)\(x([+-]\d+)\)=(-?\d+)。/.exec(prompt);
+  if (m) return { recipe: 'T3', a: +m[1], b: +m[2], c: m[3] === '-' ? +m[4] : -m[4], d: +m[5], e: +m[6] };
   // T4: 解方程 {a}(x{b})={m}-(x{d})。
   m = /^解方程 (-?\d+)\(x([+-]\d+)\)=(-?\d+)-\(x([+-]\d+)\)。/.exec(prompt);
   if (m) return { recipe: 'T4', a: +m[1], b: +m[2], m: +m[3], d: +m[4] };

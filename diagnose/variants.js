@@ -248,7 +248,7 @@
     var suffix = '。（只填 x 的值）';
     if (recipe === 'T1') return prefix + p.a + '(x' + signed(p.b) + ')=' + p.c + suffix;
     if (recipe === 'T2') return prefix + p.a + '(x' + signed(p.b) + ')=' + p.c + '(x' + signed(p.d) + ')' + suffix;
-    if (recipe === 'T3') return prefix + p.a + '(x' + signed(p.b) + ')-' + p.c + '(x' + signed(p.d) + ')=' + p.e + suffix;
+    if (recipe === 'T3') return prefix + p.a + '(x' + signed(p.b) + ')' + (p.c >= 0 ? '-' : '+') + Math.abs(p.c) + '(x' + signed(p.d) + ')=' + p.e + suffix;
     if (recipe === 'T4') return prefix + p.a + '(x' + signed(p.b) + ')=' + p.m + '-(x' + signed(p.d) + ')' + suffix;
     return '';
   }
