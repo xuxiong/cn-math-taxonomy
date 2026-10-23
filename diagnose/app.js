@@ -745,7 +745,7 @@
       card.append(h('div', { class: 'row', style: 'margin-top:10px' },
         q.type === 'self' ? null : h('button', { class: 'primary', id: 'btn-submit', onclick: function () { judgeAndGo(item); } }, '提交答案'),
         q.type === 'choice' ? null : h('button', { id: 'btn-peek', onclick: function () { ui.phase = 'self'; ui.verdict = null; renderQuestion(item); } }, '看参考答案并自评'),
-        h('button', { id: 'btn-skip', onclick: function () { ui.phase = 'skip'; renderQuestion(item); } }, '不会')));
+        h('button', { id: 'btn-skip', onclick: function () { ui.phase = 'explain'; ui.explainStep = 0; ui.aiSteps = null; ui.aiState = 'idle'; ui.aiRequested = false; renderQuestion(item); } }, '不会')));
     } else if (ui.phase === 'auto') {
       const ok = ui.verdict.verdict === 'correct';
       card.append(
@@ -772,8 +772,8 @@
         feedbackBlock(q),
         h('div', { class: 'row' },
           h('button', { class: 'good', id: 'btn-right', onclick: function () { finishAnswer('correct'); } }, '对（我做对了）'),
-          h('button', { class: 'bad', id: 'btn-wrong', onclick: function () { finishAnswer('wrong'); } }, '不对'),
-          h('button', { id: 'btn-skip2', onclick: function () { finishAnswer('skip'); } }, '不会')));
+          h('button', { class: 'bad', id: 'btn-wrong', onclick: function () { ui.phase = 'explain'; ui.explainStep = 0; ui.aiSteps = null; ui.aiState = 'idle'; ui.aiRequested = false; renderQuestion(item); } }, '不对'),
+          h('button', { id: 'btn-skip2', onclick: function () { ui.phase = 'explain'; ui.explainStep = 0; ui.aiSteps = null; ui.aiState = 'idle'; ui.aiRequested = false; renderQuestion(item); } }, '不会')));
     }
 
     card.append(h('div', { class: 'notice' }, '提示：自动判题只是近似的（数字、分数、多个答案会做规范化后比较），一切以参考答案为准；判错了可以手动更正。'));

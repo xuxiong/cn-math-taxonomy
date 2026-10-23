@@ -85,7 +85,7 @@
         { role: 'system', content: askSystemPrompt() },
         { role: 'user', content: askUserPrompt(topic, q, userAnswer, steps, question) }
       ],
-      max_tokens: 600,
+      max_tokens: 16384,
       temperature: 0.5
     };
     return fetch(PROXY, {
@@ -130,7 +130,7 @@
         { role: 'system', content: systemPrompt() },
         { role: 'user', content: userPrompt(topic, q, userAnswer) }
       ],
-      max_tokens: 900,
+      max_tokens: 16384,
       temperature: 0.6
     };
     const resp = await fetch(PROXY, {
