@@ -46,6 +46,21 @@
   }
 
   /**
+   * 匹配紧跟其后的 "= 右式"，用于方程题：把右式移到左边（y = 左式 - 右式），
+   * 这样画板与 x 轴的交点（绿点）就是方程的根。
+   * 返回 {state:'none'} 无等号 / {state:'num', value:数} / {state:'bad'} 右式含字母或无法数值化。
+   */
+  function rhsAfter(rest) {
+    // 紧接除法（y=-x²/8 之类）意味着系数被约掉了，画板会画出错误曲线 → 不挂
+    if (/^\s*\//.test(rest)) return { state: 'bad' };
+    const m = /^\s*=\s*([^\s，,。；;、）)]+)/.exec(rest);
+    if (!m) return { state: 'none' };
+    const tok = m[1];
+    if (!/^[+-]?\d*\.?\d+$/.test(tok)) return { state: 'bad' };   // "k-3" / "a" 之类含参，画板无法确定
+    return { state: 'num', value: parseFloat(tok) };
+  }
+
+  /**
    * 从题面解析函数参数 → {type, ...params}，解析不出返回 null。
    * 二次：{type:'quadratic', a, h, k}   一次：{type:'linear', k, b}   反比例：{type:'inverse', k}
    */
@@ -61,8 +76,8 @@
     }
 
     // ---------- 一次函数：y = kx + b ----------
-    // 排除 y=ax² 被误匹配：负向断言 x 后不是 ²
-    m = s.match(/y\s*=\s*([+-]?\s*\d*\.?\d*)?\s*x(?!²)\s*([+-]\s*\d*\.?\d*)?/);
+    // 排除 y=ax² / ax³ / ax^n 被误匹配：负向断言 x 后不是上标或幂号
+    m = s.match(/y\s*=\s*([+-]?\s*\d*\.?\d*)?\s*x(?![\u00B2\u00B3\u00B9^])\s*([+-]\s*\d*\.?\d*)?/);
     if (m) {
       // "y=kx+b" 里 k/b 是字母 → 跳过（概念题让模型讲，不挂画板）
       const kS = String(m[1] == null ? '' : m[1]).replace(/\s+/g, '');
@@ -73,25 +88,35 @@
     }
 
     // ---------- 二次函数（顶点式/一般式/方程，含配方题） ----------
-    // 1) 顶点式：y = a(x±h)² ± k 或 a(x±m)² ± n
-    m = s.match(/([+-]?\s*\d*\.?\d*)\s*\(\s*x\s*([+-]\s*\d*\.?\d*)\s*\)\s*²\s*([+-]\s*\d*\.?\d*)?/);
+    // 1) 顶点式：y = a(x±h)² ± k 或 a(x±m)² ± n。x² 前不允许是字母（y=a(x-2)² 的 a 未知，不画）
+    m = s.match(/(?<![a-zA-Z)）])([+-]?\s*\d*\.?\d*)\s*\(\s*x\s*([+-]\s*\d*\.?\d*)\s*\)\s*²\s*([+-]\s*\d*\.?\d*)?/);
     if (m) {
       const a = coeffNum(m[1]);
       const h = -coeffNum(m[2]);
-      const k = m[3] ? coeffNum(m[3]) : 0;
+      let k = m[3] ? coeffNum(m[3]) : 0;
+      const rhs = rhsAfter(s.slice(m.index + m[0].length));
+      if (rhs.state === 'bad') return null;               // 方程右侧含参，参数不确定
+      if (rhs.state === 'num') k -= rhs.value;            // 方程题：右式移到左边
       if (a !== 0 && isFinite(a) && isFinite(h) && isFinite(k)) return { type: 'quadratic', a: a, h: h, k: k };
     }
 
-    // 2/3) 一般式 & 方程：提取 ax²+bx+c（可能接 =0 或 = 某式）。x² 前不允许是字母/括号（如 (m-2)x² 是含参概念题）
-    m = s.match(/(?<![a-zA-Z)）])([+-]?\s*\d*\.?\d*)?\s*x²\s*([+-]\s*\d*\.?\d*)?\s*x\s*([+-]\s*\d*\.?\d*)?/);
+    // 2/3) 一般式 & 方程：提取 ax²+bx+c（可缺 bx 项；可能接 =0 或 = 某数）。
+    // x² 前不允许是字母/括号（如 (m-2)x² 是含参概念题）
+    m = s.match(/(?<![a-zA-Z)）])([+-]?\s*\d*\.?\d*)?\s*x²\s*(?:([+-]\s*\d*\.?\d*)\s*x\s*)?([+-]\s*\d*\.?\d*)?/);
     if (!m) return null;
     const a = coeffNum(m[1]);
     const b = m[2] ? coeffNum(m[2]) : 0;
-    const c = m[3] ? coeffNum(m[3]) : 0;
+    let c = m[3] ? coeffNum(m[3]) : 0;
+    const rhs2 = rhsAfter(s.slice(m.index + m[0].length));
+    if (rhs2.state === 'bad') return null;
+    if (rhs2.state === 'num') c -= rhs2.value;
     if (a === 0 || !isFinite(a) || !isFinite(b) || !isFinite(c)) return null;
     // 配方换算：y = a(x-h)² + k，其中 h = -b/(2a)，k = c - b²/(4a)
-    const h = -b / (2 * a);
-    const k = c - (b * b) / (4 * a);
+    // 归一化 -0 → 0，避免 h/k 呈现 -0（deepStrictEqual 与下游标注都干净）
+    let h = -b / (2 * a);
+    let k = c - (b * b) / (4 * a);
+    if (h === 0) h = 0;
+    if (k === 0) k = 0;
     if (!isFinite(h) || !isFinite(k)) return null;
     return { type: 'quadratic', a: a, h: h, k: k };
   }
@@ -158,11 +183,15 @@
     const type = p.type || 'quadratic';
     if (type === 'linear') {
       let s = 'y = ';
-      if (p.k === 1) s += 'x';
-      else if (p.k === -1) s += '-x';
-      else s += fmt(p.k) + 'x';
-      if (p.b > 0) s += ' + ' + fmt(p.b);
-      else if (p.b < 0) s += ' - ' + fmt(-p.b);
+      let head;
+      if (p.k === 1) head = 'x';
+      else if (p.k === -1) head = '-x';
+      else if (p.k === 0) head = '';          // 系数 0：整项消失（不显示 0x）
+      else head = fmt(p.k) + 'x';
+      s += head;
+      if (p.b > 0) s += (head ? ' + ' : '') + fmt(p.b);
+      else if (p.b < 0) s += (head ? ' - ' : '-') + fmt(-p.b);
+      if (!head && p.b === 0) s += '0';        // k=0 且 b=0：不能只留 "y = "
       return s;
     }
     if (type === 'inverse') {
