@@ -13,6 +13,13 @@
   const MODEL = 'DeepSeek-V4-Flash-0731-Unlimited';
   const TTL = 5 * 60 * 1000;
 
+  /* O3-6：max_tokens 单一出处。
+   * 讲解/追问实测输出 300-800 token 足够 —— 2048/1024 留足余量且不放大计费；
+   * 不写裸数字，避免「改一处漏一处」（O3-4 探测漏改 max_tokens:100 即此类事故）。
+   * 改这两个值之前先看 tests/test_engine.js 的 max_tokens 契约断言。 */
+  const EXPLAIN_MAX_TOKENS = 2048;    // 三步讲解（prompt/hint/reveal 的 JSON）
+  const FOLLOWUP_MAX_TOKENS = 1024;   // 讲解中追问（单轮纯文本回答）
+
   const cache = new Map();   // qid -> {ts, steps, from}
 
   function staticSteps(topic, q) {
@@ -136,7 +143,7 @@
         { role: 'system', content: askSystemPrompt() },
         { role: 'user', content: askUserPrompt(topic, q, userAnswer, steps, question) }
       ],
-      max_tokens: 16384,
+      max_tokens: FOLLOWUP_MAX_TOKENS,
       temperature: 0.5
     };
     return fetch(PROXY, {
@@ -181,7 +188,7 @@
         { role: 'system', content: systemPrompt() },
         { role: 'user', content: userPrompt(topic, q, userAnswer) }
       ],
-      max_tokens: 16384,
+      max_tokens: EXPLAIN_MAX_TOKENS,
       temperature: 0.6
     };
     const resp = await fetch(PROXY, {
