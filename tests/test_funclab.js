@@ -272,7 +272,9 @@ test('fromPrompt：方程 (x-1)²=9 → k=-9（右侧移到左边，画板零点
   assert.deepStrictEqual(F.fromPrompt(q('cnm_220_q1')), { type: 'quadratic', a: 1, h: 1, k: -9 });
 });
 
-test('fromPrompt：方程 4(x+2)²=25 → a=4,k=-25（cnm_220_q3）', function () {
+test('fromPrompt：方程 4(x+2)²=25 → a=4,h=-2,k=-25（cnm_220_q3，零点 = 答案 1/2、-9/2）', function () {
+  // k 不除 a：画板画 y=4(x+2)²-25，零点 -2±√(25/4) = 1/2、-9/2。
+  // 若写成 k=-25/4，零点会变成 -3/4、-13/4，与题库答案矛盾（Review 1 曾建议这样改，已证伪）。
   assert.deepStrictEqual(F.fromPrompt(q('cnm_220_q3')), { type: 'quadratic', a: 4, h: -2, k: -25 });
 });
 
@@ -433,8 +435,21 @@ test('labFor：反比例知识点 + 反比例题面 → 参数（cnm_238 × cnm_
   assert.deepStrictEqual(F.labFor(t('cnm_238'), q('cnm_238_q1')), { type: 'inverse', k: -6 });
 });
 
-test('labFor：方程章（cnm_221）+ 方程题面 → 参数', function () {
-  assert.deepStrictEqual(F.labFor(t('cnm_221'), q('cnm_221_q3')), { type: 'quadratic', a: 1, h: -3, k: -16 });
+test('labFor：方程章（cnm_220）+ 解方程题面 → 参数', function () {
+  assert.deepStrictEqual(F.labFor(t('cnm_220'), q('cnm_220_q1')), { type: 'quadratic', a: 1, h: 1, k: -9 });
+});
+
+test('labFor：配方法章（cnm_221）答的不是根 → 整体不挂（cnm_221_q3 虽然是"解方程"也不挂）', function () {
+  // 修复前 cnm_221_q3 会画出 y=(x+3)²-16，绿点 1/-7 恰好等于答案，但这属于
+  // "答案语义 ≠ 画板零点"的章节：同章 q1 答选项、q2 答配方常数 9、q4 答 m/n，
+  // 一半题挂一半题不挂会让学生以为"有画板 = 这道题答根"。整章不挂更稳。
+  assert.strictEqual(F.labFor(t('cnm_221'), q('cnm_221_q3')), null);
+});
+
+test('labFor：判别式章（cnm_223）答案不是根 → 不挂（判别式/根的情况/k 范围）', function () {
+  assert.strictEqual(F.labFor(t('cnm_223'), q('cnm_223_q2')), null);   // 答 25（b²-4ac）
+  assert.strictEqual(F.labFor(t('cnm_223'), q('cnm_223_q3')), null);
+  assert.strictEqual(F.labFor(t('cnm_223'), q('cnm_223_q1')), null);
 });
 
 test('labFor：知识点类型与题面类型错配 → null（一次知识点 × 二次题面）', function () {
@@ -461,6 +476,117 @@ test('labFor：题面无法解析 → null 而非抛错', function () {
   assert.strictEqual(F.labFor(t('cnm_202'), ''), null);
   assert.strictEqual(F.labFor(t('cnm_202'), null), null);
   assert.strictEqual(F.labFor(t('cnm_202'), undefined), null);
+});
+
+/* ---- 方程章：画板绿点必须就是题库答案（Review 1 的必修项 4） ----
+ * 绿点的数学来源 = annotate() 里画的 x 轴交点：x = h ± √(-k/a)（disc = -k/a）。
+ * 答案来源 = 题库 verify 表达式（这是出题时就写好的独立真值，不是本模块算的，
+ * 所以这条断言不是"用实现验证实现"）。两边都是分数都转成精确有理数 + 归一化后比对。
+ */
+const EQ_CHAPTERS = ['cnm_220', 'cnm_222', 'cnm_224'];
+
+/** 极简分数 [num, den]，只支持题库 verify 里出现的算式子集（够用即可，算不了就抛错） */
+function toFrac(x) {
+  if (Array.isArray(x)) return [x[0], x[1]];
+  if (Number.isInteger(x)) return [x, 1];
+  // 直接在小分母里找精确表示（方程题的根都是 1/2、5/4 这类）；无理数（√37）找不到 → null
+  for (let den = 1; den <= 240; den++) {
+    const num = Math.round(x * den);
+    if (Math.abs(x - num / den) < 1e-9) return [num, den];
+  }
+  return null;
+}
+function reduce(f) {
+  let a = f[0], b = f[1];
+  if (Math.abs(a) >= 1000 || Math.abs(b) >= 10000) {
+    // 超大分母（浮点噪声）用小数对齐，简化处理
+    return [a / b, 1];
+  }
+  const g = (function gcd(p, q) { return q ? gcd(q, p % q) : Math.abs(p); })(a, b) || 1;
+  return [a / g, b / g];
+}
+function fracKey(f) { return f[0] + '/' + f[1]; }
+
+/** 求值题库 verify 表达式（只支持 +,-,*,/,**,//,()、isqrt/roots2/Fraction，够覆盖方程章） */
+function evalVerify(src) {
+  const Fraction = function (n, d) { return n / d; };
+  const isqrt = function (n) {
+    const r = Math.round(Math.sqrt(n));
+    if (Math.abs(r * r - n) > 1e-9) throw new Error('verify 里出现无理根：' + n);
+    return r;
+  };
+  const roots2 = function (a, b, c) {
+    const d = b * b - 4 * a * c;
+    const r = isqrt(d);
+    return [(-b + r) / (2 * a), (-b - r) / (2 * a)];
+  };
+  // eslint-disable-next-line no-new-func
+  return new Function('Fraction', 'isqrt', 'roots2', 'return (' + src + ');')(Fraction, isqrt, roots2);
+}
+
+/** 题库答案的精确分数集合（verify 求值 → 归一化）；不是"根"型答案返回 null */
+function answerRootSet(item) {
+  if (!item.verify) return null;
+  let v;
+  try { v = evalVerify(item.verify); } catch (e) { return null; }   // 判别式/配方常数/max(range) 之类不是根
+  if (!Array.isArray(v)) return null;                                // 单值答案（判别式、面积）不是根集合
+  return new Set(v.map(function (x) { return fracKey(reduce(toFrac(x))); }));
+}
+
+/** 画板绿点的精确分数集合（annotate 的数学：h ± √(-k/a)）；无理根返回 'irrational' */
+function labRootSet(p) {
+  if (p.a === 0) return null;
+  const disc = -p.k / p.a;
+  if (disc < 0) return new Set();
+  const r = Math.sqrt(disc);
+  const xs = r === 0 ? [p.h] : [p.h - r, p.h + r];
+  const fr = xs.map(toFrac);
+  if (fr.some(function (f) { return f === null; })) return 'irrational';
+  return new Set(fr.map(function (f) { return fracKey(reduce(f)); }));
+}
+
+test('[必修4] 方程章{cns}：所有挂载题目的画板绿点集合 == 题库答案数字集合'.replace('{cns}', EQ_CHAPTERS.join('/')), function () {
+  const problems = [];
+  let checked = 0;
+  for (const item of QUESTIONS) {
+    if (EQ_CHAPTERS.indexOf(item.topicId) < 0) continue;
+    const p = F.labFor(item.topicId, item.prompt);
+    if (!p) continue;                                   // 不挂载的题不产生错图，交给下面的"必须挂载"断言
+    const want = answerRootSet(item);
+    const got = labRootSet(p);
+    checked++;
+    if (!want) {
+      problems.push(item.id + ' 挂载了但答案不是根/根不在画板上（答案 ' + item.answer + '）');
+      continue;
+    }
+    if (got === 'irrational') {
+      // 答案若也是无理小数（如 3x²+5x-1 的 -5±√37/6），绿点标 2 位小数 ≠ 学生要写的答案 → 不该挂
+      const ans = String(item.answer);
+      if (!/^[A-D]$/.test(ans.trim())) {
+        problems.push(item.id + ' 画板零点是无理数（' + ans + '），学生要写的是精确形式 → 不该挂');
+      }
+      continue;
+    }
+    const wantStr = Array.from(want).sort().join(',');
+    const gotStr = Array.from(got).sort().join(',');
+    if (wantStr !== gotStr) {
+      problems.push(item.id + ' 画板绿点 {' + gotStr + '} ≠ 答案 {' + wantStr + '}（答案 ' + item.answer + '）');
+    }
+  }
+  assert.ok(checked >= 8, '方程章挂载数异常少：' + checked);
+  assert.deepStrictEqual(problems, [], '挂载的方程题画板与答案不一致：\n  ' + problems.join('\n  '));
+});
+
+test('[必修3] 方程章{cns}：答案就是根且能解析的题必须挂上（不能因为门禁过严全灭）'.replace('{cns}', EQ_CHAPTERS.join('/')), function () {
+  const missed = [];
+  for (const item of QUESTIONS) {
+    if (EQ_CHAPTERS.indexOf(item.topicId) < 0) continue;
+    const want = answerRootSet(item);
+    if (!want) continue;                                  // 非根型答案（选项/判别式）不需要挂
+    if (!F.fromPrompt(item.prompt)) continue;             // 题面本身解析不出（如 (x-2)²=3(x-2)）不强求
+    if (!F.labFor(item.topicId, item.prompt)) missed.push(item.id + '（' + item.answer + '）');
+  }
+  assert.deepStrictEqual(missed, [], '这些题答案就是根却没挂画板：' + missed.join('、'));
 });
 
 test('labFor：真实题库全量扫——支持的章节不抛错，且返回类型必经双门禁', function () {
@@ -574,6 +700,16 @@ test('formatFormula 二次：负 k 用减号，无 +-', function () {
 
 test('formatFormula 二次：小数 a/h/k（0.5(x - 1.5)²）', function () {
   assert.strictEqual(F.formatFormula({ type: 'quadratic', a: 0.5, h: 1.5, k: 0 }), 'y = 0.5(x - 1.5)²');
+});
+
+test('formatFormula 二次：h=0 且 |a|≠1 不拼出 "4x²²" / 不丢系数（a=4,h=0 → y = 4x²）', function () {
+  // 修复前：h=0 时 aPart 与 xPart 直接相连，"4" + "x" + "²" 在 aPart 非空时
+  // 仍会走 'y = ' + aPart + xPart + '²'，对 |a|≠1 得到 "y = 4x²²"
+  assert.strictEqual(F.formatFormula({ type: 'quadratic', a: 4, h: 0, k: 0 }), 'y = 4x²');
+  assert.strictEqual(F.formatFormula({ type: 'quadratic', a: 0.5, h: 0, k: -2 }), 'y = 0.5x² - 2');
+  assert.strictEqual(F.formatFormula({ type: 'quadratic', a: -2, h: 0, k: 3 }), 'y = -2x² + 3');
+  assert.strictEqual(F.formatFormula({ type: 'quadratic', a: 1, h: 0, k: 0 }), 'y = x²');
+  assert.strictEqual(F.formatFormula({ type: 'quadratic', a: -1, h: 0, k: 0 }), 'y = -x²');
 });
 
 test('formatFormula 二次：h/k 为 -0 不显示 -0（-0 与 0 等价）', function () {

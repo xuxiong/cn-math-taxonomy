@@ -89,15 +89,25 @@
 
     // ---------- 二次函数（顶点式/一般式/方程，含配方题） ----------
     // 1) 顶点式：y = a(x±h)² ± k 或 a(x±m)² ± n。x² 前不允许是字母（y=a(x-2)² 的 a 未知，不画）
-    m = s.match(/(?<![a-zA-Z)）])([+-]?\s*\d*\.?\d*)\s*\(\s*x\s*([+-]\s*\d*\.?\d*)\s*\)\s*²\s*([+-]\s*\d*\.?\d*)?/);
+    m = s.match(/(?<![a-zA-Z)）])([+-]?\s*\d*\.?\d*)\s*\(\s*x\s*([+-]\s*\d*\.?\d*)\s*\)\s*²\s*([+-]\s*\d*\.?\d*)?(?!\s*x)/);
     if (m) {
       const a = coeffNum(m[1]);
       const h = -coeffNum(m[2]);
       let k = m[3] ? coeffNum(m[3]) : 0;
       const rhs = rhsAfter(s.slice(m.index + m[0].length));
       if (rhs.state === 'bad') return null;               // 方程右侧含参，参数不确定
-      if (rhs.state === 'num') k -= rhs.value;            // 方程题：右式移到左边
-      if (a !== 0 && isFinite(a) && isFinite(h) && isFinite(k)) return { type: 'quadratic', a: a, h: h, k: k };
+      if (rhs.state === 'num') {
+        // 方程题：a(x-h)² + c = RHS → 画 y = (左式) - RHS，其零点就是方程的根。
+        // 顶点纵坐标 k = c - RHS（**不除 a**）：画板绘制的是 a(x-h)²+k，
+        // 由 a(x-h)² + (c-RHS) = 0 得 x = h ± √((RHS-c)/a)，与方程 a(x-h)² = RHS-c 的解一致。
+        // 例：4(x+2)²=25 → k=-25，零点 -2±√(25/4) = 1/2、-9/2（等于题库答案）。
+        // 若误写成 k=-25/4，零点会变成 -3/4、-13/4，与答案不符。
+        k = k - rhs.value;
+      }
+      if (a !== 0 && isFinite(a) && isFinite(h) && isFinite(k)) {
+        if (k === 0) k = 0;                               // 归一化 -0
+        return { type: 'quadratic', a: a, h: h, k: k };
+      }
     }
 
     // 2/3) 一般式 & 方程：提取 ax²+bx+c（可缺 bx 项；可能接 =0 或 = 某数）。
@@ -109,6 +119,7 @@
     let c = m[3] ? coeffNum(m[3]) : 0;
     const rhs2 = rhsAfter(s.slice(m.index + m[0].length));
     if (rhs2.state === 'bad') return null;
+    // 方程题移项：ax²+bx+c = RHS → ax²+bx+(c-RHS) = 0，所以常数项减 RHS 后再做配方换算
     if (rhs2.state === 'num') c -= rhs2.value;
     if (a === 0 || !isFinite(a) || !isFinite(b) || !isFinite(c)) return null;
     // 配方换算：y = a(x-h)² + k，其中 h = -b/(2a)，k = c - b²/(4a)
@@ -136,12 +147,61 @@
     return topicKind(topicId) !== null;
   }
 
-  /** 组合入口：知识点支持 && 题面能解析 && 类型匹配 → 参数对象，否则 null */
+  /**
+   * 一元二次方程章（cnm_220..224）的题面门禁：画板只在"答案就是方程的根"时才挂。
+   *
+   * 学生看图会把 x 轴交点（绿点）当答案 —— 答案若其实是判别式、配方常数、m/n、k 的范围，
+   * 画板就与答案无关，比没画板更糟（Review 1 缺陷 7：cnm_221 由"无画板"变成"画板与答案无关"）。
+   * 各章答案语义（依据 data/questions.json 实际答案，不是猜的）：
+   *   cnm_220（直接开平方）：q1/q2/q3 答根，q4 答 k 的范围
+   *   cnm_221（配方法）：q1 答选项、q2 答配方常数、q3 答根、q4 答 m/n → 一半题不是根，整章不放行
+   *   cnm_222（公式法）：q1/q2/q4 答根，q3 答无理根的选项 → 由下面的"无理零点"判断处理
+   *   cnm_223（根的判别式）：答判别式/根的情况/k 范围 → 整章不放行
+   *   cnm_224（因式分解法）：全部答根
+   *
+   * 同时要求题面里有方程语境（等号/解/根/配方……），避免把应用题里的算式当方程画。
+   */
+  const EQUATION_CHAPTERS = {
+    cnm_220: true,
+    cnm_222: true,
+    cnm_224: true
+  };
+  const EQUATION_WORDS = /解|根|配方|方程|或|=|求\s*x|两个|交点|平方/;
+
+  /**
+   * 零点是否为"干净"的有限小数/整数。无理根（√37 之类）画板只能标近似小数，
+   * 与题目要求写的精确形式对不上（cnm_222_q3 的 3x²+5x-1），因此不挂。
+   */
+  function hasCleanRoots(a, k) {
+    if (a === 0) return true;
+    const disc = -k / a;
+    if (disc < 0) return true;                     // 无实根：画板只说"没有交点"，不会标数
+    const r = Math.sqrt(disc);
+    if (r === 0) return true;
+    const roots = [r, -r];
+    return roots.every(function (v) {
+      const t = Math.round(v * 120) / 120;         // 1/2、3/4、5/6… 这类可标注的有理根
+      return Math.abs(v - t) < 1e-9;
+    });
+  }
+
+  /** 方程题是否该挂画板（只在"答案就是根"的章节 + 题面确实是方程 + 根能精确标注） */
+  function equationAllowed(topicId, prompt, parsed) {
+    if (!EQUATION_CHAPTERS[topicId]) return false;
+    if (!EQUATION_WORDS.test(normalize(prompt))) return false;
+    return hasCleanRoots(parsed.a, parsed.k);
+  }
+
+  /** 组合入口：知识点支持 && 题面能解析 && 类型匹配 && 题面门禁 → 参数对象，否则 null */
   function labFor(topicId, prompt) {
     const kind = topicKind(topicId);
     if (!kind) return null;
     const r = fromPrompt(prompt);
     if (!r || r.type !== kind) return null;
+    // 一元二次方程章：答案必须是根，且根要能被绿点精确标出来
+    if (/^cnm_22[0-4]$/.test(String(topicId)) && r.type === 'quadratic') {
+      if (!equationAllowed(String(topicId), prompt, r)) return null;
+    }
     return r;
   }
 
@@ -207,7 +267,11 @@
     let xPart = 'x';
     if (p.h > 0) xPart += ' - ' + fmt(p.h);
     else if (p.h < 0) xPart += ' + ' + fmt(-p.h);
-    let s = p.h === 0 ? 'y = ' + aPart + xPart + '²' : 'y = ' + aPart + '(' + xPart + ')²';
+    let s;
+    // h=0 时统一写 x²（不带括号）：a=4 → "y = 4x²"，a=1 → "y = x²"。
+    // 修复前 h=0 且 |a|≠1 会拼出 "y = 4x²²"（aPart 与 xPart 直接相连又多一个 ²）
+    if (p.h === 0) s = 'y = ' + aPart + xPart + '²';
+    else s = 'y = ' + aPart + '(' + xPart + ')²';
     if (p.k > 0) s += ' + ' + fmt(p.k);
     else if (p.k < 0) s += ' - ' + fmt(-p.k);
     return s;
