@@ -2419,7 +2419,10 @@ test('Funclab.白名单与类型匹配', function () {
   assert.strictEqual(Funclab.topicSupported('cnm_221'), true);
   // 知识点函数类型与题面解析类型必须一致才挂
   assert.strictEqual(Funclab.labFor('cnm_202', '把 y=-2x²+8x-3 化为顶点式'), null);   // 题面是二次，知识点是一次 → 错配
-  assert.strictEqual(Funclab.labFor('cnm_221', '用配方法解 x²-4x-1=0。').type, 'quadratic');
+  // cnm_221 是配方法章（答案多为选项 / 配方常数 / m、n，不是根）→ 整章不挂画板，避免绿点被当答案
+  assert.strictEqual(Funclab.labFor('cnm_221', '用配方法解 x²-4x-1=0。'), null);
+  // cnm_220 是直接开平方章：答案就是根 → 挂
+  assert.strictEqual(Funclab.labFor('cnm_220', '解方程 (x-1)²=9。').type, 'quadratic');
   assert.deepStrictEqual(Funclab.labFor('cnm_202', '求 y=-2x+4 与坐标轴的交点。'), { type: 'linear', k: -2, b: 4 });
   assert.deepStrictEqual(Funclab.labFor('cnm_238', '点 P 在 y=-8/x 的图象上'), { type: 'inverse', k: -8 });
 });
