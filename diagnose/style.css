@@ -234,3 +234,9 @@ table.log select { min-height: 44px; }
 .ask-a.pending { color: var(--muted, #888); font-style: italic; }
 .ask-a.offline { color: var(--warn, #b58900); }
 .ask-input { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--line, #ccc); border-radius: 8px; font-size: 0.95rem; }
+
+/* ---- 解析公式可读性（O4）：公式段高亮 + 上下标符号显示 ---- */
+.explain, .refans { line-height: 1.65; }
+.explain b, .refans b { color: var(--brand, #2a7de1); }
+/* 常见分数/根式写法在纯文本里不截断 */
+.explain, .refans { word-break: keep-all; }
