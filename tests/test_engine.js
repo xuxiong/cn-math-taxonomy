@@ -2259,6 +2259,49 @@ testAsync('Explain.ask：追问回答里的 ** 也被剥掉', async () => {
   } finally { globalThis.fetch = real; }
 });
 
+/* ============================================ LaTeX 残留清理（\sqrt、\frac 等转纯文本） */
+testAsync('Explain.generate：\\sqrt{5} → √5', async () => {
+  const X = loadExplain();
+  X._cache.clear();
+  const q = { id: 'ltx-1', type: 'numeric', prompt: '用配方法解 x²-4x-1=0', answer: '2±√5' };
+  const restore = mockLLM('两边开平方得 x-2=\\pm\\sqrt{5}，所以 x=2\\pm\\sqrt{5}。');
+  try {
+    const r = await X.generate(T_A, q, '1');
+    assert.strictEqual(r.from, 'llm');
+    assert.ok(r.steps[2].text.indexOf('\\sqrt') < 0, '不应有 \\sqrt: ' + r.steps[2].text);
+    assert.ok(r.steps[2].text.indexOf('\\pm') < 0, '不应有 \\pm: ' + r.steps[2].text);
+    assert.ok(r.steps[2].text.indexOf('√5') >= 0, '应为 √5: ' + r.steps[2].text);
+    assert.ok(r.steps[2].text.indexOf('±') >= 0, '应为 ±: ' + r.steps[2].text);
+  } finally { restore(); }
+});
+
+testAsync('Explain.generate：\\frac{1}{2} → (1)/(2)', async () => {
+  const X = loadExplain();
+  X._cache.clear();
+  const q = { id: 'ltx-2', type: 'numeric', prompt: '解方程 2x²-3x-2=0', answer: '2，-1/2' };
+  const restore = mockLLM('由求根公式 x=\\frac{3\\pm5}{4}，得 x=2 或 x=-\\frac{1}{2}。');
+  try {
+    const r = await X.generate(T_A, q, '1');
+    assert.strictEqual(r.from, 'llm');
+    assert.ok(r.steps[2].text.indexOf('\\frac') < 0, '不应有 \\frac: ' + r.steps[2].text);
+    assert.ok(r.steps[2].text.indexOf('(3±5)/(4)') >= 0, '分式应转成斜杠: ' + r.steps[2].text);
+  } finally { restore(); }
+});
+
+testAsync('Explain.ask：LaTeX 命令在追问里也被转换', async () => {
+  const X = loadExplain();
+  const q = { id: 'ltx-3', type: 'numeric', prompt: 'x²=5', answer: '±√5' };
+  const body = { choices: [{ message: { content: '开平方得 x=\\pm\\sqrt{5}。' } }] };
+  const real = globalThis.fetch;
+  globalThis.fetch = function () { return Promise.resolve({ ok: true, json: function () { return Promise.resolve(body); } }); };
+  try {
+    const r = await X.ask(T_A, q, '1', [], '怎么开方？');
+    assert.strictEqual(r.from, 'llm');
+    assert.ok(r.text.indexOf('\\') < 0, '不应有反斜杠: ' + r.text);
+    assert.ok(r.text.indexOf('±√5') >= 0, '应为 ±√5: ' + r.text);
+  } finally { globalThis.fetch = real; }
+});
+
 (async function () {
   for (const t of asyncTests) {
     try { await t.fn(); passed++; console.log('  ok   ' + t.name); }

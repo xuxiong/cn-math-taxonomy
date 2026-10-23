@@ -27,7 +27,9 @@
       + '要求：语言简短口语化、贴合初中生；prompt 和 hint 绝不写正确答案，hint 最多给一半思路；reveal 详细但不啰嗦。'
       + 'reveal 的最后一行请写「答案：x = …」（多解时写「答案：x1 = …，x2 = …」），方便核对。'
       + '重要：输出必须是纯文本，禁止任何 Markdown 标记（不要用 **、*、`、#、> 等符号）；'
-      + '公式用普通文字写，如 "a(x-h)²+k" 直接写，不要加粗、不要用代码块。';
+      + '公式用普通文字写，如 "a(x-h)²+k" 直接写，不要加粗、不要用代码块；'
+      + '不要写任何反斜杠命令（如 \\sqrt、\\frac、\\times、\\pm 都不要用）；'
+      + '根号直接用 √ 符号（如 2±√5），分数用斜杠（如 1/2），允许用 ² 表示平方。';
   }
 
   function userPrompt(topic, q, userAnswer) {
@@ -40,6 +42,34 @@
       + (q.explanation ? '\n可参考的标准解析（reveal 里可以展开它，但不要照抄）：' + q.explanation : '');
   }
 
+  /** LaTeX 残留转纯文本：\sqrt{5} -> √5、\frac{1}{2} -> 1/2、\pm -> ±。
+   * 防模型不听话（prompt 已禁 LaTeX，这里是展示层兜底）。
+   * @param {string} text
+   * @returns {string}
+   */
+  function cleanLatex(text) {
+    let s = String(text || '');
+    // 先处理分式（嵌套在最外层，先转 \frac{a}{b} -> a/b）
+    let prev = '';
+    while (prev !== s) {
+      prev = s;
+      s = s.replace(/\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '($1)/($2)');
+    }
+    // 再处理根式 \sqrt[n]{x} / \sqrt{x} -> √x
+    s = s.replace(/\\sqrt\s*\[([^\]]*)\]\s*\{([^{}]*)\}/g, '√[$1]($2)')
+         .replace(/\\sqrt\s*\{([^{}]*)\}/g, '√$1');
+    // 其余常见命令：\pm ±、\times ×、\cdot ·、\div ÷、\le ≤、\ge ≥、\neq ≠、\approx ≈、\infty ∞、\pi π
+    // 注意不能只用 \b（\pm5 中 pm 后是数字 5，仍是单词字符，\b 不成立）；用 (?![a-zA-Z]) 兜住
+    s = s.replace(/\\(pm|times|cdot|div|le|ge|neq|approx|infty|pi)(?![a-zA-Z])/g, function (m, name) {
+      return { pm: '±', times: '×', cdot: '·', div: '÷', le: '≤', ge: '≥', neq: '≠', approx: '≈', infty: '∞', pi: 'π' }[name];
+    });
+    // 其余未知反斜杠命令直接剥掉反斜杠（\alpha -> alpha，\x -> x）
+    s = s.replace(/\\([a-zA-Z]+)/g, '$1');
+    // 去掉裸花括号（\sqrt 等的残留 { }）
+    s = s.replace(/[{}]/g, '');
+    return s;
+  }
+
   /**
    * 清理 LLM 输出里的 Markdown 残留（模型即使被要求纯文本也可能输出 **、`、# 等）。
    * 孩子看不懂这些标记，展示层必须兜底剥掉：
@@ -48,7 +78,7 @@
    * @returns {string}
    */
   function cleanMarkdown(text) {
-    return String(text || '')
+    return cleanLatex(String(text || ''))
       .replace(/\*\*([^*]*)\*\*/g, '$1')   // **加粗** -> 加粗
       .replace(/\*([^*]*)\*/g, '$1')        // *斜体* -> 斜体
       .replace(/`([^`]*)`/g, '$1')          // `代码` -> 代码
@@ -81,7 +111,8 @@
       + '2) 如果问题本质是「这道题怎么做/答案是多少」，沿用苏格拉底法引导他自己算，不要直接给最终答案；'
       + '3) 如果问题是对概念的疑问（如「什么叫移项」「为什么去括号要变号」），直接解释，可以结合当前题目举例；'
       + '4) 不要输出 JSON 或任何标记，只输出回答文本；'
-      + '5) 回答是纯文本，禁止 Markdown（不要用 **、*、`、#、> 等符号），公式直接用文字写。';
+      + '5) 回答是纯文本，禁止 Markdown（不要用 **、*、`、#、> 等符号），公式直接用文字写；'
+      + '6) 不要写任何反斜杠命令（如 \sqrt、\frac 都不要用），根号用 √（如 2±√5）、分数用斜杠（如 1/2）。';
   }
 
   function askUserPrompt(topic, q, userAnswer, steps, question) {
