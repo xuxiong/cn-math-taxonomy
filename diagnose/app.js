@@ -844,7 +844,7 @@
       try {
         const lab = window.Funclab && window.Funclab.labFor(t && t.id, q && q.prompt);
         if (lab) {
-          const inst = window.Funclab.mount({ a: lab.a, h: lab.h, k: lab.k });
+          const inst = window.Funclab.mount(lab);
           box.append(inst.el);
         }
       } catch (e) { /* 画板挂了不影响讲解 */ }

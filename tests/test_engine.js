@@ -2306,40 +2306,69 @@ testAsync('Explain.ask：LaTeX 命令在追问里也被转换', async () => {
 const Funclab = require('../diagnose/funclab.js');
 
 test('Funclab.顶点式 y=(x-1)²+2', function () {
-  assert.deepStrictEqual(Funclab.fromPrompt('y=(x-1)²+2 的顶点、对称轴及平移？'), { a: 1, h: 1, k: 2 });
+  assert.deepStrictEqual(Funclab.fromPrompt('y=(x-1)²+2 的顶点、对称轴及平移？'), { type: 'quadratic', a: 1, h: 1, k: 2 });
 });
 test('Funclab.顶点式 y=2(x+3)²-5', function () {
-  assert.deepStrictEqual(Funclab.fromPrompt('求抛物线 y=2(x+3)²-5 的顶点坐标'), { a: 2, h: -3, k: -5 });
+  assert.deepStrictEqual(Funclab.fromPrompt('求抛物线 y=2(x+3)²-5 的顶点坐标'), { type: 'quadratic', a: 2, h: -3, k: -5 });
 });
 test('Funclab.一般式 y=x²-4x+3 -> 顶点 (2,-1)', function () {
-  assert.deepStrictEqual(Funclab.fromPrompt('把 y=x²-4x+3 化为顶点式'), { a: 1, h: 2, k: -1 });
+  assert.deepStrictEqual(Funclab.fromPrompt('把 y=x²-4x+3 化为顶点式'), { type: 'quadratic', a: 1, h: 2, k: -1 });
 });
 test('Funclab.一般式 y=-2x²+8x-3 -> 顶点 (2,5)', function () {
-  assert.deepStrictEqual(Funclab.fromPrompt('求抛物线 y=-2x²+8x-3 的顶点坐标'), { a: -2, h: 2, k: 5 });
+  assert.deepStrictEqual(Funclab.fromPrompt('求抛物线 y=-2x²+8x-3 的顶点坐标'), { type: 'quadratic', a: -2, h: 2, k: 5 });
 });
 test('Funclab.方程 x²-4x-1=0 -> 顶点 (2,-5)', function () {
-  assert.deepStrictEqual(Funclab.fromPrompt('用配方法解 x²-4x-1=0。'), { a: 1, h: 2, k: -5 });
+  assert.deepStrictEqual(Funclab.fromPrompt('用配方法解 x²-4x-1=0。'), { type: 'quadratic', a: 1, h: 2, k: -5 });
 });
 test('Funclab.方程 2x²-8x+1=0 -> 顶点 (2,-7)', function () {
-  assert.deepStrictEqual(Funclab.fromPrompt('把 2x²-8x+1=0 配方成 2(x-m)²=n 的形式，依次求 m 与 n 的值（用逗号隔开）。'), { a: 2, h: 2, k: -7 });
+  assert.deepStrictEqual(Funclab.fromPrompt('把 2x²-8x+1=0 配方成 2(x-m)²=n 的形式，依次求 m 与 n 的值（用逗号隔开）。'), { type: 'quadratic', a: 2, h: 2, k: -7 });
+});
+test('Funclab.一次函数 y=-2x+4', function () {
+  assert.deepStrictEqual(Funclab.fromPrompt('求 y=-2x+4 与坐标轴的交点。'), { type: 'linear', k: -2, b: 4 });
+});
+test('Funclab.一次函数 y=3x-6', function () {
+  assert.deepStrictEqual(Funclab.fromPrompt('直线 y=3x-6 与 x 轴交点的横坐标是多少？'), { type: 'linear', k: 3, b: -6 });
+});
+test('Funclab.一次函数 y=x+1 系数省略', function () {
+  assert.deepStrictEqual(Funclab.fromPrompt('直线 y=x+1 与 y=-x+3 的交点坐标？'), { type: 'linear', k: 1, b: 1 });
+});
+test('Funclab.反比例 y=6/x', function () {
+  assert.deepStrictEqual(Funclab.fromPrompt('点 P 在 y=6/x 上，PA⊥x 轴于 A，△POA 面积是多少？'), { type: 'inverse', k: 6 });
+});
+test('Funclab.反比例 y=-8/x', function () {
+  assert.deepStrictEqual(Funclab.fromPrompt('点 P 在反比例函数 y=-8/x 的图象上'), { type: 'inverse', k: -8 });
+});
+test('Funclab.参数字母不解析（y=kx+b 概念题）', function () {
+  assert.strictEqual(Funclab.fromPrompt('一次函数 y=kx+b 的图象经过一、二、四象限，则（ ）'), null);
+  assert.strictEqual(Funclab.fromPrompt('y=k/x 的图象过点 (2,3)，k 是多少？'), null);
+  assert.strictEqual(Funclab.fromPrompt('y=(m-2)x²+3x-1 是二次函数'), null);
 });
 test('Funclab.解析不出返回 null', function () {
   assert.strictEqual(Funclab.fromPrompt('下列函数中，是二次函数的是哪一个？'), null);
   assert.strictEqual(Funclab.fromPrompt(''), null);
   assert.strictEqual(Funclab.fromPrompt('设一边长为 x cm，面积为 y cm²'), null);
 });
-test('Funclab.白名单', function () {
+test('Funclab.白名单与类型匹配', function () {
+  assert.strictEqual(Funclab.topicKind('cnm_202'), 'linear');
+  assert.strictEqual(Funclab.topicKind('cnm_221'), 'quadratic');
+  assert.strictEqual(Funclab.topicKind('cnm_238'), 'inverse');
+  assert.strictEqual(Funclab.topicKind('cnm_101'), null);
   assert.strictEqual(Funclab.topicSupported('cnm_221'), true);
-  assert.strictEqual(Funclab.topicSupported('cnm_231'), true);
-  assert.strictEqual(Funclab.topicSupported('cnm_235'), true);
-  assert.strictEqual(Funclab.topicSupported('cnm_101'), false);
-  assert.strictEqual(Funclab.topicSupported('cne_101'), false);
-  assert.strictEqual(Funclab.labFor('cnm_101', 'y=x²-4x+3'), null);
-  assert.deepStrictEqual(Funclab.labFor('cnm_221', '用配方法解 x²-4x-1=0。'), { a: 1, h: 2, k: -5 });
+  // 知识点函数类型与题面解析类型必须一致才挂
+  assert.strictEqual(Funclab.labFor('cnm_202', '把 y=-2x²+8x-3 化为顶点式'), null);   // 题面是二次，知识点是一次 → 错配
+  assert.strictEqual(Funclab.labFor('cnm_221', '用配方法解 x²-4x-1=0。').type, 'quadratic');
+  assert.deepStrictEqual(Funclab.labFor('cnm_202', '求 y=-2x+4 与坐标轴的交点。'), { type: 'linear', k: -2, b: 4 });
+  assert.deepStrictEqual(Funclab.labFor('cnm_238', '点 P 在 y=-8/x 的图象上'), { type: 'inverse', k: -8 });
 });
 test('Funclab.公式美化', function () {
-  assert.strictEqual(Funclab.formatFormula({ a: 1, h: 2, k: -5 }), 'y = (x - 2)² - 5');
-  assert.strictEqual(Funclab.formatFormula({ a: -2, h: 0, k: 3 }), 'y = -2x² + 3');
+  assert.strictEqual(Funclab.formatFormula({ type: 'quadratic', a: 1, h: 2, k: -5 }), 'y = (x - 2)² - 5');
+  assert.strictEqual(Funclab.formatFormula({ type: 'quadratic', a: -2, h: 0, k: 3 }), 'y = -2x² + 3');
+  assert.strictEqual(Funclab.formatFormula({ type: 'linear', k: 2, b: -3 }), 'y = 2x - 3');
+  assert.strictEqual(Funclab.formatFormula({ type: 'linear', k: -1, b: 0 }), 'y = -x');
+  assert.strictEqual(Funclab.formatFormula({ type: 'inverse', k: 6 }), 'y = 6 / x');
+  assert.strictEqual(Funclab.formatFormula({ type: 'inverse', k: -8 }), 'y = -8 / x');
+  assert.strictEqual(Funclab.formatFormula({ type: 'inverse', k: -1 }), 'y = -1 / x');
+  assert.strictEqual(Funclab.formatFormula({ type: 'inverse', k: 1 }), 'y = 1 / x');
 });
 
 (async function () {
