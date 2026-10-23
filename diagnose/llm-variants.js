@@ -4,35 +4,49 @@
  * 零新依赖（用 fetch 调本地网关）、UMD 包装、不修改 engine.js/variants.js。
  * 浏览器中暴露为 window.DiagLLMVariants，Node 中 require() 即可。
  *
+ * O3-8 拆分后的职责：本文件只留「出题管线 + 缓存池 + 统计」。
+ *   - 纯函数求值 / 验证门 → llm-eval.js（window.DiagLLMEval）
+ *   - 网关探测 / 请求 / 工具自验 → llm-gateway.js（window.DiagLLMGateway）
+ * 对外接口与拆分前完全一致（window.DiagLLMVariants 字段一个不少）。
+ *
  * 核心思路：LLM 只管"出题面"，引擎管"验对错"——LLM 算错不要紧，
  * 验证门拦住就不让学生看到错题。工具自验（§2.4）是效率层，验证门是正确性层。
  */
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory();
-  else root.DiagLLMVariants = factory();
-})(typeof self !== 'undefined' ? self : this, function () {
+  if (typeof module !== 'undefined' && module.exports) {
+    /* Node：自行 require 另两个模块，保证测试可直接 require 本文件 */
+    module.exports = factory(require('./llm-eval.js'), require('./llm-gateway.js'));
+  } else {
+    root.DiagLLMVariants = factory(root.DiagLLMEval, root.DiagLLMGateway);
+  }
+})(typeof self !== 'undefined' ? self : this, function (__evaldn, __gw) {
   'use strict';
 
+  /* 拆出的两层（浏览器由 index.html 按序加载注入，Node 由 require 注入） */
+  var _evaldn = __evaldn;
+  var _gw = __gw;
+
+  /* ================================================================
+   * 出题配方（族 = 知识点 id → 难度档）
+   * ================================================================ */
+
   var VERSION = 1;
-  var PROXY = 'http://127.0.0.1:3000/v1/chat/completions';
-  var MODEL = 'DeepSeek-V4-Flash-0731-Unlimited';
+
   var MAX_RETRIES = 3;
-  var TIMEOUT_MS = 10000;
-  /* O3-4：探测超时放宽到 15s（联调时网关负载大响应可能 >5s，5s 太紧导致误判 false） */
-  var PROBE_TIMEOUT_MS = 15000;
-  /* O3-4：探测结果 5 分钟 TTL，过期自动重探（避免 false 永久污染钉死功能） */
-  var PROBE_TTL_MS = 5 * 60 * 1000;
-  var CACHE_KEY = 'cnmDiagnose.llmVariants.v1';
-  var STATS_KEY = 'cnmDiagnose.llmVariantStats.v1';
-  var POOL_MAX = 50;
-  var EPS = 1e-9;
 
   /* O3-6：max_tokens 单一出处（各文件自持，关键是一处定义、多处引用）。
    * GEN  —— 出题：一道题 JSON（题面+答案+解析），扩族后题面变长，500 会撞截断，取 1024
    * TOOL —— 工具轮：只需返回 tool_calls 参数，不需要长文本，取 512（也是 >=512 下限）
    * 改这两个值之前先看 tests/test_llm_variants.js 的 max_tokens 契约断言。 */
   var GEN_MAX_TOKENS = 1024;
+
   var TOOL_MAX_TOKENS = 512;
+
+  var CACHE_KEY = 'cnmDiagnose.llmVariants.v1';
+
+  var STATS_KEY = 'cnmDiagnose.llmVariantStats.v1';
+
+  var POOL_MAX = 50;
 
   /* LLM 变式 recipe：族 = 知识点 id → 形态配置。
    * cnm_221 配方法 / cnm_222 公式法 / cnm_224 因式分解法（同为"解二次方程"，答案=两根）。
@@ -42,400 +56,6 @@
     'cnm_222': { difficulties: ['basic', 'standard', 'advanced'] },
     'cnm_224': { difficulties: ['basic', 'standard', 'advanced'] }
   };
-
-  /* ================================================================
-   * 表达式安全求值（§3.3 定稿：白名单 + new Function）
-   * 威胁模型：自用工具，输入源仅自身 LLM 网关输出。
-   * 硬门槛：过滤后无任何字母才执行；先白名单后转换；抛错即校验失败。
-   * ================================================================ */
-
-  var WHITELIST = /^[0-9x+\-*/().^ ]+$/;
-
-  /**
-   * 安全求值表达式：在给定 x 值处计算 expr 的数值。
-   * 白名单过滤 → ²→**2 / √→Math.sqrt 转换 → 检查无字母 → new Function 执行。
-   * 任何不安全或抛错的情况返回 null（不中断页面）。
-   * @param {string} expr - 数学表达式，如 "x^2+6x-7" 或 "x²-4"
-   * @param {number[]} xValues - 要代入的 x 值数组
-   * @returns {number[]|null} - 各 x 处的求值结果，或 null（不安全/抛错）
-   */
-  function evaluateExpression(expr, xValues) {
-    if (expr == null || typeof expr !== 'string') return null;
-    var s = String(expr).trim();
-    if (!s) return null;
-
-    /* NFKC 归一化 + 统一符号 */
-    /* 注意：NFKC 会把 ²(U+00B2) 变成普通数字 2，丢失幂次含义。
-     * 所以先转换 ²→**2, ³→**3，再 NFKC。 */
-    s = s.replace(/²/g, '**2').replace(/³/g, '**3');
-    s = s.normalize('NFKC');
-    s = s.replace(/[−‐-―﹣]/g, '-').replace(/[×·⋅∙]/g, '*').replace(/÷/g, '/');
-    s = s.replace(/\s+/g, '');
-
-    /* 幂运算符 ^ → **（JS 不支持 ^ 作幂） */
-    s = s.replace(/\^/g, '**');
-
-    /* 省略乘号：2x → 2*x, x2 → x*2, x( → x*(, )x → )*x, )( → )*(, 2( → 2*(, )2 → )*2 */
-    /* 需要多轮替换（前一轮的结果可能产生新的邻接） */
-    for (var guard = 0; guard < 4; guard++) {
-      var prev = s;
-      s = s.replace(/(\d)x/g, '$1*x')
-         .replace(/x(\d)/g, 'x*$1')
-         .replace(/x\(/g, 'x*(')
-         .replace(/\)x/g, ')*x')
-         .replace(/\)\(/g, ')*(')
-         .replace(/(\d)\(/g, '$1*(')
-         .replace(/\)(\d)/g, ')*$1');
-      if (s === prev) break;
-    }
-
-    /* 硬门槛：转换后只允许数字、x、加减乘除、括号、点、空格 */
-    if (!/^[0-9x+\-*/(). ]+$/.test(s)) return null;
-    /* 不含其他字母（x 是唯一允许的变量）—— 检查 a-w, y, z */
-    if (/[a-wyz]/i.test(s)) return null;
-    /* 不含分号、引号（额外保险） */
-    if (/["';]/.test(s)) return null;
-
-    var results = [];
-    try {
-      var fn = new Function('x', 'return (' + s + ')');
-      for (var i = 0; i < xValues.length; i++) {
-        results.push(fn(xValues[i]));
-      }
-      return results;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  /**
-   * 代入验根：把 candidate 代入 equation，验证等式成立。
-   * @param {string} equation - 如 "x²+6x-7=0" 或 "x^2+6x-7=0"
-   * @param {string|number} candidate - 如 "1" 或 1
-   * @returns {boolean} - 代入后等式成立为 true
-   */
-  function solveCheck(equation, candidate) {
-    if (!equation || candidate == null) return false;
-    var eq = String(equation).trim();
-    var eqIdx = eq.indexOf('=');
-    if (eqIdx < 0) return false;
-    var lhs = eq.substring(0, eqIdx);
-    var rhs = eq.substring(eqIdx + 1);
-
-    var cand = typeof candidate === 'number' ? candidate : parseRootValue(String(candidate));
-    if (cand === null || isNaN(cand)) return false;
-
-    var lhsVals = evaluateExpression(lhs, [cand]);
-    var rhsVals = evaluateExpression(rhs, [cand]);
-    if (!lhsVals || !rhsVals) return false;
-
-    return Math.abs(lhsVals[0] - rhsVals[0]) < EPS;
-  }
-
-  /**
-   * 集合归一：把多值答案（含 ± 展开）归一为数值集合。
-   * @param {string} answers - 如 "1，-7" 或 "2±√5"
-   * @returns {Set} - 数值集合
-   */
-  function normalizeSet(answers) {
-    var s = new Set();
-    if (!answers) return s;
-    var expanded = expandPlusMinus(String(answers));
-    var parts = splitTop(expanded, ',;，；、');
-    for (var i = 0; i < parts.length; i++) {
-      var subparts = String(parts[i]).split(/或者|或|和|与|及/);
-      for (var j = 0; j < subparts.length; j++) {
-        var v = parseRootValue(String(subparts[j]).trim());
-        if (v !== null && !isNaN(v)) s.add(v);
-      }
-    }
-    return s;
-  }
-
-  /* ================================================================
-   * 内部解析工具
-   * ================================================================ */
-
-  /** ± 展开：2±√5 → "2+√5,2-√5"（用逗号分隔，供 splitTop 切割）。
-   * 需要捕获 ± 前面的表达式（如 2）和后面的表达式（如 √5），
-   * 展开为 前面+后面,前面-后面。 */
-  function expandPlusMinus(text) {
-    return String(text == null ? '' : text)
-      .replace(/([^，,;；或和与及±]*)±\s*([^，,;；或和与及]+)/g, function (_, pre, post) {
-        return pre + '+' + post + ',' + pre + '-' + post;
-      });
-  }
-
-  /** 顶层分割（不切割括号内的分隔符） */
-  function splitTop(s, seps) {
-    var parts = [];
-    var depth = 0;
-    var cur = '';
-    for (var i = 0; i < s.length; i++) {
-      var c = s[i];
-      if (c === '(') depth++;
-      else if (c === ')') depth = Math.max(0, depth - 1);
-      if (depth === 0 && seps.indexOf(c) >= 0) { parts.push(cur); cur = ''; }
-      else cur += c;
-    }
-    parts.push(cur);
-    return parts.filter(function (p) { return p !== ''; });
-  }
-
-  /**
-   * 解析单个根值：支持整数、小数、负数、根式（如 √5, 2+√5, -2±√3 已展开后各部分）。
-   * @returns {number|null}
-   */
-  function parseRootValue(str) {
-    var s = String(str == null ? '' : str).trim();
-    if (!s) return null;
-
-    /* 先转 ²→^2, ³→^3 再 NFKC，否则 NFKC 把 ² 变成数字 2 */
-    s = s.replace(/²/g, '^2').replace(/³/g, '^3');
-    s = s.normalize('NFKC');
-    s = s.replace(/[−‐-―﹣]/g, '-').replace(/[×·⋅∙]/g, '*').replace(/÷/g, '/');
-    s = s.replace(/\s+/g, '');
-
-    /* 去掉前导 + 号（± 展开后可能出现 +√5 这种形式） */
-    if (s.charAt(0) === '+') s = s.substring(1);
-
-    /* 纯数字 */
-    var m = /^([+-]?\d+(?:\.\d+)?)$/.exec(s);
-    if (m) return parseFloat(m[1]);
-
-    /* 根式：a+√b, √b, a-√b 等 —— 把 √ 转为 Math.sqrt 后用 new Function 求值 */
-    if (s.indexOf('√') >= 0) {
-      /* √(expr) → Math.sqrt(expr)，√number → Math.sqrt(number) */
-      var expr = s.replace(/√\(/g, 'Math.sqrt(').replace(/√(\d+(?:\.\d+)?)/g, 'Math.sqrt($1)');
-      /* 如果还有裸 √，无法处理 */
-      if (expr.indexOf('√') >= 0) return null;
-      /* 插入隐式乘号：2Math.sqrt → 2*Math.sqrt, )Math.sqrt → )*Math.sqrt */
-      expr = expr.replace(/(\d)Math\.sqrt/g, '$1*Math.sqrt')
-                 .replace(/\)Math\.sqrt/g, ')*Math.sqrt');
-      /* 安全检查：移除 Math.sqrt 后剩余应全是算术字符 */
-      var safe = expr
-        .replace(/Math\.sqrt/g, '')
-        .replace(/[0-9+\-*/(). ]/g, '');
-      if (safe === '') {
-        try {
-          var fn = new Function('return (' + expr + ')');
-          var v = fn();
-          if (typeof v === 'number' && !isNaN(v)) return v;
-        } catch (e) { /* fall through */ }
-      }
-    }
-
-    /* 尝试作为 x 的表达式求值（x=0 时的常量） */
-    var vals = evaluateExpression(s, [0]);
-    if (vals && typeof vals[0] === 'number' && !isNaN(vals[0])) return vals[0];
-
-    return null;
-  }
-
-  /**
-   * 从题面文本中提取方程部分（lhs = rhs）。
-   * 如 "用配方法解方程 x²+6x-7=0" → { lhs: "x²+6x-7", rhs: "0" }
-   */
-  function parseEquation(prompt) {
-    if (!prompt) return null;
-    var s = String(prompt).trim();
-    /* 先转 ²→^2, ³→^3 再 NFKC，否则 NFKC 把 ² 变成数字 2 */
-    s = s.replace(/²/g, '^2').replace(/³/g, '^3');
-    s = s.normalize('NFKC');
-    s = s.replace(/[−‐-―﹣]/g, '-');
-    s = s.replace(/\s+/g, '');
-
-    /* 找所有 = 号位置，逐个尝试提取方程。
-     * 题面可能含多个 = （如 "2x²-8x+1=0 配方成 2(x-m)²=n"），
-     * 取第一个左侧是数学表达式、右侧是数字/简单表达式的 = 号。 */
-    var eqPositions = [];
-    for (var i = 0; i < s.length; i++) {
-      if (s[i] === '=') eqPositions.push(i);
-    }
-    if (eqPositions.length === 0) return null;
-
-    for (var e = 0; e < eqPositions.length; e++) {
-      var eqIdx = eqPositions[e];
-      var lhs = s.substring(0, eqIdx);
-      var rhs = s.substring(eqIdx + 1);
-
-      /* 去掉中文前缀（"用配方法解方程"、"解方程"、"解" 等） */
-      /* 方程应以 x 或数字或括号或负号开头 */
-      var lhsStart = lhs.search(/[x\d(+-]/);
-      if (lhsStart < 0) continue;
-      lhs = lhs.substring(lhsStart);
-
-      /* rhs 应该是数字或简单表达式（到下一个中文字符为止） */
-      /* 截断 rhs 在第一个中文字符处 */
-      var cnIdx = rhs.search(/[一-龥]/);
-      if (cnIdx >= 0) rhs = rhs.substring(0, cnIdx);
-      rhs = rhs.replace(/[。.！!？?]+$/, '').trim();
-
-      /* 验证 rhs 是数字或简单表达式 */
-      if (!rhs) continue;
-      /* rhs 应以数字或 x 或负号开头 */
-      if (!/^[0-9x\d+-]/.test(rhs)) continue;
-
-      return { lhs: lhs, rhs: rhs };
-    }
-
-    /* 没找到有效的方程分割，回退到最后一个 = 号 */
-    var lastEq = eqPositions[eqPositions.length - 1];
-    var lhsFallback = s.substring(0, lastEq);
-    var rhsFallback = s.substring(lastEq + 1);
-    var lhsStart2 = lhsFallback.search(/[x\d(+-]/);
-    if (lhsStart2 < 0) return null;
-    return { lhs: lhsFallback.substring(lhsStart2), rhs: rhsFallback.replace(/[。.！!？?]+$/, '').trim() };
-  }
-
-  /**
-   * 从题面提取二次方程系数 a, b, c。
-   * 支持 x²+bx+c, ax²+bx+c 等形式。
-   * @returns {{a:number,b:number,c:number}|null}
-   */
-  function parseQuadraticCoeffs(prompt) {
-    var eq = parseEquation(prompt);
-    if (!eq) return null;
-    /* 把方程移到一边：lhs - rhs = 0 → 求系数 */
-    /* 简化处理：假设 rhs 是常数（如 =0），直接从 lhs 提取系数 */
-    var lhs = eq.lhs;
-    var rhsVal = parseRootValue(eq.rhs);
-    if (rhsVal === null) rhsVal = 0;
-
-    /* 用求值法提取系数：对 lhs 在 x=0,1,-1 处求值，解线性方程组 */
-    /* lhs(0) = c - rhs, lhs(1) = a+b+c - rhs, lhs(-1) = a-b+c - rhs */
-    var vals = evaluateExpression(lhs, [0, 1, -1]);
-    if (!vals) return null;
-
-    var c0 = vals[0] - rhsVal;  /* c - rhs */
-    var c1 = vals[1] - rhsVal;  /* a + b + c - rhs */
-    var c2 = vals[2] - rhsVal;  /* a - b + c - rhs */
-
-    var a = (c1 + c2 - 2 * c0) / 2;
-    var b = (c1 - c2) / 2;
-    var c = c0;
-
-    /* 验证 a 不为零（二次方程） */
-    if (Math.abs(a) < EPS) return null;
-
-    return { a: a, b: b, c: c };
-  }
-
-  /* ================================================================
-   * 验证门函数
-   * ================================================================ */
-
-  /**
-   * 方程类验证：代入答案根求值，验证 |lhs(r) - rhs(r)| < 1e-9。
-   * @param {string} prompt - 题面，如 "用配方法解方程 x²+6x-7=0"
-   * @param {string} answer - 答案，如 "1，-7" 或 "2±√5"
-   * @returns {{ok:boolean, reason:string}}
-   */
-  function verifyEquationRoots(prompt, answer) {
-    var eq = parseEquation(prompt);
-    if (!eq) return { ok: false, reason: 'parse-equation-failed' };
-
-    var roots = parseRoots(answer);
-    if (!roots || roots.length === 0) return { ok: false, reason: 'parse-roots-failed' };
-
-    for (var i = 0; i < roots.length; i++) {
-      var r = roots[i];
-      if (r === null || isNaN(r)) return { ok: false, reason: 'invalid-root' };
-      var lhsVals = evaluateExpression(eq.lhs, [r]);
-      var rhsVals = evaluateExpression(eq.rhs, [r]);
-      if (!lhsVals || !rhsVals) return { ok: false, reason: 'eval-failed' };
-      if (Math.abs(lhsVals[0] - rhsVals[0]) >= EPS) {
-        return { ok: false, reason: 'root-mismatch', root: r, diff: Math.abs(lhsVals[0] - rhsVals[0]) };
-      }
-    }
-    return { ok: true, reason: 'all-roots-verified' };
-  }
-
-  /**
-   * 配方加常数验证（q2 型）：答案应等于 (b/2)²。
-   * @param {string} prompt - 如 "要把 x²+6x 配成完全平方式，需要加上的常数是多少？"
-   * @param {string} answer - 如 "9"
-   * @returns {{ok:boolean, reason:string}}
-   */
-  function verifyCompletingSquare(prompt, answer) {
-    /* 从题面提取一次项系数 b：找 x²+bx 或 x²-bx 中的 b */
-    /* 注意：先转 ²→^2 再 NFKC，否则 NFKC 把 ² 变成数字 2 */
-    var s = String(prompt || '').replace(/²/g, '^2').normalize('NFKC').replace(/[−‐-―﹣]/g, '-').replace(/\s+/g, '');
-
-    /* 提取 x²+bx 中的 b：匹配 x^2 后跟 [+-]\d+x */
-    var m = /x\^2([+-]\d+)x/.exec(s);
-    var b;
-    if (m) {
-      b = parseInt(m[1], 10);
-    } else {
-      /* 尝试 x²+bx 形式（b=1 时写 +x 或 -x） */
-      m = /x\^2\+x/.exec(s);
-      if (m) b = 1;
-      else {
-        m = /x\^2-x/.exec(s);
-        if (m) b = -1;
-        else return { ok: false, reason: 'extract-b-failed' };
-      }
-    }
-
-    var expected = Math.pow(b / 2, 2);
-    var actual = parseRootValue(String(answer));
-    if (actual === null) return { ok: false, reason: 'parse-answer-failed' };
-
-    if (Math.abs(expected - actual) < EPS) return { ok: true, reason: 'verified' };
-    return { ok: false, reason: 'mismatch', expected: expected, actual: actual };
-  }
-
-  /**
-   * 配方 m,n 验证（q4 型）：验证 m = |b/(2a)|, n = a*m² - c（移项后右边的值）。
-   * 题面如 "把 2x²-8x+1=0 配方成 2(x-m)²=n"。
-   * @returns {{ok:boolean, reason:string}}
-   */
-  function verifyFormParam(prompt, answer) {
-    var coeffs = parseQuadraticCoeffs(prompt);
-    if (!coeffs) return { ok: false, reason: 'parse-coeffs-failed' };
-
-    var a = coeffs.a, b = coeffs.b, c = coeffs.c;
-
-    /* m = |b/(2a)|（配方后 (x-m)² 中的 m 是正值参数） */
-    var mExpected = Math.abs(b / (2 * a));
-    /* n = a*m² - c（移项：ax²+bx+c=0 → a(x-m)² = a*m² - c） */
-    var nExpected = a * mExpected * mExpected - c;
-
-    /* 解析答案 "m，n" */
-    var parts = splitTop(String(answer || ''), ',;，；、');
-    if (parts.length < 2) return { ok: false, reason: 'parse-answer-failed' };
-    var mActual = parseRootValue(String(parts[0]).trim());
-    var nActual = parseRootValue(String(parts[1]).trim());
-    if (mActual === null || nActual === null) return { ok: false, reason: 'parse-answer-failed' };
-
-    if (Math.abs(mExpected - mActual) >= EPS) {
-      return { ok: false, reason: 'm-mismatch', expected: mExpected, actual: mActual };
-    }
-    if (Math.abs(nExpected - nActual) >= EPS) {
-      return { ok: false, reason: 'n-mismatch', expected: nExpected, actual: nActual };
-    }
-    return { ok: true, reason: 'verified' };
-  }
-
-  /**
-   * 验证门入口：按 q.verifyType 路由到对应验证函数。
-   * @param {object} q - 题对象，含 prompt, answer, verifyType
-   * @returns {{ok:boolean|null, reason:string}}
-   */
-  function validateLLMQuestion(q) {
-    if (!q || !q.verifyType) return { ok: null, reason: 'no-verify-type' };
-    switch (q.verifyType) {
-      case 'equation':
-        return verifyEquationRoots(q.prompt, q.answer);
-      case 'completeSquare':
-        return verifyCompletingSquare(q.prompt, q.answer);
-      case 'formParam':
-        return verifyFormParam(q.prompt, q.answer);
-      default:
-        return { ok: null, reason: 'unknown-type:' + q.verifyType };
-    }
-  }
 
   /**
    * 族方法词校验：题面必须体现该知识点的方法（防"练公式法却题面写配方法"）。
@@ -455,26 +75,6 @@
       if (text.indexOf(fam.methodWords[i]) >= 0) return true;
     }
     return false;
-  }
-
-  /**
-   * 解析答案中的根值列表（支持多解、±、根式）。
-   * @param {string} answer
-   * @returns {number[]|null}
-   */
-  function parseRoots(answer) {
-    if (!answer) return null;
-    var expanded = expandPlusMinus(String(answer));
-    var parts = splitTop(expanded, ',;，；、');
-    var roots = [];
-    for (var i = 0; i < parts.length; i++) {
-      var subparts = String(parts[i]).split(/或者|或|和|与|及/);
-      for (var j = 0; j < subparts.length; j++) {
-        var v = parseRootValue(String(subparts[j]).trim());
-        if (v !== null && !isNaN(v)) roots.push(v);
-      }
-    }
-    return roots.length > 0 ? roots : null;
   }
 
   /* ================================================================
@@ -583,6 +183,7 @@
 
   /* Node 环境 fallback：没有 localStorage 时用内存 Map */
   var _memCache = {};
+
   var _memStats = {};
 
   function _getStorage() {
@@ -638,6 +239,7 @@
    * ================================================================ */
 
   var _stats = { attempts: 0, passed: 0, failed: 0, byReason: {} };
+
   var _topicStats = {};
 
   function _readStatsStorage() {
@@ -695,200 +297,6 @@
 
   function getStats() {
     return { attempts: _stats.attempts, passed: _stats.passed, failed: _stats.failed, byReason: _stats.byReason };
-  }
-
-  /* ================================================================
-   * 网关可达性探测（§6.1 调用前检查）
-   * try 一次 /v1/models 或超时标记，不可达直接走降级，不拖慢页面。
-   * ================================================================ */
-
-  var _gatewayReachable = null;   /* null=未探测, true=可达, false=不可达 */
-  var _gatewayProbeAt = 0;        /* 上次探测时间戳（O3-4：TTL 过期自动重探） */
-  var _supportsTools = null;      /* null=未探测, true=支持, false=不支持 */
-  var _supportsToolsAt = 0;       /* 上次探测时间戳（O3-4：TTL 过期自动重探） */
-
-  /* 可注入时钟（测试推进时间用）；默认 Date.now */
-  var _nowFn = function () { return Date.now(); };
-
-  /* 探测结果是否已过期：从未探测(0)或超过 TTL 视为过期 */
-  function _probeExpired(at) {
-    return !at || (_nowFn() - at) >= PROBE_TTL_MS;
-  }
-
-  /**
-   * 探测网关是否可达。try 一次 /v1/models，15 秒超时。
-   * 结果缓存在 _gatewayReachable，TTL 内命中缓存，过期自动重探。
-   * @returns {Promise<boolean>}
-   */
-  function probeGateway() {
-    if (typeof fetch !== 'function') {
-      _gatewayReachable = false; _gatewayProbeAt = _nowFn();
-      return Promise.resolve(false);
-    }
-    if (!_probeExpired(_gatewayProbeAt) && _gatewayReachable !== null) {
-      return Promise.resolve(_gatewayReachable);
-    }
-
-    var modelsUrl = PROXY.replace('/chat/completions', '/models');
-    var controller = null;
-    var timeoutId = null;
-    if (typeof AbortController !== 'undefined') {
-      controller = new AbortController();
-      timeoutId = setTimeout(function () { controller.abort(); }, PROBE_TIMEOUT_MS);
-    }
-
-    return fetch(modelsUrl, {
-      method: 'GET',
-      signal: controller ? controller.signal : undefined
-    })
-      .then(function (res) {
-        if (timeoutId) clearTimeout(timeoutId);
-        _gatewayReachable = res.ok;
-        _gatewayProbeAt = _nowFn();
-        return _gatewayReachable;
-      })
-      .catch(function () {
-        if (timeoutId) clearTimeout(timeoutId);
-        _gatewayReachable = false;
-        _gatewayProbeAt = _nowFn();
-        return false;
-      });
-  }
-
-  /* ================================================================
-   * function calling 探测（§2.4 工具自验）
-   * 探测网关模型是否支持 function calling（OpenAI 兼容 tools 参数）。
-   * 支持 → LLM 侧 tools 接入（evaluateExpression/solveCheck/normalizeSet）。
-   * 不支持 → 记录结论，维持引擎外部验证路径（验证门仍保留为硬保证）。
-   *
-   * O3-4 修复：成功判定改为「HTTP 200 且响应无 error 字段 → 支持」，
-   * 不再依赖 tool_calls 是否出现（模型选择直接回答也算支持——探测的是
-   * 网关/模型接受 tools 参数）。超时放宽到 15s，去掉 max_tokens:100 截断。
-   * ================================================================ */
-
-  /* §2.4 工具集：evaluateExpression / solveCheck / normalizeSet（OpenAI 兼容 schema） */
-  var TOOLS = [
-    {
-      type: 'function',
-      function: {
-        name: 'evaluateExpression',
-        description: '数值求值：在给定 x 值数组处计算表达式 expr 的数值',
-        parameters: {
-          type: 'object',
-          properties: {
-            expr: { type: 'string', description: '数学表达式' },
-            xValues: { type: 'array', items: { type: 'number' }, description: 'x 取值数组' }
-          },
-          required: ['expr', 'xValues']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'solveCheck',
-        description: '代入验根：验证 candidate 是否满足 equation',
-        parameters: {
-          type: 'object',
-          properties: {
-            equation: { type: 'string', description: '方程表达式' },
-            candidate: { type: 'string', description: '候选根' }
-          },
-          required: ['equation', 'candidate']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'normalizeSet',
-        description: '集合归一：把多值答案归一为数值集合',
-        parameters: {
-          type: 'object',
-          properties: {
-            answers: { type: 'string', description: '多值答案文本' }
-          },
-          required: ['answers']
-        }
-      }
-    }
-  ];
-
-  /**
-   * 探测网关模型是否支持 function calling。
-   * 发一个带 tools 参数的最小候选请求。
-   * 成功判定：HTTP 200 且响应无 error 字段 → 支持（模型接受 tools 参数）。
-   * 结果带时间戳缓存，TTL 过期自动重探。
-   * @returns {Promise<boolean>}
-   */
-  function probeFunctionCalling() {
-    if (typeof fetch !== 'function') {
-      _supportsTools = false; _supportsToolsAt = _nowFn();
-      return Promise.resolve(false);
-    }
-    if (!_probeExpired(_supportsToolsAt) && _supportsTools !== null) {
-      return Promise.resolve(_supportsTools);
-    }
-
-    var controller = null;
-    var timeoutId = null;
-    if (typeof AbortController !== 'undefined') {
-      controller = new AbortController();
-      timeoutId = setTimeout(function () { controller.abort(); }, PROBE_TIMEOUT_MS);
-    }
-
-    var body = {
-      model: MODEL,
-      messages: [
-        { role: 'user', content: '调用 check 工具验证 x=1 是否满足 x-1=0' }
-      ],
-      tools: [{
-        type: 'function',
-        function: {
-          name: 'solveCheck',
-          description: '代入验根：验证 candidate 是否满足 equation',
-          parameters: {
-            type: 'object',
-            properties: {
-              equation: { type: 'string', description: '方程表达式' },
-              candidate: { type: 'string', description: '候选根' }
-            },
-            required: ['equation', 'candidate']
-          }
-        }
-      }],
-      tool_choice: 'auto'
-    };
-
-    return fetch(PROXY, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller ? controller.signal : undefined
-    })
-      .then(function (res) {
-        if (timeoutId) clearTimeout(timeoutId);
-        /* O3-4：HTTP 200 且无 error 字段 → 支持。res.ok 覆盖 2xx。 */
-        if (!res.ok) { _supportsTools = false; _supportsToolsAt = _nowFn(); return false; }
-        return res.json();
-      })
-      .then(function (data) {
-        if (timeoutId) clearTimeout(timeoutId);
-        /* json 为空（无 error 也无 choices）→ 保守按不支持（无有效响应） */
-        if (!data) { _supportsTools = false; _supportsToolsAt = _nowFn(); return false; }
-        /* O3-4：响应含 error 字段 → 不支持（网关/模型拒绝 tools 参数） */
-        if (data.error) { _supportsTools = false; _supportsToolsAt = _nowFn(); return false; }
-        /* 否则：HTTP 200 且无 error → 模型接受了 tools 参数，判定支持 */
-        _supportsTools = true;
-        _supportsToolsAt = _nowFn();
-        return true;
-      })
-      .catch(function () {
-        if (timeoutId) clearTimeout(timeoutId);
-        _supportsTools = false;
-        _supportsToolsAt = _nowFn();
-        return false;
-      });
   }
 
   /* ================================================================
@@ -955,7 +363,7 @@
         }
 
         /* 验证门校验 */
-        var result = validateLLMQuestion(candidate);
+        var result = _evaldn.validateLLMQuestion(candidate);
         if (result.ok === true && _methodWordMatches(topicId, difficulty, candidate)) {
           _recordStat(statKey, true);
           /* 构建题对象 */
@@ -1009,131 +417,31 @@
   function _callGateway(topicId, difficulty) {
     if (typeof fetch !== 'function') return Promise.resolve(null);
 
-    return probeFunctionCalling().then(function (supportsTools) {
+    return _gw.probeFunctionCalling().then(function (supportsTools) {
       var messages = [
         { role: 'system', content: _systemPrompt(topicId) },
         { role: 'user', content: _userPrompt(topicId, difficulty) }
       ];
       var body = {
-        model: MODEL,
+        model: _gw.MODEL,
         messages: messages,
         max_tokens: GEN_MAX_TOKENS,
         temperature: 0.8
       };
-      if (supportsTools) body.tools = TOOLS;
+      if (supportsTools) body.tools = _gw.TOOLS;
 
-      return _postOnce(body).then(function (data) {
+      return _gw.postOnce(body).then(function (data) {
         if (!data || !data.choices || !data.choices[0]) return null;
         var msg = data.choices[0].message;
 
         /* 工具自验：响应带 tool_calls 且网关支持 → 执行工具并二次请求 */
         if (supportsTools && msg.tool_calls && msg.tool_calls.length > 0) {
-          return _runToolLoop(messages, msg);
+          return _gw.runToolLoop(messages, msg, _parseCandidate, _evaldn);
         }
         /* 单层：无 tool_calls → 直接用 content */
         return _parseCandidate(msg.content);
       });
     });
-  }
-
-  /**
-   * 单次 POST 请求（带超时）。返回响应 JSON 或 null。
-   * @param {object} body
-   * @returns {Promise<object|null>}
-   */
-  function _postOnce(body) {
-    var controller = null;
-    var timeoutId = null;
-    if (typeof AbortController !== 'undefined') {
-      controller = new AbortController();
-      timeoutId = setTimeout(function () { controller.abort(); }, TIMEOUT_MS);
-    }
-    return fetch(PROXY, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller ? controller.signal : undefined
-    })
-      .then(function (res) {
-        if (timeoutId) clearTimeout(timeoutId);
-        if (!res.ok) return null;
-        return res.json();
-      })
-      .catch(function () {
-        if (timeoutId) clearTimeout(timeoutId);
-        return null;
-      });
-  }
-
-  /**
-   * 工具自验循环：执行 tool_calls 中的 JS 函数，把 assistant tool_calls 消息
-   * + tool role 结果消息追加进 messages，发起二次请求取最终题。
-   * 任一工具执行抛错/未知工具 → 返回 null（上层回退单层 content）。
-   * @param {object[]} messages - 会原地追加 assistant + tool 结果消息
-   * @param {object} msg - 首次响应的 message（含 tool_calls）
-   * @returns {Promise<object|null>}
-   */
-  function _runToolLoop(messages, msg) {
-    var toolResults = _executeToolCalls(msg.tool_calls);
-    if (toolResults === null) {
-      /* 工具执行抛错/未知工具 → 回退单层，用首次响应已有 content */
-      return Promise.resolve(_parseCandidate(msg.content));
-    }
-    /* 追加 assistant tool_calls 消息 + tool role 结果消息 */
-    messages.push({ role: 'assistant', content: msg.content || null, tool_calls: msg.tool_calls });
-    for (var i = 0; i < toolResults.length; i++) {
-      messages.push(toolResults[i]);
-    }
-    var body = {
-      model: MODEL,
-      messages: messages,
-      max_tokens: TOOL_MAX_TOKENS,
-      temperature: 0.8
-    };
-    return _postOnce(body).then(function (data) {
-      if (!data || !data.choices || !data.choices[0]) return null;
-      return _parseCandidate(data.choices[0].message.content);
-    });
-  }
-
-  /**
-   * 执行 tool_calls 数组中的 JS 函数，构造 role:'tool' 结果消息数组。
-   * 返回 null 表示任一调用无法安全执行（未知工具/抛错）→ 上层回退单层。
-   * @param {object[]} toolCalls
-   * @returns {object[]|null}
-   */
-  function _executeToolCalls(toolCalls) {
-    var results = [];
-    try {
-      for (var i = 0; i < toolCalls.length; i++) {
-        var tc = toolCalls[i];
-        if (!tc || !tc.function || !tc.id) return null;
-        var name = tc.function.name;
-        var args = {};
-        try { args = JSON.parse(tc.function.arguments || '{}'); } catch (e) { /* 参数畸形按空对象处理 */ }
-        var out;
-        if (name === 'evaluateExpression') {
-          out = evaluateExpression(args.expr, args.xValues);
-        } else if (name === 'solveCheck') {
-          out = solveCheck(args.equation, args.candidate);
-        } else if (name === 'normalizeSet') {
-          out = normalizeSet(args.answers);
-        } else {
-          return null;  /* 未知工具 → 回退单层 */
-        }
-        /* Set → 数组序列化；数组/标量直接 JSON */
-        var content;
-        if (typeof Set !== 'undefined' && out instanceof Set) {
-          content = JSON.stringify(Array.from(out));
-        } else {
-          content = JSON.stringify(out);
-        }
-        results.push({ role: 'tool', tool_call_id: tc.id, content: content });
-      }
-      return results;
-    } catch (e) {
-      return null;
-    }
   }
 
   /**
@@ -1189,7 +497,20 @@
   }
 
   /* ================================================================
-   * 导出
+   * 接线：常量单源 + 模块注入（拆分产物之间的粘合层）
+   * ================================================================ */
+
+  /* max_tokens 常量只在本文件定义（O3-6 契约），推给网关层取用 */
+  if (_gw && typeof _gw.setLimits === 'function') {
+    _gw.setLimits({ GEN_MAX_TOKENS: GEN_MAX_TOKENS, TOOL_MAX_TOKENS: TOOL_MAX_TOKENS });
+  }
+  /* 表达式工具注入网关层（工具自验 loop 用） */
+  if (_gw && typeof _gw.setEval === 'function') {
+    _gw.setEval(_evaldn);
+  }
+
+  /* ================================================================
+   * 导出（与拆分前完全一致：app.js 与现有测试的消费点不改）
    * ================================================================ */
 
   return {
@@ -1197,16 +518,16 @@
     supports: supports,
     genLLMVariant: genLLMVariant,
     fillPracticeLLM: fillPracticeLLM,
-    validateLLMQuestion: validateLLMQuestion,
-    verifyEquationRoots: verifyEquationRoots,
-    verifyCompletingSquare: verifyCompletingSquare,
-    verifyFormParam: verifyFormParam,
-    evaluateExpression: evaluateExpression,
-    solveCheck: solveCheck,
-    normalizeSet: normalizeSet,
+    validateLLMQuestion: _evaldn.validateLLMQuestion,
+    verifyEquationRoots: _evaldn.verifyEquationRoots,
+    verifyCompletingSquare: _evaldn.verifyCompletingSquare,
+    verifyFormParam: _evaldn.verifyFormParam,
+    evaluateExpression: _evaldn.evaluateExpression,
+    solveCheck: _evaldn.solveCheck,
+    normalizeSet: _evaldn.normalizeSet,
     getStats: getStats,
-    probeGateway: probeGateway,
-    probeFunctionCalling: probeFunctionCalling,
+    probeGateway: _gw.probeGateway,
+    probeFunctionCalling: _gw.probeFunctionCalling,
     /* 测试用内部接口 */
     _systemPrompt: _systemPrompt,
     _userPrompt: _userPrompt,
@@ -1216,11 +537,10 @@
     _pushCache: _pushCache,
     _getCachePool: _getCachePool,
     _recordStat: _recordStat,
-    _resetProbe: function () {
-      _gatewayReachable = null; _gatewayProbeAt = 0;
-      _supportsTools = null; _supportsToolsAt = 0;
-      _nowFn = function () { return Date.now(); };
-    },
-    _setNow: function (fn) { _nowFn = fn || function () { return Date.now(); }; }
+    _resetProbe: function () { _gw.resetProbe(); },
+    _setNow: function (fn) { _gw.setNow(fn); },
+    /* 拆出的两个子模块（便于 app.js/调试直接取用；不影响原有字段） */
+    _eval: function () { return _evaldn; },
+    _gateway: function () { return _gw; }
   };
 });
