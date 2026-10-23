@@ -2302,6 +2302,46 @@ testAsync('Explain.ask：LaTeX 命令在追问里也被转换', async () => {
   } finally { globalThis.fetch = real; }
 });
 
+/* ============================================ 函数实验室 fromPrompt 解析 */
+const Funclab = require('../diagnose/funclab.js');
+
+test('Funclab.顶点式 y=(x-1)²+2', function () {
+  assert.deepStrictEqual(Funclab.fromPrompt('y=(x-1)²+2 的顶点、对称轴及平移？'), { a: 1, h: 1, k: 2 });
+});
+test('Funclab.顶点式 y=2(x+3)²-5', function () {
+  assert.deepStrictEqual(Funclab.fromPrompt('求抛物线 y=2(x+3)²-5 的顶点坐标'), { a: 2, h: -3, k: -5 });
+});
+test('Funclab.一般式 y=x²-4x+3 -> 顶点 (2,-1)', function () {
+  assert.deepStrictEqual(Funclab.fromPrompt('把 y=x²-4x+3 化为顶点式'), { a: 1, h: 2, k: -1 });
+});
+test('Funclab.一般式 y=-2x²+8x-3 -> 顶点 (2,5)', function () {
+  assert.deepStrictEqual(Funclab.fromPrompt('求抛物线 y=-2x²+8x-3 的顶点坐标'), { a: -2, h: 2, k: 5 });
+});
+test('Funclab.方程 x²-4x-1=0 -> 顶点 (2,-5)', function () {
+  assert.deepStrictEqual(Funclab.fromPrompt('用配方法解 x²-4x-1=0。'), { a: 1, h: 2, k: -5 });
+});
+test('Funclab.方程 2x²-8x+1=0 -> 顶点 (2,-7)', function () {
+  assert.deepStrictEqual(Funclab.fromPrompt('把 2x²-8x+1=0 配方成 2(x-m)²=n 的形式，依次求 m 与 n 的值（用逗号隔开）。'), { a: 2, h: 2, k: -7 });
+});
+test('Funclab.解析不出返回 null', function () {
+  assert.strictEqual(Funclab.fromPrompt('下列函数中，是二次函数的是哪一个？'), null);
+  assert.strictEqual(Funclab.fromPrompt(''), null);
+  assert.strictEqual(Funclab.fromPrompt('设一边长为 x cm，面积为 y cm²'), null);
+});
+test('Funclab.白名单', function () {
+  assert.strictEqual(Funclab.topicSupported('cnm_221'), true);
+  assert.strictEqual(Funclab.topicSupported('cnm_231'), true);
+  assert.strictEqual(Funclab.topicSupported('cnm_235'), true);
+  assert.strictEqual(Funclab.topicSupported('cnm_101'), false);
+  assert.strictEqual(Funclab.topicSupported('cne_101'), false);
+  assert.strictEqual(Funclab.labFor('cnm_101', 'y=x²-4x+3'), null);
+  assert.deepStrictEqual(Funclab.labFor('cnm_221', '用配方法解 x²-4x-1=0。'), { a: 1, h: 2, k: -5 });
+});
+test('Funclab.公式美化', function () {
+  assert.strictEqual(Funclab.formatFormula({ a: 1, h: 2, k: -5 }), 'y = (x - 2)² - 5');
+  assert.strictEqual(Funclab.formatFormula({ a: -2, h: 0, k: 3 }), 'y = -2x² + 3');
+});
+
 (async function () {
   for (const t of asyncTests) {
     try { await t.fn(); passed++; console.log('  ok   ' + t.name); }

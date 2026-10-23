@@ -840,6 +840,14 @@
         } }, '我明白了，重新做一遍')));
     } else {
       box.append(h('div', { class: 'explain' }, steps[2].text));
+      /* 函数实验室：配方法/二次函数类题，reveal 时挂可拖拽画板，直观理解几何意义 */
+      try {
+        const lab = window.Funclab && window.Funclab.labFor(t && t.id, q && q.prompt);
+        if (lab) {
+          const inst = window.Funclab.mount({ a: lab.a, h: lab.h, k: lab.k });
+          box.append(inst.el);
+        }
+      } catch (e) { /* 画板挂了不影响讲解 */ }
       box.append(h('div', { class: 'row' },
         h('button', { class: 'primary', id: 'btn-soc-done', onclick: function () { finishAnswer('wrong'); } }, '明白了，下一题'),
         h('button', { class: 'good', onclick: function () {
