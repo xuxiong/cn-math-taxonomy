@@ -842,7 +842,7 @@
       box.append(h('div', { class: 'explain' }, steps[2].text));
       /* 函数实验室：配方法/二次函数类题，reveal 时挂可拖拽画板，直观理解几何意义 */
       try {
-        const lab = window.Funclab && window.Funclab.labFor(t && t.id, q && q.prompt);
+        const lab = window.Funclab && window.Funclab.labFor(t && t.id, q && q.prompt, { itemId: q && q.id });
         if (lab) {
           const inst = window.Funclab.mount(lab);
           box.append(inst.el);
