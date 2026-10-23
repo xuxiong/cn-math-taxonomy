@@ -83,9 +83,9 @@
   /* ------------------------------------------------------------ 渲染（需要 DOM） */
 
   const SLIDER_DEF = [
-    { key: 'a', label: 'a', min: -4, max: 4, step: 0.05 },
-    { key: 'h', label: 'h', min: -8, max: 8, step: 0.05 },
-    { key: 'k', label: 'k', min: -8, max: 8, step: 0.05 }
+    { key: 'a', label: 'a(开口方向和宽窄)', min: -4, max: 4, step: 0.05 },
+    { key: 'h', label: 'h(左右平移,顶点x)', min: -8, max: 8, step: 0.05 },
+    { key: 'k', label: 'k(上下平移,顶点y)', min: -8, max: 8, step: 0.05 }
   ];
 
   /** 数字小数化：0 -> "0"，1.5 -> "1.5"，去掉尾零 */
@@ -126,6 +126,9 @@
     const info = document.createElement('div');
     info.className = 'funclab-formula';
     info.textContent = formatFormula(p);
+    const note = document.createElement('div');
+    note.className = 'funclab-note';
+    note.textContent = '题目方程 = 令 y=0：抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。'
 
     const ctrl = document.createElement('div');
     ctrl.className = 'funclab-sliders';
@@ -165,6 +168,7 @@
     ctrl.appendChild(resetBtn);
 
     wrap.appendChild(info);
+    wrap.appendChild(note);
     wrap.appendChild(canvas);
     wrap.appendChild(ctrl);
 
@@ -260,8 +264,10 @@
       ctx.fillText('(' + fmt(p.h) + ', ' + fmt(p.k) + ')', VX + 8, VY - 8);
       // 零点（若有）
       const disc = -p.k / p.a;
+      let roots = 0;
       if (p.a !== 0 && disc >= 0) {
         const r = Math.sqrt(disc);
+        roots = r === 0 ? 1 : 2;
         [p.h - r, p.h + r].forEach(function (x) {
           const X = sx({ x: x }, w), Y = sy({ y: 0 }, w);
           if (X < 0 || X > w.w) return;
@@ -269,6 +275,10 @@
           ctx.beginPath(); ctx.arc(X, Y, 4, 0, Math.PI * 2); ctx.fill();
         });
       }
+      // 与题目的联系（随参数变化实时更新）
+      if (roots === 2) note.textContent = '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。';
+      else if (roots === 1) note.textContent = '抛物线与 x 轴刚好相切：方程有两个相等的根。';
+      else note.textContent = '抛物线没有碰到 x 轴：方程没有实数根。';
     }
 
     // 首次绘制（canvas 可能尚未布局,ResizeObserver 会补一次）
