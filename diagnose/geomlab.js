@@ -46,10 +46,22 @@
  */
 (function (root, factory) {
   'use strict';
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory();
-  else root.Geomlab = factory();
-})(typeof self !== 'undefined' ? self : this, function () {
+  if (typeof module !== 'undefined' && module.exports) {
+    /* Node：数值判等复用 engine.js 的归一化（parseNumeric/normalizeText 那一套），不另造 */
+    module.exports = factory(require('./engine.js'));
+  } else root.Geomlab = factory(root.DiagEngine);
+})(typeof self !== 'undefined' ? self : this, function (_engine) {
   'use strict';
+
+  /* 数值等价判定依赖 engine.js：node 下由 require 注入，浏览器由 index.html 的 <script> 顺序注入
+   * （engine.js 在 geomlab.js 之前加载）。数值等价写法（16 / 16.0 / 0.46 / 23/50 / 2/5）
+   * 全部交给它的 numericEqual —— 那套逻辑已经覆盖整数/小数/分数/带分数/百分数/全角/单位后缀，
+   * 这里绝不能再写第二份解析。（调用时取，不用闭包快照，避免加载顺序问题。） */
+  function numEqual(a, b) {
+    const E = _engine || (typeof DiagEngine !== 'undefined' ? DiagEngine : null); // eslint-disable-line no-undef
+    if (!E || typeof E.numericEqual !== 'function') return null;
+    return E.numericEqual(a, b);
+  }
 
   /* ============================================================ 0. 文本归一化 */
 
@@ -840,13 +852,26 @@
    * 自检面板要核对的结果行（学生点「我算好了」之后才显示）。
    * 这里才允许出现真实值 —— 静态标注一律不许，见上面 5b 的规则。
    * 只列这道题真正要求 / 真正在图上留了问号的量，不把内部中间量全倒出来。
+   *
+   * 每行结构：
+   *   name  —— 量名（显示在输入框左边）
+   *   unit  —— 单位后缀（° 等，显示在输入框右边）
+   *   yours —— 学生的作答位：恒为空串初值（绝不预填真实值），
+   *            渲染层据此生成 <input type="text" inputmode="decimal">；
+   *            判分不读它，只认学生当场输入的原样文本。
+   *   ans   —— 同上的结构化写法（value/kind/unit），供渲染层取单位与输入类型
+   *   real  —— 真实值。只给 checkOne() 用，未作答时渲染层不得显示它。
    */
   function checkRows(lab, sol) {
     if (!lab || !sol) return [];
     const g = sol.given || givenValues(lab);
     const rows = [];
     const add = function (name, real, unit) {
-      rows.push({ name: name, yours: '', real: real, unit: unit || '' });
+      const u = unit || '';
+      rows.push({
+        name: name, unit: u, yours: '',
+        ans: { value: '', kind: 'number', unit: u }, real: real
+      });
     };
     switch (lab.skel) {
       case 'circle-chord':
@@ -888,6 +913,41 @@
         break;
     }
     return rows;
+  }
+
+  /**
+   * 逐行判定学生填的答案（纯函数，渲染层只负责显示）。对外判分出口。
+   * 返回 { verdict: 'right'|'wrong'|'blank', shown: 面板上要显示的全文案, real: 是否可显示真实值 }
+   *
+   * 判定规则：
+   *   · 空白 → 'blank'：只出「未作答」，既不出真实值也不出 ✓/✗（不能变相给答案）
+   *   · 数值等价 → 'right'：16 / 16.0 / 16° / 2/5 / 0.4 这类写法都算对，
+   *     等价交给 engine.js 的 numericEqual（唯一归一化出处）
+   *   · 其余 → 'wrong'：shown 同时回显学生原样输入与格式化后的实际值
+   * 显示口径优先：学生填的就是面板上显示的那个数（fmt 口径）时直接判对，
+   * 免得「抄面板的答案被判错」，这与 numericEqual 的 1e-3 容差是同一条口径。
+   */
+  function checkOne(row, raw) {
+    if (!row || !isFinite(row.real)) return { verdict: 'wrong', shown: '✗', real: false };
+    const text = String(raw == null ? '' : raw);
+    const trimmed = text.trim();
+    if (!trimmed) return { verdict: 'blank', shown: '未作答', real: false };
+    const eq = numEqual(trimmed, row.real);
+    if (eq === true || trimmed === fmt(row.real)) return { verdict: 'right', shown: '✓', real: false };
+    /* eq === null 说明两边至少一侧解析不出数值 —— 学生写的东西不是数，按填错处理 */
+    return {
+      verdict: 'wrong',
+      shown: '✗ 你的答案：' + trimmed + '，实际值：' + fmt(row.real) + (row.unit || ''),
+      real: true
+    };
+  }
+
+  /** 旧接口兼容壳：内部转调 checkOne()，保留旧字段 status/text（text 只出标记，实际值另给） */
+  function judgeRow(row, text) {
+    const v = checkOne(row, text);
+    const status = v.verdict === 'right' ? 'ok' : v.verdict === 'wrong' ? 'wrong' : 'empty';
+    const mark = v.verdict === 'right' ? '✓' : v.verdict === 'wrong' ? '✗' : '未作答';
+    return { status: status, text: mark, shown: v.shown, real: v.real };
   }
 
   /* 画布顶部「题面已知」行用的量名（带单位符号），顺序即展示顺序 */
@@ -1429,8 +1489,9 @@
 
     /* ---------------- 自检面板（「我算好了」才显形） ----------------
      * 静态标注不许写结论，但学生需要一个对答案的地方，否则不知道自己对错。
-     * 折中：默认什么都不显示，学生自己算完点按钮，才把「你算的」和真实值并排列出来。
-     * 抄不到（要先动手），也不用替他算（只是核对）。
+     * 折中：默认什么都不显示；学生点按钮，才给每行一个输入框让他填自己算的数，
+     * 再点一次才逐行判定 —— 填对 ✓、填错 ✗ + 实际值、没填只说「未作答」。
+     * 这样既抄不到（要先动手填），也不用替他算（只核对已填的那几行）。
      */
     function buildCheck() {
       const box = document.createElement('div');
@@ -1442,29 +1503,87 @@
       const out = document.createElement('div');
       out.className = 'geomlab-check-out';
       out.hidden = true;
+      /* 本次展开对应的结果行；判定要用的真实值只活在这里，不进 DOM */
+      let rows = [];
       btn.addEventListener('click', function () {
-        const rows = checkRows(lab, solve(lab));
+        rows = checkRows(lab, solve(lab));
         out.textContent = '';
-        rows.forEach(function (r) {
+        if (!rows.length) {
+          out.textContent = '这类图没有可核对的计算结果。';
+          out.hidden = false;
+          return;
+        }
+        rows.forEach(function (r, i) {
           const line = document.createElement('div');
           line.className = 'geomlab-check-row';
           const you = document.createElement('span');
           you.className = 'geomlab-check-you';
-          you.textContent = '你算的：' + (r.yours || '____');
+          const name = document.createElement('span');
+          name.className = 'geomlab-check-name';
+          name.textContent = r.name + '：';
+          /* 每行一个数值输入框；初值取 ans.value（恒为空，绝不预填真实值） */
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.inputMode = 'decimal';
+          input.autocomplete = 'off';
+          input.className = 'geomlab-check-ans';
+          input.value = typeof r.yours === 'string' ? r.yours : ((r.ans && r.ans.value) || '');
+          input.setAttribute('aria-label', '我算的 ' + r.name + (r.unit || ''));
+          input.dataset.idx = String(i);
+          if (r.unit) {
+            const unit = document.createElement('span');
+            unit.className = 'geomlab-check-unit';
+            unit.textContent = r.unit;
+            you.appendChild(unit);
+            input.addEventListener('keydown', function (ev) {
+              if (ev.key === 'Enter') { ev.preventDefault(); btn.click(); }
+            });
+            you.insertBefore(input, unit);
+          } else {
+            you.appendChild(input);
+          }
+          you.insertBefore(name, input);
+          const res = document.createElement('span');
+          res.className = 'geomlab-check-res';
           const real = document.createElement('span');
           real.className = 'geomlab-check-real';
-          real.textContent = '实际值：' + (r.real == null ? '—' : fmt(r.real) + (r.unit || ''));
           line.appendChild(you);
+          line.appendChild(res);
           line.appendChild(real);
           out.appendChild(line);
+          judgeLine(r, input, res, real);
+          input.addEventListener('input', function () { judgeLine(r, input, res, real); });
+          input.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter') { ev.preventDefault(); judgeAll(); }
+          });
         });
-        if (!rows.length) out.textContent = '这类图没有可核对的计算结果。';
         out.hidden = false;
         btn.textContent = '重新核对';
+        const first = out.querySelector('input.geomlab-check-ans');
+        if (first) first.focus();
       });
       box.appendChild(btn);
       box.appendChild(out);
       return box;
+    }
+
+    /** 单行判定 → 只改这一行的标记与文案（✓ / 未作答 / ✗ 你的答案：…，实际值：…） */
+    function judgeLine(row, input, res, real) {
+      const v = checkOne(row, input.value);
+      res.className = 'geomlab-check-res ' + (
+        v.verdict === 'right' ? 'is-ok' : v.verdict === 'wrong' ? 'is-no' : 'is-empty'
+      );
+      /* shown 已承担全部文案（含学生输入与实际值），这里不再重复渲染实际值 */
+      res.textContent = v.shown;
+      real.textContent = '';
+    }
+
+    function judgeAll() {
+      out.querySelectorAll('input.geomlab-check-ans').forEach(function (input, i) {
+        const line = input.closest('.geomlab-check-row');
+        if (!line) return;
+        judgeLine(rows[i], input, line.querySelector('.geomlab-check-res'), line.querySelector('.geomlab-check-real'));
+      });
     }
 
     resetBtn.addEventListener('click', function () {
@@ -1562,6 +1681,8 @@
     fmt: fmt,
     /* 渲染层「已知量 / 派生量」判据（单测用：保证图上不会出现推导结论） */
     checkRows: checkRows,
+    checkOne: checkOne,
+    judgeRow: judgeRow,
     knownText: knownText,
     deriveText: deriveText,
     knownList: knownList,
