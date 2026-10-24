@@ -846,14 +846,26 @@
       box.append(h('details', { class: 'explain-fold' },
         h('summary', null, '看完整解析（自己想清楚再打开）'),
         h('div', { class: 'explain' }, steps[2].text)));
-      /* 函数实验室：配方法/二次函数类题，reveal 时挂可拖拽画板，直观理解几何意义 */
+      /* 函数实验室：配方法/二次函数类题，reveal 时挂可拖拽画板，直观理解几何意义。
+       * M 卡：能不能挂、挂哪个画板、讲哪一句话，都由 LLM 语义匹配决定（diagnose/labmatch.js）；
+       * 匹配失败/被拒绝/参数校验不过 → 不挂图（无正则保底，见卡面决策 2）。
+       * 画板文案与绘制方式仍由 funclab.js 按 intent 决定，LLM 不参与"怎么画"。 */
       try {
         const lab = window.Funclab && window.Funclab.labForScene(t && t.id, q && q.prompt, { itemId: q && q.id });
-        if (lab) {
-          const inst = window.Funclab.mount(lab);
-          box.append(inst.el);
-        } else if (window.Geomlab) {
-          /* 几何画板：函数画板挂不上时回退尝试（三角形/圆/相似）。
+        if (lab && window.Labmatch) {
+          /* 先用空槽占位再异步填：不阻塞讲解面板渲染，也不留空画板容器（不挂时整槽移除） */
+          const slot = h('div', { class: 'funclab-slot' });
+          box.append(slot);
+          window.Labmatch.resolve({ prompt: q && q.prompt, lab: lab, itemId: q && q.id })
+            .then(function (cfg) {
+              if (!cfg) { if (slot.parentNode) slot.remove(); return; }
+              const inst = window.Funclab.mount(cfg);
+              if (!inst) { if (slot.parentNode) slot.remove(); return; }
+              slot.appendChild(inst.el);
+            })
+            .catch(function () { if (slot.parentNode) slot.remove(); });
+        } else if (!lab && window.Geomlab) {
+          /* 几何画板：函数画板没候选时回退尝试（三角形/圆/相似）。
            * answer/choices 必须传 —— 送分门禁靠它判断「答案是否只是题面数值的复制」，
            * 缺了会 fail-closed 不挂（见 geomlab.gate 的 answer-unknown）。 */
           const glab = window.Geomlab.labFor(t && t.id, q && q.prompt, {

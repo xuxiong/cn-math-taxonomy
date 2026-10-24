@@ -369,6 +369,219 @@
     return Object.assign({}, target, { base: base });
   }
 
+  /* ============================================================ 任务一：画板能力声明（代码写死，不由 LLM 生成）
+   *
+   * 每个画板 declare 自己能回答什么问题（canAnswer）、需要哪些参数（params）、内部说明（note）。
+   * 措辞必须精确：LLM 严格按这份清单做「该不该挂图」的判断 ——
+   *   清单里没有的能力，LLM 才会干脆说 null；措辞模糊会让它硬凑或过度拒绝。
+   * 匹配层（diagnose/labmatch.js）用 key 作为唯一画板名，intent 必须逐字取自 canAnswer。
+   *
+   * NOTE_INTENT：intent → 文案方向。文案是**代码写的**，LLM 只选 intent，不写文案。
+   *   （LLM 不参与"怎么讲"，否则同一句讲解可能漂移成题目没问的意思）
+   * 文案里可用的占位符：{a} {h} {k} {y} {roots} {cnt} {dir} {axis} {xMin} {xMax}……
+   *   由 noteText() 用确定性数值填充（画板的 h/k 已过代回校验，数值可信）。
+   */
+  const CAPABILITIES = {
+    /* ---- 二次函数（抛物线 a(x-h)²+k：标顶点、对称轴、零点绿点） ---- */
+    'quadratic-vertex': {
+      canAnswer: ['顶点坐标', '对称轴', '开口方向', '最小值', '最大值', '平移方向'],
+      params: ['a', 'h', 'k'],
+      note: '标准式 y=a(x-h)²+k。顶点 (h,k)。a>0 开口向上有最小值 k；a<0 开口向下有最大值 k。'
+    },
+    'quadratic-roots': {
+      canAnswer: ['方程的根', '与x轴交点的横坐标', '零点'],
+      params: ['a', 'h', 'k'],
+      note: '同上标准式。与 x 轴交点满足 a(x-h)²+k=0，根为 h±√(-k/a)。'
+    },
+    'quadratic-inequality': {
+      canAnswer: ['y>0 或 y<0 的 x 范围', 'x 取何值时函数值为正/负'],
+      params: ['a', 'h', 'k'],
+      note: '看图判断抛物线在 x 轴上方/下方的区间。'
+    },
+    'quadratic-range-on-interval': {
+      canAnswer: ['在给定区间上的最大值', '在给定区间上的最小值'],
+      params: ['a', 'h', 'k', 'xMin', 'xMax'],
+      note: '查闭区间最值：先看顶点是否落在区间内，再比较端点。题面必须给出区间端点。'
+    },
+    /* ---- 一次函数（直线 y=kx+b：标 y 轴截距红点、x 轴交点绿点） ---- */
+    'linear-intercepts': {
+      canAnswer: ['与 y 轴交点的纵坐标', '与 x 轴交点的横坐标', '与两坐标轴交点的坐标', '直线与两坐标轴围成的三角形面积'],
+      params: ['k', 'b'],
+      note: '直线 y=kx+b。与 y 轴交于 (0,b)，与 x 轴交于 (-b/k,0)，两点与原点围成直角三角形。'
+    },
+    'linear-trend': {
+      canAnswer: ['y 随 x 的增大而增大还是减小', '直线经过哪几个象限', '直线上几个点的函数值大小比较'],
+      params: ['k', 'b'],
+      note: '斜率 k 决定升降：k>0 直线上升（y 随 x 增大而增大），k<0 下降；k、b 的符号决定经过的象限。'
+    },
+    /* 刻意不声明「平移后所得直线」类能力：画板的参数只能来自题面里那条直线，
+     * 而平移题的答案（平移后的解析式/截距）不在题面上 —— 挂上去只会画出平移**前**的直线，
+     * 正是 KNOWN_MISMOUNT 里 cnm_204_q1 那类错。要挂得先让画板画出平移结果，属另一张卡。 */
+    'linear-equation': {
+      canAnswer: ['一次函数与一元一次方程的关系', '不等式 kx+b>0 或 kx+b<0 的解集'],
+      params: ['k', 'b'],
+      note: '直线与 x 轴交点横坐标即 kx+b=0 的解，也是 kx+b>0 / <0 解集的分界点；图象在 x 轴上方那段对应 kx+b>0。'
+    },
+    /* ---- 反比例函数（双曲线 y=k/x） ---- */
+    'inverse-quadrants': {
+      canAnswer: ['图象所在的象限', 'y 随 x 的增大而增大还是减小', '同一象限内几个点的函数值大小比较'],
+      params: ['k'],
+      note: 'y=k/x（k≠0）。k>0 两支在第一、三象限，k<0 在第二、四象限；每一支各自单调，两支不能连起来比较。'
+    },
+    'inverse-area': {
+      canAnswer: ['点与坐标轴围成的矩形或三角形面积', '由面积反求 |k|'],
+      params: ['k'],
+      note: '点 P 在 y=k/x 上，过 P 作两坐标轴的垂线：矩形面积 = |k|，三角形（原点、P、一个垂足）面积 = |k|/2。'
+    }
+  };
+
+  /** 画板名 → 参数类型（labForScene 解析出的 type 必须与之一致） */
+  const CAP_TYPE = {
+    'quadratic-vertex': 'quadratic',
+    'quadratic-roots': 'quadratic',
+    'quadratic-inequality': 'quadratic',
+    'quadratic-range-on-interval': 'quadratic',
+    'linear-intercepts': 'linear',
+    'linear-trend': 'linear',
+    'linear-equation': 'linear',
+    'inverse-quadrants': 'inverse',
+    'inverse-area': 'inverse'
+  };
+
+  /**
+   * intent → 文案模板。按 4 个画板分档，同一 intent 在多个画板里出现时取先声明的那条。
+   * 硬约束（验收标准 1）：讲顶点/最值的文案里绝不出现「根」字 —— 由 tests 断言锁死。
+   */
+  const NOTE_INTENT = {
+    'quadratic-vertex': {
+      '顶点坐标': '红点是抛物线的顶点 ({h}, {k})：{dir}是对称轴，顶点是整条曲线转折的地方。拖动 h、k 看顶点怎么跟着走。',
+      '最小值': 'a = {a} > 0，抛物线开口向上，顶点就是最低点，所以最小值是顶点的纵坐标 {k}。拖动 k 看最小值跟着变。',
+      '最大值': 'a = {a} < 0，抛物线开口向下，顶点就是最高点，所以最大值是顶点的纵坐标 {k}。拖动 k 看最大值跟着变。',
+      '对称轴': '抛物线（{y}）关于直线 {axis} 左右对称：{axis} 过顶点，垂直于 x 轴。拖动 h 看整条曲线怎么左右平移。',
+      '开口方向': 'a = {a}：a > 0 开口向上且 a 越大开口越窄（a < 0 时开口向下，a 的绝对值越大越窄）。拖动 a 看开口怎么变。',
+      '平移方向': '灰色虚线是原函数的曲线，蓝色实线是题目要的函数：橙色箭头标出平移的方向和距离。'
+    },
+    'quadratic-range-on-interval': {
+      '在给定区间上的最大值': '在 {xMin} ≤ x ≤ {xMax} 这一段里：先看顶点 {h} 落没落在区间内，再把顶点值和两个端点值比一比，最大的那个就是最大值（阴影部分是这段区间）。',
+      '在给定区间上的最小值': '在 {xMin} ≤ x ≤ {xMax} 这一段里：先看顶点 {h} 落没落在区间内，再把顶点值和两个端点值比一比，最小的那个就是最小值（阴影部分是这段区间）。'
+    },
+    'quadratic-roots': {
+      '方程的根': '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。拖动 h、k 看交点怎么移动。',
+      '与x轴交点的横坐标': '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。拖动 h、k 看交点怎么移动。',
+      '零点': '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。拖动 h、k 看交点怎么移动。'
+    },
+    'quadratic-inequality': {
+      'y>0 或 y<0 的 x 范围': '看曲线在 x 轴上方/下方的部分：绿点是分界点，曲线在上方的那一段，对应的 x 就是 y>0 的范围。',
+      'x 取何值时函数值为正/负': '看曲线在 x 轴上方/下方的部分：绿点是分界点，曲线在上方的那一段，对应的 x 就是函数值为正的范围。'
+    },
+    'linear-intercepts': {
+      '与 y 轴交点的纵坐标': '红点是直线与 y 轴的交点 (0, {b})：纵坐标就是 b = {b}。拖动 b 看它上下移动。',
+      '与 x 轴交点的横坐标': '绿点是直线与 x 轴的交点 ({xInt}, 0)：横坐标由 kx+b=0 解得 -b/k = {xInt}。拖动 k、b 看交点怎么移动。',
+      '与两坐标轴交点的坐标': '红点 (0, {b}) 是直线与 y 轴的交点，绿点 ({xInt}, 0) 是直线与 x 轴的交点：两个点合起来就是题目要的两组坐标。',
+      '直线与两坐标轴围成的三角形面积': '红点 (0, {b})、绿点 ({xInt}, 0) 和原点围成直角三角形：面积 = |{b}| × |{xInt}| ÷ 2（两条直角边就是两个截距的绝对值）。'
+    },
+    'linear-trend': {
+      'y 随 x 的增大而增大还是减小': 'k = {k}：k>0 时直线从左下往右上，y 随 x 的增大而增大；k<0 时从左上往右下，y 随 x 的增大而减小。拖动 k 看方向怎么翻。',
+      '直线经过哪几个象限': '看直线穿过哪几个象限：k = {k}、b = {b}，把 k、b 拖过 0 就能看到直线换象限。',
+      '直线上几个点的函数值大小比较': '在同一坐标系里比高低：直线上升（k>0）时 x 越大点越高，下降（k<0）时 x 越大点越低；离对称位置越远，差距越大。'
+    },
+    'linear-equation': {
+      '一次函数与一元一次方程的关系': '绿点是直线与 x 轴的交点：它的横坐标 {xInt} 就是方程 kx+b=0 的解 —— 方程的根就是函数图象与 x 轴交点的横坐标。',
+      '不等式 kx+b>0 或 kx+b<0 的解集': '看直线在 x 轴上方/下方的部分：绿点横坐标 {xInt} 是分界点，直线在上方的那一段对应的 x 就是 kx+b>0 的解集。'
+    },
+    'inverse-quadrants': {
+      '图象所在的象限': 'k = {k}：k>0 时两支曲线在第一、三象限，k<0 时在第二、四象限，且关于原点对称。拖动 k 看它怎么翻。',
+      'y 随 x 的增大而增大还是减小': '每一支各自单调：k>0 时在同一支上 x 增大 y 减小，k<0 时在同一支上 x 增大 y 增大。两支不能连起来说。',
+      '同一象限内几个点的函数值大小比较': '先确认几个点是否在同一支上：同一支上按单调性比大小，跨支时先比正负（k>0 时第一象限的点都为正、第三象限的点都为负）。'
+    },
+    'inverse-area': {
+      '点与坐标轴围成的矩形或三角形面积': '点 P 在 y = k/x 上，k = {k}：过 P 向两条坐标轴作垂线，矩形面积 = |k| = {absK}，三角形（原点、P、一个垂足）面积 = |k| ÷ 2 = {halfAbsK}。',
+      '由面积反求 |k|': '面积只由 |k| 决定：|k| = {absK}。由面积反推 k 时，再结合图象落在哪几个象限定符号。'
+    }
+  };
+
+  /** intent 归一化：只做空白折叠（中文题面里 LLM 偶尔会带回空格） */
+  function intentKey(intent) {
+    const s = String(intent == null ? '' : intent).replace(/\s+/g, '').trim();
+    return s || null;
+  }
+
+  /** 归一化后的 intent → 文案模板（不区分画板：模板本身不依赖画板，画板只决定能选哪些 intent）
+   *  键必须走 intentKey()：模板名里带空格（「与 y 轴交点的纵坐标」），LLM 回的 intent 也可能带空格，
+   *  两边不归一化就会出现「清单里有、模板查不到」的假缺失。 */
+  const NOTE_BY_INTENT = (function () {
+    const m = {};
+    Object.keys(NOTE_INTENT).forEach(function (lab) {
+      Object.keys(NOTE_INTENT[lab]).forEach(function (it) {
+        const key = intentKey(it);
+        if (key && !m[key]) m[key] = NOTE_INTENT[lab][it];
+      });
+    });
+    return m;
+  })();
+
+  /** 讲「与 x 轴交点」的 intent（只有这些 intent 的文案才允许出现「根 / 零点」的说法） */
+  const ROOT_INTENTS = ['方程的根', '与x轴交点的横坐标', '零点'];
+
+  /** 画板 + intent 是否是可渲染的组合（capability 的 canAnswer 必须真的含这个 intent，且文案模板存在） */
+  function intentSupported(lab, intent) {
+    const c = CAPABILITIES[String(lab || '')];
+    const it = intentKey(intent);
+    if (!c || !it) return false;
+    return capabilityIntents(lab).indexOf(it) >= 0 && !!NOTE_BY_INTENT[it];
+  }
+
+  /** 某画板 canAnswer 的归一化副本（「与 y 轴交点的纵坐标」→「与y轴交点的纵坐标」） */
+  function capabilityIntents(lab) {
+    const c = CAPABILITIES[String(lab || '')];
+    return c ? c.canAnswer.map(intentKey) : [];
+  }
+
+  /** intent 是否需要「交点个数」这类事实描述（顶点/最值/面积类永远不需要） */
+  function intentUsesRoots(intent) {
+    return ROOT_INTENTS.indexOf(intentKey(intent)) >= 0;
+  }
+
+  /** 数值填空：{k} → 数字，未知保持原样（不猜、不留 undefined） */
+  function fill(tpl, vars) {
+    return String(tpl || '').replace(/\{(\w+)\}/g, function (m, name) {
+      const v = vars && vars[name];
+      if (v == null || v === '') return m;
+      return String(v);
+    });
+  }
+
+  /**
+   * 由 (画板, intent, 参数) 生成画板下的教学文案 —— **纯函数**，可单测。
+   * 返回 null 表示该组合不该挂图（intent 缺失/编造 → 调用方不挂）。
+   * 注意：文案里讲什么由 intent 决定，与「有没有零点」无关 —— 这正是本卡修的 bug。
+   */
+  function noteText(lab, intent, params) {
+    if (!intentSupported(lab, intent)) return null;
+    const p = params || {};
+    const it = intentKey(intent);
+    const type = CAP_TYPE[String(lab || '')] || 'quadratic';
+    const axis = 'x = ' + fmtQuad(p.h);
+    const xMin = p.xMin != null ? p.xMin : '-∞';
+    const xMax = p.xMax != null ? p.xMax : '+∞';
+    const xInt = (p.k == null || p.b == null || p.k === 0) ? null : -p.b / p.k;
+    const absK = p.k == null ? null : Math.abs(p.k);
+    return fill(NOTE_BY_INTENT[it], {
+      a: fmtQuad(p.a), h: fmtQuad(p.h), k: fmtQuad(p.k),
+      b: fmtQuad(p.b), xInt: fmtQuad(xInt),
+      absK: fmtQuad(absK), halfAbsK: fmtQuad(absK == null ? null : absK / 2),
+      y: formatFormula({ type: type, a: p.a, h: p.h, k: p.k, b: p.b }),
+      dir: '竖直虚线',
+      axis: axis, xMin: xMin, xMax: xMax
+    });
+  }
+
+  /** 数值美化（文案里用；与渲染层 fmt 同规则，但接受 null） */
+  function fmtQuad(n) {
+    if (n == null || !isFinite(n)) return '?';
+    return fmt(n);
+  }
+
   /* ------------------------------------------------------------ 渲染（需要 DOM） */
 
   const TYPE_DEF = {
@@ -441,7 +654,12 @@
     return s;
   }
 
-  /** 创建画板元素。opts: {type, ...params} 返回 {el, reset} */
+  /** 创建画板元素。opts: {type, ...params, intent?, lab?, xMin?, xMax?} 返回 {el, reset}
+   *  intent/lab（必填，由匹配层给出）：这道题问什么、用的是哪个已声明画板。
+   *   - intent 属于该画板的 canAnswer → note 由 noteText() 生成，视觉重点按 intent 走
+   *   - intent 缺失/不属于该画板 → **不渲染画板**（返回 null，调用方不挂图）
+   *     原则：画板必须回答「题目问的那件事」，答不上来就不挂 —— 讲别的事比没画板更糟。
+   */
   function mount(opts) {
     const o = opts || {};
     const type = TYPE_DEF[o.type] ? o.type : 'quadratic';
@@ -449,6 +667,15 @@
     const p = Object.assign({}, def.defaults, o);
     p.type = type;
     delete p.base;      // 原曲线配置只放进 base，不污染目标参数 p（否则滑块/公式会带上它）
+    const intent = intentKey(o.intent);
+    const noteLab = o.lab || null;
+    // 类型必须与画板声明的类型一致，且 intent 必须在该画板的 canAnswer 里
+    if (!noteLab || CAP_TYPE[noteLab] !== type) return null;
+    const note0 = noteText(noteLab, intent, p);
+    if (!note0) return null;
+    // 确定性退化解：一次函数 k=0（水平线）、反比例 k=0 时画板画不出有效曲线，直接不挂
+    if (type === 'linear' && p.k === 0) return null;
+    if (type === 'inverse' && p.k === 0) return null;
     // 原曲线（题目给出/默认参数那条）：只有调用方给了才叠画，没给就降级为单曲线
     const baseRaw = (o.base && (!o.base.type || o.base.type === type)) ? o.base : null;
     const base = baseRaw ? Object.assign({}, def.defaults, baseRaw, { type: type }) : null;
@@ -463,6 +690,7 @@
     info.textContent = formatFormula(p);
     const note = document.createElement('div');
     note.className = 'funclab-note';
+    if (note0) note.textContent = note0;      // 二次函数：intent 驱动的文案（见 noteText）
 
     const ctrl = document.createElement('div');
     ctrl.className = 'funclab-sliders';
@@ -509,6 +737,7 @@
 
     const dpr = (typeof devicePixelRatio !== 'undefined' ? devicePixelRatio : 1) || 1;
     const ctx = canvas.getContext('2d');
+    let lastRoots = -1;   // 拖动滑块后交点个数的变化只在讲根的题上体现在文案里
 
     /** 世界坐标 → 屏幕坐标。二次以顶点为中心；一次/反比例固定窗口含坐标轴。 */
     function view() {
@@ -524,6 +753,11 @@
           kMin = Math.min(kMin, r.k); kMax = Math.max(kMax, r.k);
         });
         xMin = hMin - 6; xMax = hMax + 6;
+        // 区间最值画板：视野必须容下整个区间，否则 xMin/xMax 竖线跑到画布外就白画了
+        if (p.xMin != null && p.xMax != null && isFinite(p.xMin) && isFinite(p.xMax) && p.xMax > p.xMin) {
+          xMin = Math.min(xMin, p.xMin - 1);
+          xMax = Math.max(xMax, p.xMax + 1);
+        }
         yMin = kMin - 4; yMax = kMax + 4;
         if (yMin > 0) yMin = 0;
         if (yMax < 0) yMax = 0;
@@ -616,30 +850,94 @@
         plotCurve(w, w.xMin, w.xMax, oc);
       }
     }
-    /** 类型相关标注 + 教学说明 */
+    /** 区间最值：标出 xMin/xMax 两条竖线与端点值（只在 range-on-interval 画板 + 区间有效时画） */
+    function drawInterval(w) {
+      const xa = p.xMin, xb = p.xMax;
+      if (xa == null || xb == null || !isFinite(xa) || !isFinite(xb) || !(xb > xa)) return;
+      const XA = sx({ x: xa }, w), XB = sx({ x: xb }, w);
+      const left = Math.max(Math.min(XA, XB), 0), right = Math.min(Math.max(XA, XB), w.w);
+      if (right <= left) return;
+      ctx.save();
+      // 区间着色：只弱化提示「这一段在考虑范围内」，不抢曲线的视觉
+      ctx.fillStyle = 'rgba(230,126,34,.10)';
+      ctx.fillRect(left, 0, right - left, w.hp);
+      ctx.strokeStyle = 'rgba(230,126,34,.75)';
+      ctx.setLineDash([4, 3]);
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      [XA, XB].forEach(function (X) { if (X >= 0 && X <= w.w) { ctx.moveTo(X, 0); ctx.lineTo(X, w.hp); } });
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // 端点值与顶点值（哪个最大/最小，学生自己比）
+      ctx.font = 'bold 11px sans-serif';
+      [[xa, 'x=' + fmt(xa)], [xb, 'x=' + fmt(xb)]].forEach(function (pair) {
+        const x = pair[0];
+        const X = sx({ x: x }, w), Y = sy({ y: fAt(p, x) }, w);
+        if (X < 0 || X > w.w || Y < 0 || Y > w.hp) return;
+        ctx.fillStyle = '#e67e22';
+        ctx.beginPath(); ctx.arc(X, Y, 3.5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#b35c00';
+        ctx.fillText(pair[1] + ' → ' + fmt(fAt(p, x)), Math.min(Math.max(X + 6, 2), w.w - 60), Math.max(Y - 7, 12));
+      });
+      ctx.restore();
+    }
+
+    /** 这个 intent 要靠「提到根」来讲吗（只有根/零点/交点类才是）；顶点/最值类永远不提根 */
+    function rootsIntent() {
+      return intentUsesRoots(intent);
+    }
+    /** 区间最值画板：画区间标线 */
+    function intervalIntent() {
+      return !!(noteLab === 'quadratic-range-on-interval' || intent === '在给定区间上的最大值' || intent === '在给定区间上的最小值');
+    }
+
+    /** 类型相关标注 + 教学说明（二次函数的说明文案由 intent 决定，见 noteText） */
     function annotate(w) {
       if (type === 'quadratic') {
-        // 对称轴虚线
-        ctx.save();
-        ctx.strokeStyle = 'rgba(120,120,120,.55)';
-        ctx.setLineDash([5, 4]);
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        const HX = sx({ x: p.h }, w);
-        if (HX >= 0 && HX <= w.w) { ctx.moveTo(HX, 0); ctx.lineTo(HX, w.hp); }
-        ctx.stroke();
-        ctx.restore();
-        // 顶点
+        // 对称轴虚线：一直都在（它是抛物线的固有结构），讲「对称轴」时改成粗实线强调
+        const axisIntent = intent === '对称轴';
+        {
+          ctx.save();
+          ctx.strokeStyle = axisIntent ? 'rgba(52,73,94,.85)' : 'rgba(120,120,120,.55)';
+          ctx.lineWidth = axisIntent ? 1.8 : 1;
+          ctx.setLineDash(axisIntent ? [] : [5, 4]);
+          ctx.beginPath();
+          const HX = sx({ x: p.h }, w);
+          if (HX >= 0 && HX <= w.w) { ctx.moveTo(HX, 0); ctx.lineTo(HX, w.hp); }
+          ctx.stroke();
+          ctx.restore();
+        }
+        // 顶点：讲顶点/最值/对称轴/开口时高亮（大号红点 + 十字准线），其余保持小点
+        const vertIntent = intent === '顶点坐标' || intent === '最小值' || intent === '最大值' ||
+          intent === '对称轴' || intent === '开口方向';
         const VX = sx({ x: p.h }, w), VY = sy({ y: p.k }, w);
+        if (vertIntent && VX >= 0 && VX <= w.w && VY >= 0 && VY <= w.hp) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(192,57,43,.45)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(0, VY); ctx.lineTo(w.w, VY);          // 水平准线：y = k
+          ctx.moveTo(VX, VY); ctx.lineTo(VX, w.hp);
+          ctx.stroke();
+          ctx.restore();
+        }
         ctx.fillStyle = '#c0392b';
-        ctx.beginPath(); ctx.arc(VX, VY, 4.5, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(VX, VY, vertIntent ? 6 : 4.5, 0, Math.PI * 2); ctx.fill();
         ctx.fillText('(' + fmt(p.h) + ', ' + fmt(p.k) + ')', VX + 8, VY - 8);
-        // 零点
+        // 顶点必标；最值题再加一行「最小值/最大值 = k」的提示（数字就是答案，学生自己核对）
+        if (intent === '最小值' || intent === '最大值') {
+          ctx.save();
+          ctx.font = 'bold 12px sans-serif';
+          ctx.fillStyle = '#b03a2e';
+          const label = (intent === '最小值' ? '最小值' : '最大值') + ' = ' + fmt(p.k);
+          ctx.fillText(label, Math.min(Math.max(VX + 8, 4), w.w - 90), Math.max(VY + 16, 14));
+          ctx.restore();
+        }
+        // 零点（绿点）：只画点，**文案不在这里决定** —— 问顶点的题上不能出现「就是方程的两个根」
         const disc = -p.k / p.a;
-        let roots = 0;
         if (p.a !== 0 && disc >= 0) {
           const r = Math.sqrt(disc);
-          roots = r === 0 ? 1 : 2;
           [p.h - r, p.h + r].forEach(function (x) {
             const X = sx({ x: x }, w), Y = sy({ y: 0 }, w);
             if (X < 0 || X > w.w) return;
@@ -647,11 +945,25 @@
             ctx.beginPath(); ctx.arc(X, Y, 4, 0, Math.PI * 2); ctx.fill();
           });
         }
-        if (roots === 2) note.textContent = '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。';
-        else if (roots === 1) note.textContent = '抛物线与 x 轴刚好相切：方程有两个相等的根。';
-        else note.textContent = '抛物线没有碰到 x 轴：方程没有实数根。';
+        if (intervalIntent()) drawInterval(w);
+        // 文案已在 mount 时按 intent 生成；这里只处理拖动滑块后「交点个数」的事实描述变化
+        // —— 仍然只在讲根/零点时才提根，讲顶点/最值的题永远不提。
+        if (rootsIntent()) {
+          const roots = (p.a === 0 || disc < 0) ? 0 : (disc === 0 ? 1 : 2);
+          if (roots !== lastRoots) {
+            lastRoots = roots;
+            const base = noteText(noteLab, intent, p);
+            if (base) {
+              const fact = roots === 2 ? '（当前参数下有两个交点）'
+                : roots === 1 ? '（当前参数下恰好相切，两个相等的根）'
+                  : '（当前参数下没有交点，方程无实数根）';
+              note.textContent = base + fact;
+            }
+          }
+        }
       } else if (type === 'linear') {
         // 与 y 轴交点 (0,b) 红点；与 x 轴交点 (-b/k, 0) 绿点
+        // 文案不在这里写 —— 由 mount 时按 intent 生成（讲截距/面积/解集的题不能都被写成「方程的解」）
         const BY = sy({ y: p.b }, w), BX = sx({ x: 0 }, w);
         ctx.fillStyle = '#c0392b';
         ctx.beginPath(); ctx.arc(BX, BY, 4.5, 0, Math.PI * 2); ctx.fill();
@@ -662,16 +974,9 @@
           ctx.fillStyle = '#2ecc71';
           ctx.beginPath(); ctx.arc(IX, IY, 4.5, 0, Math.PI * 2); ctx.fill();
           ctx.fillText('(' + fmt(xInt) + ', 0)', IX + 8, IY + 14);
-          note.textContent = '绿点是直线与 x 轴的交点：它的横坐标就是方程 kx+b=0 的解。';
-        } else {
-          note.textContent = p.b === 0 ? 'k=0 且 b=0：直线就是 x 轴（无数个根）。' : 'k=0：水平直线，与 x 轴不相交（方程无解）。';
         }
       } else {
-        // inverse：象限说明
-        if (p.k > 0) note.textContent = 'k>0：两支曲线在第一、三象限，且关于原点对称。';
-        else if (p.k < 0) note.textContent = 'k<0：两支曲线在第二、四象限，且关于原点对称。';
-        else note.textContent = 'k=0：y=0 就是 x 轴（这不是反比例函数）。';
-        // 渐近线交点在曲线附近标注 "y=k/x 两支离坐标轴越来越近但不相交"
+        // inverse：双曲线两支 + 渐近线虚线（文案同样由 intent 生成）
       }
     }
 
@@ -758,10 +1063,24 @@
       state: function () {
         return {
           type: type,
+          lab: noteLab,
+          intent: intent,
+          note: note.textContent,
           params: Object.assign({}, p),
           base: base ? Object.assign({}, base) : null,
           curves: base ? 2 : 1,
-          shift: base ? { dx: p.h - base.h, dy: p.k - base.k } : null
+          shift: type === 'quadratic' ? (base ? { dx: p.h - base.h, dy: p.k - base.k } : null)
+            : type === 'linear' ? (base ? { dx: 0, dy: p.b - base.b } : null)
+              : null,
+          focus: {
+            vertex: type === 'quadratic' && (intent === '顶点坐标' || intent === '最小值' || intent === '最大值' || intent === '对称轴' || intent === '开口方向'),
+            axis: type === 'quadratic' && (intent === '对称轴' || intent === '顶点坐标' || intent === '开口方向'),
+            interval: type === 'quadratic' && intervalIntent() && p.xMin != null && p.xMax != null,
+            roots: type === 'quadratic' && rootsIntent(),
+            /* 一次函数：标出的两个截距 / 反比例：标出象限说明 */
+            intercepts: type === 'linear',
+            quadrants: type === 'inverse'
+          }
         };
       },
       clear: function () {
@@ -773,5 +1092,21 @@
     return inst;
   }
 
-  return { fromPrompt: fromPrompt, topicSupported: topicSupported, topicKind: topicKind, labFor: labFor, labForScene: labForScene, baseOf: baseOf, mount: mount, formatFormula: formatFormula };
+  return {
+    fromPrompt: fromPrompt, topicSupported: topicSupported, topicKind: topicKind,
+    labFor: labFor, labForScene: labForScene, baseOf: baseOf, mount: mount, formatFormula: formatFormula,
+    /* 任务一：能力清单 + intent 文案（匹配层/审计脚本/测试的唯一来源） */
+    CAPABILITIES: CAPABILITIES, CAP_TYPE: CAP_TYPE, NOTE_BY_INTENT: NOTE_BY_INTENT,
+    intentKey: intentKey, intentSupported: intentSupported, intentUsesRoots: intentUsesRoots,
+    capabilityIntents: capabilityIntents,
+    noteText: noteText, ROOT_INTENTS: ROOT_INTENTS.slice(),
+    /** 某类画板（quadratic/linear/inverse）的能力清单子集（匹配层只喂相关画板，减少 LLM 误选） */
+    capabilitiesFor: function (type) {
+      const out = {};
+      Object.keys(CAPABILITIES).forEach(function (name) {
+        if (CAP_TYPE[name] === type) out[name] = CAPABILITIES[name];
+      });
+      return out;
+    }
+  };
 });
