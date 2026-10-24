@@ -1148,6 +1148,193 @@ test('[E-语义2] 已知存量误挂 9 题仍在挂载：修好它们要动解�
 
 
 /* ================================================================
+ * 12. P 卡：画板只标题面已知量（派生量留 ?）+ 自检判定
+ *    验收标准：① 求最小值那题文案不出现 -4、标注是 ? ② 对称轴题不出现 3
+ *    ③ 方程的根不出现 2 和 3 ④ 点「我算好了」空着不给真值 ⑤ 填对 ✓ / 填错 ✗
+ *    ⑥ 全库审计 0 泄漏 ⑦ 判定逻辑正误
+ * ================================================================ */
+
+console.log('\n--- 12. P 卡：已知量/派生量分层 + 自检 ---');
+
+/** 文案里是否出现某个数字（按数值比较，避免 "-4" 被 "2-4" 之类的子串误判） */
+function hasNumber(text, n) {
+  const s = String(text).replace(/[−–—]/g, '-');
+  const re = /-?\d+(?:\.\d+)?/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    if (Math.abs(Number(m[0]) - n) < 1e-9) return true;
+  }
+  return false;
+}
+
+test('[P-1] cnm_235_q2 求 y=2(x+1)²-4 的最小值：文案不出现 -4（也不出现顶点横坐标 -1），但显示已知量 a = 2', function () {
+  const s = F.noteText('quadratic-vertex', '最小值', { a: 2, h: -1, k: -4 });
+  assert.ok(s, '文案为空');
+  assert.ok(!hasNumber(s, -4), '文案直接报出了最小值 -4：' + s);
+  assert.ok(!hasNumber(s, -1), '文案报出了顶点横坐标 -1：' + s);
+  assert.ok(s.indexOf('a = 2') >= 0, '题面已知量 a = 2 应当显示：' + s);
+  assert.ok(/纵坐标是多少/.test(s), '应当改成引导提问：' + s);
+});
+
+test('[P-2] cnm_232_q2 求 y=x²-6x+5 的对称轴：文案不出现 3（也不出现顶点纵坐标 -4），标注写 x = ?', function () {
+  const p = { a: 1, h: 3, k: -4 };
+  const s = F.noteText('quadratic-vertex', '对称轴', p);
+  assert.ok(!hasNumber(s, 3), '文案报出了对称轴 3：' + s);
+  assert.ok(!hasNumber(s, -4), '文案报出了顶点纵坐标 -4：' + s);
+  assert.ok(/x = \?/.test(s), '对称轴要留问号：' + s);
+  /* 图上标注：对称轴位置不写数字 */
+  assert.strictEqual(F.deriveText(), '?');
+  assert.strictEqual(F.derivePair(), '(?, ?)');
+});
+
+test('[P-3] cnm_224_q1 解方程 x²-5x+6=0：文案不出现根 2、3，也不出现顶点坐标（2.5, -0.25）', function () {
+  const p = { a: 1, h: 2.5, k: -0.25 };
+  const s = F.noteText('quadratic-roots', '方程的根', p);
+  assert.ok(!hasNumber(s, 2), '文案出现了 2：' + s);
+  assert.ok(!hasNumber(s, 3), '文案出现了 3：' + s);
+  assert.ok(/分别是多少/.test(s), '应当改成引导提问：' + s);
+});
+
+test('[P-4] 区间最值（cnm_235_q4）：区间端点照常显示（已知量），端点函数值与最值留问号', function () {
+  const p = { a: 1, h: 1, k: -4, xMin: 2, xMax: 4 };
+  const s = F.noteText('quadratic-range-on-interval', '在给定区间上的最大值', p);
+  assert.ok(s.indexOf('2 ≤ x ≤ 4') >= 0, '区间端点是题面已知量，要显示：' + s);
+  assert.ok(!hasNumber(s, 5), '文案报出了最大值 5：' + s);
+  assert.ok(!hasNumber(s, -4), '文案报出了顶点纵坐标 -4：' + s);
+  assert.ok(/最大的那个是多少/.test(s), '要引导学生自己算：' + s);
+});
+
+test('[P-5] 开口方向：a 是题面已知量，允许直接讲（保留原文案）', function () {
+  const s = F.noteText('quadratic-vertex', '开口方向', { a: -2, h: 1, k: 3 });
+  assert.ok(s.indexOf('a = -2') >= 0, s);
+  assert.ok(/开口向下/.test(s), s);
+});
+
+test('[P-6] 二次函数的文案里不出现顶点横坐标 h（派生量）；一次/反比例的 k、b 是题面已知量允许显示', function () {
+  const sample = {
+    quadratic: { a: 2, h: -1, k: -4, xMin: 2, xMax: 4 },
+    linear: { k: 2, b: -6 },
+    inverse: { k: -8 }
+  };
+  const bad = [];
+  Object.keys(F.CAPABILITIES).forEach(function (lab) {
+    const type = F.CAP_TYPE[lab];
+    F.CAPABILITIES[lab].canAnswer.forEach(function (intent) {
+      const s = F.noteText(lab, intent, Object.assign({}, sample[type]));
+      if (!s) return;
+      /* 只有二次函数的 h 必然是派生量（配方才得到）；一次/反比例的 k、b 是题面原式里就有的已知量 */
+      if (type === 'quadratic' && hasNumber(s, -1)) bad.push(lab + '/' + intent + ' 出现顶点横坐标 -1');
+      if (type === 'quadratic' && hasNumber(s, -4)) bad.push(lab + '/' + intent + ' 出现顶点纵坐标 -4');
+    });
+  });
+  assert.deepStrictEqual(bad, [], '文案里出现了派生量：' + bad.join('; '));
+});
+
+test('[P-7] answerRows：按 intent 决定问几个数，且真值与题库答案一致（cnm_235_q2/q1/q4/232_q2/231_q2/224_q1）', function () {
+  const cases = [
+    ['cnm_235_q2', 'quadratic-vertex', '最小值', -4],
+    ['cnm_235_q1', 'quadratic-vertex', '最大值', 5],
+    ['cnm_232_q2', 'quadratic-vertex', '对称轴', 3],
+    ['cnm_236_q2', 'quadratic-vertex', '最大值', 20]
+  ];
+  cases.forEach(function (c) {
+    const item = QMAP.get(c[0]);
+    assert.ok(item, '题库里找不到 ' + c[0]);
+    const cand = F.labForScene(item.topicId, item.prompt, { itemId: item.id });
+    assert.ok(cand, c[0] + ' 应能挂画板');
+    const rows = F.answerRows(c[1], c[2], cand);
+    assert.strictEqual(rows.length, 1, c[0] + ' 应问一个数，实际 ' + rows.length);
+    assert.ok(Math.abs(rows[0].real - c[3]) < 1e-9,
+      c[0] + ' 真值应为 ' + c[3] + '，实际 ' + rows[0].real + '（题库答案 ' + item.answer + '）');
+    assert.strictEqual(rows[0].yours, '', '作答位必须是空串（绝不预填真值）');
+  });
+});
+
+test('[P-8] answerRows：顶点坐标问两个数，根问两个数，区间最值题按「问哪个就给哪个」合成一行', function () {
+  const vertex = F.answerRows('quadratic-vertex', '顶点坐标', { a: 2, h: -3, k: -5 });
+  assert.deepStrictEqual(vertex.map(function (r) { return r.real; }), [-3, -5]);
+
+  /* cnm_235_q4 问「最大值」，只核对最大值 5；问最小值时只核对 -3（题目问什么就问什么） */
+  const maxRows = F.answerRows('quadratic-range-on-interval', '在给定区间上的最大值',
+    { a: 1, h: 1, k: -4, xMin: 2, xMax: 4 });
+  assert.deepStrictEqual(maxRows.map(function (r) { return r.real; }), [5]);
+  const minRows = F.answerRows('quadratic-range-on-interval', '在给定区间上的最小值',
+    { a: 1, h: 1, k: -4, xMin: 2, xMax: 4 });
+  assert.deepStrictEqual(minRows.map(function (r) { return r.real; }), [-3]);
+
+  /* 顶点落在区间内时，最值就是顶点的纵坐标 */
+  assert.deepStrictEqual(F.answerRows('quadratic-range-on-interval', '在给定区间上的最小值',
+    { a: 1, h: 3, k: -4, xMin: 2, xMax: 4 }).map(function (r) { return r.real; }), [-4]);
+
+  const roots = F.answerRows('quadratic-roots', '方程的根', { a: 1, h: 2.5, k: -0.25 });
+  assert.deepStrictEqual(roots.map(function (r) { return r.real; }).sort(function (x, y) { return x - y; }), [2, 3]);
+});
+
+test('[P-9] answerRows：不是数值题的 intent 不给输入框（开口方向 / 象限 / 趋势）', function () {
+  assert.deepStrictEqual(F.answerRows('quadratic-vertex', '开口方向', { a: 1, h: 2, k: 3 }), []);
+  assert.deepStrictEqual(F.answerRows('inverse-quadrants', '图象所在的象限', { k: -8 }), []);
+  assert.deepStrictEqual(F.answerRows('linear-trend', 'y 随 x 的增大而增大还是减小', { k: 2, b: 1 }), []);
+});
+
+test('[P-10] checkAnswerRow：未作答只说「未作答」，不出真值、不出 ✓/✗', function () {
+  const row = { label: '最小值', real: -4, yours: '' };
+  ['', '   ', '\t\n'].forEach(function (raw) {
+    const v = F.checkAnswerRow(row, raw);
+    assert.strictEqual(v.verdict, 'blank', JSON.stringify(raw) + ' 应判未作答');
+    assert.strictEqual(v.shown, '未作答');
+    assert.strictEqual(v.real, false, '未作答时不得给真值');
+    assert.ok(v.shown.indexOf('-4') < 0, '未作答时不能露出真值');
+  });
+});
+
+test('[P-11] checkAnswerRow：数值写法归一（3 / 3.0 / 3/1 / 6/2 / 全角负号）都算对', function () {
+  [['3', 3], ['3.0', 3], ['3/1', 3], ['6/2', 3], ['-4', -4], ['-4.00', -4], ['−4', -4], ['-8/2', -4]]
+    .forEach(function (c) {
+      const v = F.checkAnswerRow({ label: 'x', real: c[1] }, c[0]);
+      assert.strictEqual(v.verdict, 'right', c[0] + ' 应为 ✓，实际 ' + v.verdict);
+      assert.strictEqual(v.shown, '✓');
+    });
+  assert.strictEqual(F.numEqual('1/2', '0.5'), true);
+  assert.strictEqual(F.numEqual('3', '3.0'), true);
+});
+
+test('[P-12] checkAnswerRow：填错判 ✗ 且**不回显实际值**（否则做错的学生的答案旁边就摆着正确答案）', function () {
+  const v = F.checkAnswerRow({ label: '最小值', real: -4 }, '-5');
+  assert.strictEqual(v.verdict, 'wrong');
+  assert.ok(v.shown.indexOf('-5') >= 0, '要回显学生自己的答案：' + v.shown);
+  assert.ok(v.shown.indexOf('-4') < 0, '不得回显实际值：' + v.shown);
+  assert.strictEqual(v.real, false);
+  /* 不是数的输入同样按填错处理，不暴露真值 */
+  const w = F.checkAnswerRow({ label: '最小值', real: -4 }, '不知道');
+  assert.strictEqual(w.verdict, 'wrong');
+  assert.ok(w.shown.indexOf('-4') < 0, w.shown);
+});
+
+test('[P-13] 图上静态标注不出现派生量：quadRangeExtrema 只给面板用，derivePair 恒为 (?, ?)', function () {
+  const e = F.quadRangeExtrema(1, 1, -4, 2, 4);
+  assert.strictEqual(e.max, 5);
+  assert.strictEqual(e.min, -3);
+  /* 顶点在区间内时也要把顶点值纳入比较 */
+  const e2 = F.quadRangeExtrema(1, 3, -4, 2, 4);
+  assert.strictEqual(e2.min, -4);
+  assert.strictEqual(F.derivePair(), '(?, ?)');
+  assert.strictEqual(F.fmtPair([3, -4]), '3、-4');
+});
+
+test('[P-14] 全库审计：所有挂图题 × 全部 intent 的文案与图上标注都不含答案数字（scripts/audit_funclab_notes.js）', function () {
+  const { execFileSync } = require('child_process');
+  const out = execFileSync(process.execPath,
+    [path.join(__dirname, '..', 'scripts', 'audit_funclab_notes.js'), '--json'],
+    { encoding: 'utf8', env: Object.assign({}, process.env, { TMPDIR: path.join(require('os').tmpdir(), 'no-cache-for-audit') }) });
+  const rep = JSON.parse(out);
+  assert.ok(rep.noteCount > 100, '审计覆盖的文案条数太少：' + rep.noteCount);
+  assert.deepStrictEqual(rep.leaks, [], '有 ' + rep.leaks.length + ' 处泄漏：'
+    + rep.leaks.map(function (l) { return l.id + '/' + l.intent + '→' + l.value; }).join('; '));
+});
+
+
+
+/* ================================================================
  * 汇总
  * ================================================================ */
 
