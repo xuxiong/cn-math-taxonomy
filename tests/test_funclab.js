@@ -1335,6 +1335,146 @@ test('[P-14] 全库审计：所有挂图题 × 全部 intent 的文案与图上�
 
 
 /* ================================================================
+ * 描述（t_85395e07）：Funclab.describe —— AI 讲解看到画板
+ *   9 个 lab × 各自全部 intent 都要能出描述；派生量一律 ?，不许剧透。
+ * ================================================================ */
+
+/* 每个画板一套合法参数（curated，避免派生量数值与已知量 fmt 串撞车干扰断言）。
+ * quadratic-vertex / linear 带 base，才能覆盖「基准曲线 + 平移箭头」这些可见元素。 */
+const DESC_LABS = {
+  'quadratic-vertex': { a: -1, h: 2, k: 5, base: { type: 'quadratic', a: -1, h: 2, k: 0 } },
+  'quadratic-roots': { a: 1, h: 0, k: -4 },
+  'quadratic-inequality': { a: 1, h: 0, k: -4 },
+  'quadratic-range-on-interval': { a: 1, h: 0, k: -4, xMin: -1, xMax: 3 },
+  'linear-intercepts': { k: 2, b: -4, base: { type: 'linear', k: 2, b: 0 } },
+  'linear-trend': { k: 2, b: -4, base: { type: 'linear', k: 2, b: 0 } },
+  'linear-equation': { k: 2, b: -4, base: { type: 'linear', k: 2, b: 0 } },
+  'inverse-quadrants': { k: 3 },
+  'inverse-area': { k: 3 }
+};
+function descParams(lab) {
+  const p = Object.assign({}, DESC_LABS[lab]);
+  p.type = F.CAP_TYPE[lab];
+  return p;
+}
+
+test('describe：9 个 lab × 各自全部 intent 都返回非空字符串，且覆盖关键元素词', function () {
+  Object.keys(F.CAPABILITIES).forEach(function (lab) {
+    F.CAPABILITIES[lab].canAnswer.forEach(function (raw) {
+      const it = F.intentKey(raw);
+      const d = F.describe(lab, it, descParams(lab));
+      assert.ok(d && d.length > 0, lab + '/' + it + ' describe 应为非空字符串');
+      assert.ok(d.indexOf('坐标') >= 0, lab + '/' + it + ' 应含坐标平面');
+      assert.ok(d.indexOf('实线') >= 0, lab + '/' + it + ' 应含实线描述');
+      assert.ok(d.indexOf('?') >= 0, lab + '/' + it + ' 应含留白问号');
+    });
+  });
+});
+
+test('describe：cnm_235 最大值题（顶点 (2,5)）不含任何派生量数值', function () {
+  const params = F.labForScene('cnm_235', q('cnm_235_q1'), { itemId: 'cnm_235_q1' });
+  assert.ok(params, 'cnm_235_q1 应能解析出画板参数');
+  assert.deepStrictEqual({ a: params.a, h: params.h, k: params.k }, { a: -1, h: 2, k: 5 }, 'cnm_235 顶点应为 (2,5)');
+  const d = F.describe('quadratic-vertex', '最大值', params);
+  assert.ok(d, 'cnm_235 describe 非空');
+  ['5', '(2, 5)', 'x = 2', '(2,', '坐标 (2'].forEach(function (leak) {
+    assert.ok(d.indexOf(leak) < 0, 'describe 不应包含派生量数值片段 ' + JSON.stringify(leak) + '\n' + d);
+  });
+});
+
+test('describe：逐 lab 通用断言 —— labAnswerParts 算出的派生量值都不出现在 describe（排除已知量重名）', function () {
+  Object.keys(F.CAPABILITIES).forEach(function (lab) {
+    F.CAPABILITIES[lab].canAnswer.forEach(function (raw) {
+      const it = F.intentKey(raw);
+      const p = descParams(lab);
+      const d = F.describe(lab, it, p);
+      if (!d) return;
+      const knownNum = [p.a, p.b, p.xMin, p.xMax].filter(function (v) { return v != null && isFinite(v); });
+      if (p.type === 'linear' || p.type === 'inverse') knownNum.push(p.k);
+      const knownStrs = knownNum.map(function (v) { return F.fmtQuad(v); });
+      F.labAnswerParts(lab, it, p).forEach(function (part) {
+        part.values.forEach(function (v) {
+          if (knownNum.some(function (k) { return Math.abs(k - v) < 1e-9; })) return;   // 与已知量数值重名
+          const s = F.fmtQuad(v);
+          if (knownStrs.some(function (k) { return k.indexOf(s) >= 0; })) return;       // 是已知量 fmt 串的子串（如面积 4 ⊂ b=-4）
+          assert.ok(d.indexOf(s) < 0, lab + '/' + it + ' describe 泄露派生量 ' + s + '\n' + d);
+        });
+      });
+    });
+  });
+});
+
+test('describe：非法输入 → null（不返回空串）', function () {
+  assert.strictEqual(F.describe(null, '最大值', {}), null);
+  assert.strictEqual(F.describe('nope', '最大值', {}), null);
+  assert.strictEqual(F.describe('quadratic-vertex', '不存在的intent', { a: -1, h: 2, k: 5 }), null);
+  assert.strictEqual(F.describe('linear-intercepts', '顶点坐标', { k: 2, b: -4 }), null);   // intent 不属于该画板
+});
+
+test('describe：共享标注 helper 被绘制路径与 paintModel 共用（防漂移：新标注漏更新 describe 就红）', function () {
+  const fs = require('fs');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'funclab.js'), 'utf8');
+  // 抽取绘制路径（annotate/drawShift/drawInterval）里 fillText / const label 调用的共享 helper 名
+  const used = new Set();
+  const re = /(?:ctx\.fillText|const label =)\s*\(\s*(\w+Text)\(/g;
+  let m;
+  while ((m = re.exec(src))) used.add(m[1]);
+  assert.ok(used.size > 0, '应能从绘制路径抽出共享标注 helper');
+  // paintModel 函数体必须引用每个 helper（否则 describe 与绘制漂移）
+  const pm = src.slice(src.indexOf('function paintModel'), src.indexOf('function blankNote'));
+  used.forEach(function (h) {
+    assert.ok(pm.indexOf(h + '(') >= 0, 'paintModel 必须引用绘制路径用到的 helper ' + h);
+  });
+  // describe 必须通过 paintModel 生成
+  const dsc = src.slice(src.indexOf('function describe'), src.indexOf('  /** 数值对'));
+  assert.ok(dsc.indexOf('paintModel(') >= 0, 'describe 必须调用 paintModel');
+});
+
+
+test('describe：交点个数与绘制路径一致（视野裁剪 + 相切只算一个）', function () {
+  /* 回归锁（t_85395e07 实测）：paintModel 原先写死「两个交点」，而绘制路径
+   *   ① 有 `if (X < 0 || X > w.w) return;` 裁剪（视野 [h-6,h+6]，根在 h±√(-k/a)）
+   *   ② disc === 0 时两个根重合，图上只有一个点
+   * 描述说「有两个交点」而图上一个都没画，正是本卡要修的「描述与代码不符」。 */
+  const rootsLine = function (d) {
+    return (d || '').split('\n').filter(function (l) { return l.indexOf('交点') >= 0 || l.indexOf('相切') >= 0; }).join('|');
+  };
+  // 根 h±10，视野 ±6 → 两个都在画布外，图上一个点都没有
+  const far = F.describe('quadratic-vertex', '最大值', { type: 'quadratic', a: 1, h: 0, k: -100 });
+  assert.ok(far, 'far describe 非空');
+  assert.ok(rootsLine(far) === '', '根落在视野外时 describe 不得声称图上有交点，实际：' + rootsLine(far));
+  // 根 h±2，视野 ±6 → 两个都在画布内
+  const near = F.describe('quadratic-vertex', '最大值', { type: 'quadratic', a: 1, h: 0, k: -4 });
+  assert.ok(rootsLine(near).indexOf('两个交点') >= 0, '根在视野内应说「两个交点」，实际：' + rootsLine(near));
+  // 相切：disc = 0，图上只有一个点
+  const tangent = F.describe('quadratic-vertex', '最大值', { type: 'quadratic', a: 1, h: 0, k: 0 });
+  assert.ok(rootsLine(tangent).indexOf('相切于一点') >= 0, '相切应说「相切于一点」，实际：' + rootsLine(tangent));
+  assert.ok(rootsLine(tangent).indexOf('两个') < 0, '相切不得说「两个」');
+  // 区间画板扩窗后根进入视野（视野 = [xMin-1, xMax+1] = [-21,21]）
+  const widened = F.describe('quadratic-range-on-interval', '在给定区间上的最大值',
+    { type: 'quadratic', a: 1, h: 0, k: -100, xMin: -20, xMax: 20 });
+  assert.ok(rootsLine(widened).indexOf('两个交点') >= 0,
+    '区间扩窗后根应可见，不得沿用 [h-6,h+6] 误判不可见，实际：' + rootsLine(widened));
+});
+
+test('describe：curveWindow 与 mount.view() 的 quadratic 视野同口径（防漂移）', function () {
+  const fs = require('fs');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'funclab.js'), 'utf8');
+  const view = src.slice(src.indexOf('function view()'), src.indexOf('function gridAndAxes'));
+  // 视野公式的三处关键常量/分支必须两边都有，否则「点到底画没画」会算错
+  ['hMin - 6', 'hMax + 6', 'p.xMin - 1', 'p.xMax + 1'].forEach(function (frag) {
+    assert.ok(view.indexOf(frag) >= 0, 'view() 应含视野公式片段 ' + frag);
+  });
+  const win = src.slice(src.indexOf('function curveWindow'), src.indexOf('function typeTitle'));
+  ['hMin - 6', 'hMax + 6', 'p.xMin - 1', 'p.xMax + 1'].forEach(function (frag) {
+    assert.ok(win.indexOf(frag) >= 0, 'curveWindow 必须与 view() 同步，缺片段 ' + frag);
+  });
+  // 绘制路径的裁剪判断必须还在（curveWindow 的存在前提）
+  assert.ok(src.indexOf('if (X < 0 || X > w.w) return;') >= 0, '绘制路径应有 X 裁剪判断');
+  assert.ok(src.indexOf('X < 0 || X > w.w') >= 0, '绘制路径应有 X 裁剪判断');
+});
+
+/* ================================================================
  * 汇总
  * ================================================================ */
 

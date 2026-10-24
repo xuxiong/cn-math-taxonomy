@@ -36,14 +36,16 @@
       + '重要：输出必须是纯文本，禁止任何 Markdown 标记（不要用 **、*、`、#、> 等符号）；'
       + '公式用普通文字写，如 "a(x-h)²+k" 直接写，不要加粗、不要用代码块；'
       + '不要写任何反斜杠命令（如 \\sqrt、\\frac、\\times、\\pm 都不要用）；'
-      + '根号直接用 √ 符号（如 2±√5），分数用斜杠（如 1/2），允许用 ² 表示平方。';
+      + '根号直接用 √ 符号（如 2±√5），分数用斜杠（如 1/2），允许用 ² 表示平方。'
+      + '画板上刻意留白的量（描述里标为「留白」或「?」）不许你在讲解里直接说出数值。可以引导学生去看图、自己去读，但不许代他读出。';
   }
 
-  function userPrompt(topic, q, userAnswer) {
+  function userPrompt(topic, q, userAnswer, labDesc) {
     const typeLabel = ({ choice: '选择题', numeric: '填数字', short: '简答' })[q.type] || '题';
     const topicName = (topic && topic.name) || '';
     return '题目（' + typeLabel + '）：' + q.prompt
       + '\n知识点：' + topicName
+      + (labDesc ? '\n画板：' + labDesc : '')
       + '\n学生答案：' + (userAnswer === '' ? '（没填）' : userAnswer)
       + (q.answer ? '\n本题目标准答案：' + q.answer + '（你的 reveal 最终解值必须与此一致）' : '')
       + (q.explanation ? '\n可参考的标准解析（reveal 里可以展开它，但不要照抄）：' + q.explanation : '');
@@ -119,10 +121,12 @@
       + '3) 如果问题是对概念的疑问（如「什么叫移项」「为什么去括号要变号」），直接解释，可以结合当前题目举例；'
       + '4) 不要输出 JSON 或任何标记，只输出回答文本；'
       + '5) 回答是纯文本，禁止 Markdown（不要用 **、*、`、#、> 等符号），公式直接用文字写；'
-      + '6) 不要写任何反斜杠命令（如 \sqrt、\frac 都不要用），根号用 √（如 2±√5）、分数用斜杠（如 1/2）。';
+      + '6) 不要写任何反斜杠命令（如 \sqrt、\frac 都不要用），根号用 √（如 2±√5）、分数用斜杠（如 1/2）。'
+      + '7) 回答时如果涉及图，必须以「画板」这段描述为准。描述里说图上有什么，你才能说有；描述里没提到的元素，不要说它存在或不存在。图上是虚线还是实线、有没有箭头，一律照描述说。'
+      + '8) 画板上刻意留白的量（描述里标为「留白」或「?」）不许你直接说出数值——哪怕前面「标准解析」「讲解进度」里已经写了这个数，学生问起来也只能引导他去看图、自己算，不许代他读出。';
   }
 
-  function askUserPrompt(topic, q, userAnswer, steps, question) {
+  function askUserPrompt(topic, q, userAnswer, steps, question, labDesc) {
     const typeLabel = ({ choice: '选择题', numeric: '填数字', short: '简答' })[q.type] || '题';
     const topicName = (topic && topic.name) || '';
     const stepsText = (steps || []).map(function (s) {
@@ -130,18 +134,19 @@
     }).join('\n');
     return '题目（' + typeLabel + '）：' + q.prompt
       + '\n知识点：' + topicName
+      + (labDesc ? '\n画板：' + labDesc : '')
       + '\n学生答案：' + (userAnswer === '' ? '（没填）' : userAnswer)
       + (q.explanation ? '\n标准解析（参考，不要照抄）：' + q.explanation : '')
       + '\n当前讲解进度（学生已看到的引导）：\n' + (stepsText || '（无）')
       + '\n\n学生的问题：' + question;
   }
 
-  function llmAsk(topic, q, userAnswer, steps, question) {
+  function llmAsk(topic, q, userAnswer, steps, question, labDesc) {
     const body = {
       model: MODEL,
       messages: [
         { role: 'system', content: askSystemPrompt() },
-        { role: 'user', content: askUserPrompt(topic, q, userAnswer, steps, question) }
+        { role: 'user', content: askUserPrompt(topic, q, userAnswer, steps, question, labDesc) }
       ],
       max_tokens: FOLLOWUP_MAX_TOKENS,
       temperature: 0.5
@@ -164,8 +169,8 @@
   /** 讲解中追问（单轮）。返回 Promise<{text, from: 'llm'|'offline'}>，永不 reject：
    *   llm    —— AI 老师正常回答
    *   offline—— 网关不可用，text 为 null（UI 显示引导语） */
-  function ask(topic, q, userAnswer, steps, question) {
-    return llmAsk(topic, q, userAnswer, steps, question)
+  function ask(topic, q, userAnswer, steps, question, labDesc) {
+    return llmAsk(topic, q, userAnswer, steps, question, labDesc)
       .then(function (text) { return { text: text, from: 'llm' }; })
       .catch(function () { return { text: null, from: 'offline' }; });
   }
@@ -181,12 +186,12 @@
     return E.verifyReveal(reveal, ref);
   }
 
-  async function llmSteps(topic, q, userAnswer) {
+  async function llmSteps(topic, q, userAnswer, labDesc) {
     const body = {
       model: MODEL,
       messages: [
         { role: 'system', content: systemPrompt() },
-        { role: 'user', content: userPrompt(topic, q, userAnswer) }
+        { role: 'user', content: userPrompt(topic, q, userAnswer, labDesc) }
       ],
       max_tokens: EXPLAIN_MAX_TOKENS,
       temperature: 0.6
@@ -210,16 +215,18 @@
    * 返回 Promise<{steps: [{kind,text}], from: 'llm'|'static'}>，永不 reject：
    *   llm    —— 网关成功返回个性化三步
    *   static —— 网关不可用/解析失败，退化为 engine 静态模板（不显示"AI 讲解"标签）
-   * 同题 5 分钟内存缓存（key = q.id）；缓存命中按 llm 计。 */
-  function generate(topic, q, userAnswer) {
+   * 同题 5 分钟内存缓存（key = q.id + '|' + 有无画板）；缓存命中按 llm 计。
+   * 同一题有/无画板两次 generate 不得互相命中。 */
+  function generate(topic, q, userAnswer, labDesc) {
     const qid = q && q.id;
-    const hit = qid && cache.get(qid);
+    const ckey = qid ? (qid + '|' + (labDesc ? 1 : 0)) : null;
+    const hit = ckey && cache.get(ckey);
     if (hit && Date.now() - hit.ts < TTL) return Promise.resolve({ steps: hit.steps, from: hit.from || 'llm' });
     const fallback = staticSteps(topic, q);
-    if (qid) cache.set(qid, { ts: Date.now(), steps: fallback, from: 'static' });   // 先占位，防并发重复调
-    return llmSteps(topic, q, userAnswer)
+    if (ckey) cache.set(ckey, { ts: Date.now(), steps: fallback, from: 'static' });   // 先占位，防并发重复调
+    return llmSteps(topic, q, userAnswer, labDesc)
       .then((steps) => {
-        if (qid) cache.set(qid, { ts: Date.now(), steps: steps, from: 'llm' });
+        if (ckey) cache.set(ckey, { ts: Date.now(), steps: steps, from: 'llm' });
         return { steps: steps, from: 'llm' };
       })
       .catch(() => ({ steps: fallback, from: 'static' }));   // 网关挂了 / reveal 数值校验没过，都用静态版
@@ -231,6 +238,10 @@
     staticSteps: staticSteps,
     _cache: cache,
     _ttl: TTL,
-    _userPrompt: userPrompt
+    /* 内部 prompt（t_85395e07 起可带 labDesc）；导出供测试直接断言画板段落 */
+    _userPrompt: userPrompt,
+    _askUserPrompt: askUserPrompt,
+    _systemPrompt: systemPrompt,
+    _askSystemPrompt: askSystemPrompt
   };
 })(window);

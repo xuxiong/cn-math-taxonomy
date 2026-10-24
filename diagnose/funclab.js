@@ -635,6 +635,263 @@
     return '(' + deriveText() + ', ' + deriveText() + ')';
   }
 
+  /* ============================================================ 画板元素清单（绘制与 describe 的唯一事实来源，t_85395e07）
+   *
+   * ★ 硬约束 4（本卡）：描述必须从绘图代码推导，不许另写一份可能脱节的文案。
+   * 做法：把「决定标注文字的那几行」抽成模块级共享 helper（vertexText / axisText / extremeText /
+   *       rootText / interceptYText / interceptXText / shiftText / intervalEndpointText）。
+   *   · describe 的 paintModel() 调用这些 helper（shown 恒 false → 派生量全是 ?）；
+   *   · annotate()/drawShift()/drawInterval() 的 fillText 也调用**同一个** helper（shown 由学生是否答对决定）。
+   *   两处引用同一份判断 → 新增标注漏更新 describe 时，helper 名不在 paintModel 里，防漂移测试立刻红。
+   * 派生量的真值（fmt(p.h)/fmt(p.k)/根/截距/端点值）只活在这些 helper 的 shown=true 分支里，describe 永远走 ? 分支。
+   */
+
+  /** 求当前参数下 x 处的函数值（与 mount 内部 fAt 同口径；p.type 已归一化） */
+  function fValue(p, x) {
+    const t = (p && p.type) || 'quadratic';
+    if (t === 'linear') return p.k * x + p.b;
+    if (t === 'inverse') return p.k / x;
+    return p.a * (x - p.h) * (x - p.h) + p.k;
+  }
+
+  /** 顶点标注：学生答对(shown=true)才写真值，否则 「(?, ?)」（派生量 → ?） */
+  function vertexText(p, shown) {
+    return shown ? '(' + fmt(p.h) + ', ' + fmt(p.k) + ')' : derivePair();
+  }
+
+  /** 对称轴标注：shown 时「对称轴 x = h」，否则「对称轴 x = ?」（派生量 → ?） */
+  function axisText(p, shown) {
+    return '对称轴 ' + (shown ? 'x = ' + fmt(p.h) : 'x = ' + deriveText());
+  }
+
+  /** 最值标签：「最大值 = ?」/「最小值 = ?」（派生量 → ?） */
+  function extremeText(intent, p, shown) {
+    return (intent === '最小值' ? '最小值' : '最大值') + ' = ' + (shown ? fmt(p.k) : deriveText());
+  }
+
+  /** 交点标注：shown 时写真值横坐标，否则 「(?, 0)」（派生量 → ?） */
+  function rootText(x, shown) {
+    return shown ? '(' + fmt(x) + ', 0)' : '(?, 0)';
+  }
+
+  /** 直线与 y 轴交点标注：shown 时「(0, b)」，否则「(0, ?)」（派生量 → ?） */
+  function interceptYText(p, shown) {
+    return shown ? '(0, ' + fmt(p.b) + ')' : '(0, ?)';
+  }
+
+  /** 直线与 x 轴交点标注：shown 时「(xInt, 0)」，否则「(?, 0)」（派生量 → ?） */
+  function interceptXText(xInt, shown) {
+    return shown ? '(' + fmt(xInt) + ', 0)' : '(?, 0)';
+  }
+
+  /** 平移位移标注：「←2 / →2 / ↓3 / ↑3」，位移量是派生量（shown 前一律 ?） */
+  function shiftText(dx, dy, shown) {
+    const parts = [];
+    if (Math.abs(dx) >= 1e-9) parts.push((dx < 0 ? '←' : '→') + (shown ? fmt(Math.abs(dx)) : deriveText()));
+    if (Math.abs(dy) >= 1e-9) parts.push((dy < 0 ? '↓' : '↑') + (shown ? fmt(Math.abs(dy)) : deriveText()));
+    return parts.join(', ');
+  }
+
+  /** 区间端点标注：「x=2 → ?」（端点 x 是题面已知量，函数值是派生量 → ?） */
+  function intervalEndpointText(x, p, shown) {
+    return 'x=' + fmt(x) + ' → ' + (shown ? fmt(fValue(p, x)) : deriveText());
+  }
+
+  /** 区间最值画板才画区间（与 mount 内部 intervalIntent 同口径） */
+  function intervalIntentOf(lab, intent) {
+    const it = intentKey(intent);
+    return !!(lab === 'quadratic-range-on-interval' || it === '在给定区间上的最大值' || it === '在给定区间上的最小值');
+  }
+
+  /**
+   * 抛物线视野（x 方向世界坐标范围）—— 必须与 mount 内部 view() 的 quadratic 分支逐行同口径。
+   * 绘制路径用 `if (X < 0 || X > w.w) return;` 裁掉视野外的点，describe 要判断「这个点到底画没画」就得有同一份视野。
+   * view() 里 y 范围不影响 x 方向裁剪，故这里只算 xMin/xMax。
+   */
+  function curveWindow(p, base) {
+    const refs = [{ h: p.h, k: p.k }];
+    if (base) refs.push({ h: base.h, k: base.k });
+    let hMin = p.h, hMax = p.h;
+    refs.forEach(function (r) {
+      hMin = Math.min(hMin, r.h); hMax = Math.max(hMax, r.h);
+    });
+    let xMin = hMin - 6, xMax = hMax + 6;
+    if (p.xMin != null && p.xMax != null && isFinite(p.xMin) && isFinite(p.xMax) && p.xMax > p.xMin) {
+      xMin = Math.min(xMin, p.xMin - 1);
+      xMax = Math.max(xMax, p.xMax + 1);
+    }
+    return { xMin: xMin, xMax: xMax };
+  }
+
+  /** 画板类型 → 画板标题（describe 首行用） */
+  function typeTitle(type) {
+    return type === 'linear' ? '一次函数图象（直线）'
+      : type === 'inverse' ? '反比例函数图象（双曲线）'
+        : '二次函数图象（抛物线）';
+  }
+
+  /** 目标曲线描述：只印题面已知量（a/直线的 k,b/反比例 k），quadratic 不印 h/k（顶点是派生量） */
+  function curveDesc(type, p) {
+    if (type === 'linear') {
+      return '题面给出的直线（' + formatFormula({ type: 'linear', k: p.k, b: p.b }) + '）';
+    }
+    if (type === 'inverse') {
+      return '题面给出的双曲线（' + formatFormula({ type: 'inverse', k: p.k }) + '）';
+    }
+    return '题面给出的抛物线（a = ' + fmtQuad(p.a) + '，' + (p.a > 0 ? '开口向上' : '开口向下') + '）';
+  }
+
+  /** 基准曲线描述：也不印派生量（quadratic 基准的顶点横坐标 = 蓝色曲线 = 答案，留白） */
+  function baseDesc(type, p, base) {
+    if (type === 'linear') return '题面给出的基准直线（同斜率、过原点，b = 0；b 的变化即上下平移）';
+    if (type === 'inverse') return '题面给出的基准双曲线（k = 1）';
+    if ((base.h === 0 || base.h == null) && (base.k === 0 || base.k == null) && (base.a === 1 || base.a == null)) {
+      return '题面基准曲线 y = x²（顶点在原点）';
+    }
+    return '与蓝色抛物线开口、对称轴相同、顶点落在 x 轴上的基准曲线（顶点横坐标与蓝色曲线相同，图中未标数值）';
+  }
+
+  /**
+   * 画板元素清单（含每段可见文字），绘制与 describe 的唯一来源。
+   * @param {string} lab    画板名（CAPABILITIES 的键，如 'quadratic-vertex'）
+   * @param {string} intent 归一化前的 intent（如 '最大值'）
+   * @param {object} params 画板参数（mount 的 cfg，含 a/h/k/b/base/type 等）
+   * @returns {{type, lab, intent, title, elements: [{kind,text,style}]} | null}
+   * elements 覆盖图上所有可见元素：坐标轴、网格、曲线、原曲线、对称轴、顶点、最值标签、
+   * 交点、区间阴影/竖线/端点、平移箭头、渐近线、截距点、画板下方 note 文案。
+   */
+  function paintModel(lab, intent, params) {
+    if (!intentSupported(lab, intent)) return null;
+    const type = CAP_TYPE[String(lab || '')];
+    if (!type) return null;
+    const p = params || {};
+    const it = intentKey(intent);
+    if (type === 'linear' && (!isFinite(p.k) || !isFinite(p.b) || p.k === 0)) return null;
+    if (type === 'inverse' && (!isFinite(p.k) || p.k === 0)) return null;
+    if (type === 'quadratic' && (!isFinite(p.a) || !isFinite(p.h) || !isFinite(p.k) || p.a === 0)) return null;
+
+    const elements = [];
+    elements.push({ kind: 'grid-axes', text: '坐标平面：黑色 x 轴与 y 轴、浅灰网格与刻度数字', style: '坐标轴与网格' });
+    elements.push({ kind: 'curve', text: '蓝色实线：' + curveDesc(type, p), style: '蓝色实线' });
+    const base = (p.base && (!p.base.type || p.base.type === type)) ? p.base : null;
+    if (base) elements.push({ kind: 'base-curve', text: '灰色虚线：' + baseDesc(type, p, base), style: '灰色虚线' });
+
+    if (type === 'quadratic') {
+      const vertIntent = it === '顶点坐标' || it === '最小值' || it === '最大值' || it === '对称轴' || it === '开口方向';
+      elements.push({
+        kind: 'sym-axis',
+        text: it === '对称轴'
+          ? '深色粗实线：对称轴，轴旁标「' + axisText(p, false) + '」（数值留白）'
+          : '灰色竖直虚线：抛物线的对称轴，位置已画出（数值留白）',
+        style: it === '对称轴' ? '深色粗实线' : '灰色竖直虚线'
+      });
+      elements.push({
+        kind: 'vertex',
+        text: '红色圆点：顶点位置，旁边标「' + vertexText(p, false) + '」' + (vertIntent ? '（大号红点与十字准线高亮）' : ''),
+        style: '红色圆点'
+      });
+      if (it === '最小值' || it === '最大值') {
+        elements.push({ kind: 'extremum-label', text: '红褐色「' + extremeText(it, p, false) + '」：贴在顶点下方，数值留白', style: '红褐色文字' });
+      }
+      /* 零点（绿点）—— 必须与绘制路径逐点一致，不许写死「两个」：
+       *   · 视野随参数变（mount.view()）：quadratic 只有 p.xMin/xMax 存在时才扩窗，纯 quadratic 是 [hMin-6, hMax+6]；
+       *   · 绘制路径对每个点都有 `if (X < 0 || X > w.w) return;` 裁剪 —— 根算出来但落在画布外时图上根本没有点，
+       *     此时 describe 若还说「有两个交点」就是「描述与代码不符」（t_85395e07 的 bug 性质）。
+       * disc === 0 时两个根重合：绘制路径两次 fillText 打在同一位置，图上视觉上只有一个点，所以只说一个。 */
+      const disc = -p.k / p.a;
+      if (p.a !== 0 && disc >= 0) {
+        const r = Math.sqrt(disc);
+        const win = curveWindow(p, base);
+        const visible = [p.h - r, p.h + r].filter(function (x) {
+          return x >= win.xMin && x <= win.xMax;   // 与 sx()/`X < 0 || X > w.w` 同口径（w.w 即视野宽度）
+        });
+        if (disc === 0) visible.length = Math.min(visible.length, 1);
+        if (visible.length === 1) {
+          elements.push({
+            kind: 'root',
+            text: (disc === 0
+              ? '绿色圆点：抛物线与 x 轴相切于一点，旁边标「' + rootText(0, false) + '」'
+              : '绿色圆点：抛物线与 x 轴的一个交点，旁边标「' + rootText(0, false) + '」'),
+            style: '绿色圆点'
+          });
+        } else if (visible.length >= 2) {
+          elements.push({
+            kind: 'root',
+            text: '绿色圆点：抛物线与 x 轴的两个交点，每个旁边标「' + rootText(0, false) + '」',
+            style: '绿色圆点'
+          });
+        }
+      }
+      if (intervalIntentOf(lab, it) && p.xMin != null && p.xMax != null && isFinite(p.xMin) && isFinite(p.xMax) && p.xMax > p.xMin) {
+        elements.push({ kind: 'interval-band', text: '橙色半透明阴影：' + fmt(p.xMin) + ' ≤ x ≤ ' + fmt(p.xMax) + ' 区间（题面已知端点）', style: '橙色阴影' });
+        elements.push({ kind: 'interval-guide', text: '橙色虚线竖线：区间端点 x=' + fmt(p.xMin) + '、x=' + fmt(p.xMax) + '（题面已知端点）', style: '橙色虚线' });
+        elements.push({
+          kind: 'interval-endpoint',
+          text: '橙色圆点：区间端点在曲线上的位置，标「' + intervalEndpointText(p.xMin, p, false) + '」「' + intervalEndpointText(p.xMax, p, false) + '」（端点函数值留白）',
+          style: '橙色圆点'
+        });
+      }
+      if (base) {
+        const dx = p.h - (base.h || 0), dy = p.k - (base.k || 0);
+        if (Math.abs(dx) >= 1e-9 || Math.abs(dy) >= 1e-9) {
+          elements.push({ kind: 'shift-arrow', text: '橙色箭头：从基准曲线顶点指向蓝色曲线顶点，箭头旁标位移量「' + shiftText(dx, dy, false) + '」（平移距离留白）', style: '橙色箭头' });
+        }
+      }
+    } else if (type === 'linear') {
+      elements.push({ kind: 'intercept-y', text: '红色圆点：直线与 y 轴的交点，旁边标「' + interceptYText(p, false) + '」（纵坐标留白）', style: '红色圆点' });
+      const xInt = -p.b / p.k;
+      elements.push({ kind: 'intercept-x', text: '绿色圆点：直线与 x 轴的交点，旁边标「' + interceptXText(xInt, false) + '」（横坐标留白）', style: '绿色圆点' });
+      if (base) {
+        const dy = p.b - (base.b || 0);
+        if (Math.abs(dy) >= 1e-9) {
+          elements.push({ kind: 'shift-arrow', text: '橙色箭头：从基准直线（过原点）指向目标直线，箭头旁标位移量「' + shiftText(0, dy, false) + '」（平移距离留白）', style: '橙色箭头' });
+        }
+      }
+    } else {
+      elements.push({ kind: 'asymptote', text: '灰色竖直虚线：x = 0 渐近线（两支曲线各趋近它）', style: '灰色虚线' });
+      if (base) {
+        const dBase = { x: (base.k >= 0 ? 1 : -1), y: Math.abs(base.k) };
+        const dP = { x: (p.k >= 0 ? 1 : -1), y: Math.abs(p.k) };
+        const dx = dP.x - dBase.x, dy = dP.y - dBase.y;
+        if (Math.abs(dx) >= 1e-9 || Math.abs(dy) >= 1e-9) {
+          elements.push({ kind: 'shift-arrow', text: '橙色箭头：从基准双曲线上的参考点指向目标双曲线上的对应点，箭头旁标位移量「' + shiftText(dx, dy, false) + '」（距离留白）', style: '橙色箭头' });
+        }
+      }
+    }
+
+    const note0 = noteText(lab, intent, p);
+    if (note0) elements.push({ kind: 'note', text: '画板下方的说明文案：' + note0, style: '说明文字' });
+
+    return { type: type, lab: lab, intent: it, title: typeTitle(type), elements: elements };
+  }
+
+  /** 留白说明：这道题图上留了哪些问号（源自 labAnswerParts 的量名，不含数值） */
+  function blankNote(lab, intent, params) {
+    const parts = labAnswerParts(lab, intent, params);
+    const names = [];
+    parts.forEach(function (part) {
+      const label = String(part.label || '').replace(/（.*$/, '').replace(/\(.*$/, '');
+      if (label && names.indexOf(label) < 0) names.push(label);
+    });
+    if (!names.length) return '图上未标注的数值（顶点、交点、截距等推导量）均以 ? 表示，等学生自己算';
+    return names.join('、') + '在图上都以 ? 表示，等学生自己算';
+  }
+
+  /**
+   * 画板描述（面向 LLM 阅读的结构化中文）：逐行列每个可见元素。
+   * 纯函数、无 DOM，可在 Node 单测。参数里 shown 视为 false（学生还没答对）——派生量全是 ?。
+   * @returns {string | null} 画板不存在 / intent 不受支持 / 参数不合法 → null（不返回空串）
+   */
+  function describe(lab, intent, params) {
+    const model = paintModel(lab, intent, params);
+    if (!model) return null;
+    const lines = ['画板：' + model.title + '，讲解焦点「' + model.intent + '」'];
+    model.elements.forEach(function (el) { lines.push('- ' + el.text); });
+    const blank = blankNote(lab, intent, params);
+    if (blank) lines.push('- 留白说明：' + blank);
+    return lines.join('\n');
+  }
+
   /** 数值对 → 文案里的短句：3、-4 → 「3、-4」（学生按题目要求依次写横坐标、纵坐标） */
   function fmtPair(pair) {
     const arr = (pair && pair.length) ? pair : [];
@@ -1107,14 +1364,14 @@
       ctx.setLineDash([]);
       // 端点：x 坐标是题面给的区间端点（已知量，照常显示），函数值要自己代入算（派生量 → ?）
       ctx.font = 'bold 11px sans-serif';
-      [[xa, 'x=' + fmt(xa)], [xb, 'x=' + fmt(xb)]].forEach(function (pair) {
-        const x = pair[0];
+      [xa, xb].forEach(function (x) {
         const X = sx({ x: x }, w), Y = sy({ y: fAt(p, x) }, w);
         if (X < 0 || X > w.w || Y < 0 || Y > w.hp) return;
         ctx.fillStyle = '#e67e22';
         ctx.beginPath(); ctx.arc(X, Y, 3.5, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = '#b35c00';
-        ctx.fillText(pair[1] + ' → ' + (shown ? fmt(fAt(p, x)) : deriveText()),
+        /* 端点标注文本走共享 helper（与 describe 同一来源，见模块级「画板元素清单」注释） */
+        ctx.fillText(intervalEndpointText(x, p, shown),
           Math.min(Math.max(X + 6, 2), w.w - 60), Math.max(Y - 7, 12));
       });
       ctx.restore();
@@ -1162,15 +1419,16 @@
         }
         ctx.fillStyle = '#c0392b';
         ctx.beginPath(); ctx.arc(VX, VY, vertIntent ? 6 : 4.5, 0, Math.PI * 2); ctx.fill();
-        /* 顶点坐标是派生量（答案）：位置照画，数值留问号；学生点「我算好了」答对后才画真值 */
-        ctx.fillText(shown ? '(' + fmt(p.h) + ', ' + fmt(p.k) + ')' : derivePair(), VX + 8, VY - 8);
+        /* 顶点坐标是派生量（答案）：位置照画，数值留问号；学生点「我算好了」答对后才画真值。
+         * 文字走共享 helper vertexText（与 describe 同一来源）。 */
+        ctx.fillText(vertexText(p, shown), VX + 8, VY - 8);
         // 对称轴位置同样是派生量：讲对称轴的题把线画粗强调，但轴上不写 x = h
         if (intent === '对称轴') {
           ctx.save();
           ctx.font = 'bold 11px sans-serif';
           ctx.fillStyle = '#34495e';
           const HX0 = sx({ x: p.h }, w);
-          ctx.fillText('对称轴 ' + (shown ? 'x = ' + fmt(p.h) : 'x = ' + deriveText()),
+          ctx.fillText(axisText(p, shown),
             Math.min(Math.max(HX0 + 6, 4), w.w - 80), 14);
           ctx.restore();
         }
@@ -1179,9 +1437,8 @@
           ctx.save();
           ctx.font = 'bold 12px sans-serif';
           ctx.fillStyle = '#b03a2e';
-          const label = (intent === '最小值' ? '最小值' : '最大值') + ' = '
-            + (shown ? fmt(p.k) : deriveText());
-          ctx.fillText(label, Math.min(Math.max(VX + 8, 4), w.w - 90), Math.max(VY + 16, 14));
+          ctx.fillText(extremeText(intent, p, shown),
+            Math.min(Math.max(VX + 8, 4), w.w - 90), Math.max(VY + 16, 14));
           ctx.restore();
         }
         // 零点（绿点）：只画点，**文案不在这里决定** —— 问顶点的题上不能出现「就是方程的两个根」
@@ -1196,7 +1453,7 @@
             ctx.beginPath(); ctx.arc(X, Y, 4, 0, Math.PI * 2); ctx.fill();
             ctx.fillStyle = '#1e8449';
             ctx.font = 'bold 11px sans-serif';
-            ctx.fillText(shown ? '(' + fmt(x) + ', 0)' : '(?, 0)',
+            ctx.fillText(rootText(x, shown),
               Math.min(Math.max(X + 6, 2), w.w - 46), Math.min(Math.max(Y + 16, 12), w.hp - 4));
           });
         }
@@ -1224,13 +1481,13 @@
         const BY = sy({ y: p.b }, w), BX = sx({ x: 0 }, w);
         ctx.fillStyle = '#c0392b';
         ctx.beginPath(); ctx.arc(BX, BY, 4.5, 0, Math.PI * 2); ctx.fill();
-        ctx.fillText(shown ? '(0, ' + fmt(p.b) + ')' : '(0, ?)', BX + 8, BY - 8);
+        ctx.fillText(interceptYText(p, shown), BX + 8, BY - 8);
         if (p.k !== 0) {
           const xInt = -p.b / p.k;
           const IX = sx({ x: xInt }, w), IY = sy({ y: 0 }, w);
           ctx.fillStyle = '#2ecc71';
           ctx.beginPath(); ctx.arc(IX, IY, 4.5, 0, Math.PI * 2); ctx.fill();
-          ctx.fillText(shown ? '(' + fmt(xInt) + ', 0)' : '(?, 0)', IX + 8, IY + 14);
+          ctx.fillText(interceptXText(xInt, shown), IX + 8, IY + 14);
         }
       } else {
         // inverse：双曲线两支 + 渐近线虚线（文案同样由 intent 生成）
@@ -1268,11 +1525,9 @@
       ctx.fill();
       // 位移量标注：x 方向 "←2 / →2"，y 方向 "↓3 / ↑3"（屏幕 y 向下为正，所以 y 减用 ↓）
       // P 卡：平移量是从题面「向左/向下平移几格」读出的已知量（题型由措辞识别，不是算出来的），
-      // 学生对过箭头方向后仍按原值显示 —— 拖动滑块改变位移时才改成 ?（那时已是学生在自己试）
-      const parts = [];
-      if (Math.abs(dx) >= 1e-9) parts.push((dx < 0 ? '←' : '→') + (shown ? fmt(Math.abs(dx)) : deriveText()));
-      if (Math.abs(dy) >= 1e-9) parts.push((dy < 0 ? '↓' : '↑') + (shown ? fmt(Math.abs(dy)) : deriveText()));
-      const label = parts.join(', ');
+      // 学生对过箭头方向后仍按原值显示 —— 拖动滑块改变位移时才改成 ?（那时已是学生在自己试）。
+      // 文字走共享 helper shiftText（与 describe 同一来源）。
+      const label = shiftText(dx, dy, shown);
       const mx = (X1 + X2) / 2, my = (Y1 + Y2) / 2;
       ctx.font = 'bold 12px sans-serif';
       const tw = ctx.measureText(label).width;
@@ -1486,6 +1741,8 @@
     labAnswerParts: labAnswerParts, answerRows: answerRows, checkAnswerRow: checkAnswerRow,
     numEqual: numEqual, deriveText: deriveText, derivePair: derivePair,
     quadRangeExtrema: quadRangeExtrema, fmtPair: fmtPair, fmtQuad: fmtQuad,
+    /* t_85395e07：画板描述（AI 讲解看到画板）。paintModel 是绘制与 describe 的唯一事实来源 */
+    paintModel: paintModel, describe: describe,
     /** 某类画板（quadratic/linear/inverse）的能力清单子集（匹配层只喂相关画板，减少 LLM 误选） */
     capabilitiesFor: function (type) {
       const out = {};
