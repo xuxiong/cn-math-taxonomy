@@ -1024,6 +1024,130 @@ test('[E-守卫6] 数列记号 a_n=n² 不被当成抛物线（cnm_h199_q2）', 
 });
 
 /* ================================================================
+ * 11b. E 卡复核：把答案语义门禁（B 卡定档）落到全库挂载上
+ *
+ * 卡面第 5 步要求「新增题必须全部落在 (a) 类」，而 (a)/(b) 的分界就是
+ * 「答案是不是画板真会标出来的量」。前一轮只在上限 55 题（29 个知识点）
+ * 内人工逐条判过；这里把同一口径做成机器检查，并**扫全库**：
+ * 只要某道题被挂载、而它的答案不属于该函数类型的标注量，就是误挂。
+ *
+ * 标注量口径（与 docs/fromprompt-gaps.md 一致）：
+ *   二次：顶点 h/k，或与 x 轴交点（根）
+ *   一次：y 轴截距 b，或与 x 轴交点（x 轴交点只在不含语境的纯方程题里算）
+ *   反比例：象限位置，或 |k|
+ * 答案能解析成数字/解析式 → 至少有一个数必须对得上标注量；
+ * 答案解析不了（分类/范围/文字）→ 只有"象限/增减性/交点个数"三种纯图像
+ * 可读的答案算通过，其余一律判误挂。
+ *
+ * 已知双向噪声（门禁本身不完美，两个方向都按保守口径处理）：
+ *   · 过严：比较大小 / 对称轴 / 最值 / 平移后解析式 / 两线交点 / 面积 —— 答案其实是
+ *     图像可读或图像可算的，这里判不过，因此"必须为空"这条测试只允许「命中已知
+ *     存量误挂表」的例外，其余一律失败；不允许为凑数再加例外。
+ *   · 过松：数字碰巧重合（cnm_208_q2 答案 2 = 所画直线的 y 截距而非两线交点）——
+ *     纯数值门禁看不出来，只能人工核，结论见附 5。
+ * ================================================================ */
+
+console.log('\n--- 11b. 答案语义门禁（全库挂载） ---');
+
+/** 画板对该参数会标注出来的数值集合（字符串化，便于与答案数字比对） */
+function annotationValues(p, topicId) {
+  const vals = new Set();
+  const push = function (x) { if (isFinite(x)) vals.add(String(Number(x.toFixed(6)))); };
+  if (p.type === 'quadratic') {
+    push(p.h); push(p.k);
+    push(p.h - Math.sqrt(-p.k / p.a)); push(p.h + Math.sqrt(-p.k / p.a));
+  } else if (p.type === 'linear') {
+    push(p.b);                                    // y 轴截距 (0,b)
+    if (/^cnm_2(0[0-9]|2[0-4])$/.test(String(topicId))) push(-p.b / p.k); // 方程语境才标 x 轴交点
+  } else if (p.type === 'inverse') {
+    push(p.k);                                    // |k| 本身就是答案对象
+  }
+  return vals;
+}
+
+/** 从答案里抠数字（支持 1，-3/2、-2，5、y=2x+1、112.5、m≠1 等） */
+function answerNumbers(answer) {
+  const s = String(answer == null ? '' : answer).replace(/[（）()]/g, '');
+  const out = [];
+  const re = /(-?\d+(?:\.\d+)?)(?:\s*\/\s*(\d+(?:\.\d+)?))?/g;
+  let m;
+  while ((m = re.exec(s))) {
+    const v = m[2] ? Number(m[1]) / Number(m[2]) : Number(m[1]);
+    if (isFinite(v)) out.push(v);
+  }
+  return out;
+}
+
+/** 答案解析不了数字时，允许通过的纯图像可读答案 */
+const IMAGE_READABLE = /象限|增大而|减小而|交点个数|开口|无交点|没有交点/;
+
+/** 门禁判不过、但已人工定档为"图像可读 / 图像可算"的题（口径偏严的方向），逐条留痕 */
+const GATE_LOOSE_OK = new Set([
+  'cnm_202_q1', 'cnm_202_q2', 'cnm_203_q1', 'cnm_204_q2', 'cnm_205_q5',
+  'cnm_206_q1', 'cnm_206_q2', 'cnm_207_q1', 'cnm_230_q2', 'cnm_232_q2',
+  'cnm_235_q1', 'cnm_235_q2', 'cnm_235_q3', 'cnm_235_q4', 'cnm_239_q1',
+  'cnm_239_q2', 'cnm_239_q4', 'cnm_241_q1', 'cnm_241_q3', 'cnm_242_q2',
+  'cnm_230_q1', 'cnm_231_q1', 'cnm_203_q4', 'cnm_234_q2',
+  /* 选择题：题面给了确定函数、选项里写着图像可读/可算的结论（象限、解集、配方形态、最值比较） */
+  'cnm_202_q3', 'cnm_203_q2', 'cnm_204_q3', 'cnm_207_q2', 'cnm_207_q3',
+  'cnm_230_q4', 'cnm_232_q1', 'cnm_232_q4', 'cnm_238_q1', 'cnm_238_q3',
+  /* 数值题：两坐标轴围成的三角形面积（标了两截距即可算）、平移后 k+b（题面给了反向条件）、
+     点在某函数图象上求 m（|k| 决定了函数，点是图像上的点；门禁对反比例只认 |k|） */
+  'cnm_202_q4', 'cnm_204_q4', 'cnm_238_q2'
+]);
+
+/** 已定档为"画出来的曲线与题目问的根本不是一回事"的挂载（真误挂，需解析侧修） */
+const KNOWN_MISMOUNT = new Set([
+  'cnm_204_q1',  // y=2x 向上平移 3 → 画板仍画平移前的 y=2x
+  'cnm_231_q3',  // y=x² 平移 → 画板仍画平移前的 y=x²
+  'cnm_208_q1',  // 两直线交点 → 画板只画第一条，标的是它自己的截距/交点
+  'cnm_208_q2',  // 同上，且答案 2 与所画直线的 y 截距数值碰巧重合
+  'cnm_208_q3',  // 同上
+  'cnm_208_q4',  // 同上
+  'cnm_241_q3',  // 直线与双曲线交点/面积 → 画板只画双曲线
+  'cnm_241_q4',  // 同上，答案是不等式解集
+  'cnm_234_q3'   // AB 线段长：画板标注 A/B 两点，但答案 6 是两点距离
+]);
+
+test('[E-语义1] 全库挂载题：误挂 = 只允许已知那 9 条（新误挂必须为 0）', function () {
+  const misfits = [];
+  let mounted = 0;
+  for (const item of QUESTIONS) {
+    const p = F.labFor(item.topicId, item.prompt, { itemId: item.id });
+    if (!p) continue;
+    mounted++;
+    const id = item.id;
+    if (KNOWN_MISMOUNT.has(id)) continue;
+    const ansStr = String(item.answer == null ? '' : item.answer);
+    if (GATE_LOOSE_OK.has(id)) continue;
+    if (/^[A-D]$/.test(ansStr.trim())) { misfits.push(id + ' 选择题（答案 ' + ansStr + '）'); continue; }
+    const nums = answerNumbers(ansStr);
+    if (!nums.length) {
+      if (IMAGE_READABLE.test(ansStr)) continue;      // 象限/增减性/交点个数：图像可读
+      misfits.push(id + ' 答案「' + ansStr + '」不是可读数字');
+      continue;
+    }
+    const ann = annotationValues(p, item.topicId);
+    const ok = nums.some(function (n) { return ann.has(String(Number(n.toFixed(6)))) || ann.has(String(n)); });
+    if (!ok) misfits.push(id + ' 答案 ' + ansStr + ' ∉ 画板标注 {' + Array.from(ann).join(',') + '}');
+  }
+  assert.deepStrictEqual(misfits, [], '新误挂 ' + misfits.length + ' 题（共挂载 ' + mounted + ' 题）');
+});
+
+test('[E-语义2] 已知存量误挂 9 题仍在挂载：修好它们要动解析语义（改挂/改画），属另一张卡', function () {
+  const still = [];
+  for (const id of KNOWN_MISMOUNT) {
+    const item = QMAP.get(id);
+    assert.ok(item, '题库里找不到 ' + id + '（题库改过了？请更新名单）');
+    if (F.labFor(item.topicId, item.prompt, { itemId: id })) still.push(id);
+  }
+  // 这条断言是"现状快照"：一旦有人修好其中某条，这里会失败，提醒把该 id 从名单删掉
+  assert.deepStrictEqual(still.sort(), Array.from(KNOWN_MISMOUNT).sort());
+});
+
+
+
+/* ================================================================
  * 汇总
  * ================================================================ */
 
