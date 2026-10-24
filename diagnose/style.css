@@ -77,8 +77,24 @@ button.choice.picked { border-color: var(--brand); background: var(--brand-soft)
 .stat.unk { background: var(--unk-bg); color: var(--unk); }
 .stat.ask { background: var(--junior-soft); color: var(--text); }
 details.topic { border-bottom: 1px solid var(--line); padding: 4px 0; }
-details.topic > summary { cursor: pointer; padding: 8px 0; min-height: 44px; overflow-wrap: anywhere; }
+details.topic > summary { cursor: pointer; padding: 8px 0; min-height: 44px; overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; }
 details.topic > .body { padding: 4px 0 10px 8px; }
+/* 结果页「练习 N 题」按钮：独立成行、靠右，和上方说明文字视觉分离 */
+.topic-actions { flex: 1 1 100%; display: flex; justify-content: flex-end; margin: 4px 0 2px; }
+button.practice-btn {
+  font-size: 0.95rem;
+  font-weight: 700;
+  min-height: 38px;
+  padding: 6px 16px;
+  border: 1px solid var(--brand);
+  border-radius: 999px;
+  background: var(--brand-soft);
+  color: var(--brand-strong);
+  cursor: pointer;
+}
+button.practice-btn:hover { background: var(--brand); color: var(--on-brand); border-color: var(--brand); }
+button.practice-btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+@media print { button.practice-btn { display: none !important; } }
 .body ul { margin: 4px 0; padding-left: 1.2em; }
 .std { margin: 8px 0; padding: 8px 10px; background: var(--bg-muted); border-left: 3px solid var(--brand); border-radius: 8px; overflow-wrap: anywhere; }
 .std code { color: var(--text); }

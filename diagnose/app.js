@@ -28,6 +28,7 @@
   const STATUS_LABEL = { mastered: '已掌握', shaky: '不稳', weak: '薄弱', unknown: '未测' };
   const DIFF_LABEL = { basic: '基础', standard: '标准', advanced: '提高' };
   const TYPE_LABEL = { numeric: '数值题', choice: '选择题', short: '短答题', self: '开放题', legacy: '诊断题' };
+  const PRACTICE_N = 3;
 
   const root = document.getElementById('root');
   let D = null;            // 数据：{topics, deps, stdById, graph, tree}
@@ -325,13 +326,13 @@
   function markPracticed(topicId) { const o = practicedMap(); o[topicId] = Date.now(); lsSet(LS_PRAC, o); }
   function variantSeqMap() { const v = lsGet(LS_VSEQ); return v && typeof v === 'object' ? v : {}; }
   function startPractice(topicId) {
-    var bankPicks = E.pickPracticeQuestions(D.graph, topicId, 3, seenList());
+    var bankPicks = E.pickPracticeQuestions(D.graph, topicId, PRACTICE_N, seenList());
     var seqMap = variantSeqMap();
     var startIndex = seqMap[topicId] || 0;
     var bankPrompts = (D.graph.bank[topicId] || []).map(function (q) { return q.prompt; });
 
     /* §6.1 四层共存：题库新鲜题 → O1 确定性变式 → O3 LLM 变式 → 题库复用兜底 */
-    var fp = V.fillPractice(bankPicks, topicId, 3, {
+    var fp = V.fillPractice(bankPicks, topicId, PRACTICE_N, {
       doneIds: seenList(),
       avoidPrompts: bankPrompts,
       startIndex: startIndex
@@ -339,7 +340,7 @@
     if (!fp.list.length) { alert('这个知识点暂时没有练习题。'); return; }
 
     /* O3 LLM 变式补位：O1 不够 3 道且 LLM supports 时，异步补位 */
-    var llmGap = 3 - fp.list.length;
+    var llmGap = PRACTICE_N - fp.list.length;
     if (llmGap > 0 && LLMV && LLMV.supports(topicId)) {
       /* 先检查网关可达性（try 一次 /v1/models），不可达直接走降级，不拖慢页面 */
       pracLoading = { topicId: topicId };
@@ -1064,8 +1065,10 @@
 
   function topicItem(id, tags, extra, pbtn) {
     const t = D.graph.byId[id];
+    const sumChildren = [tags, h('span', { text: t.name }), ' ', h('span', { class: 'muted small', text: t.external ? '小学' : t.chapter })];
+    if (pbtn) sumChildren.push(h('div', { class: 'topic-actions no-print' }, pbtn));
     return h('details', { class: 'topic' },
-      h('summary', null, tags, h('span', { text: t.name }), ' ', h('span', { class: 'muted small', text: t.external ? '小学' : t.chapter }), ' ', pbtn || null),
+      h('summary', null, sumChildren),
       topicBody(id, extra));
   }
 
@@ -1085,9 +1088,11 @@
     const t = D.graph.byId[id];
     if (!t || !D.graph.bank[id] || !D.graph.bank[id].length) return null;   // 小学/无题点不练
     const done = practicedMap()[id];
-    return h('button', { class: 'small no-print', style: 'margin-left:6px',
+    const n = (E.pickPracticeQuestions(D.graph, id, PRACTICE_N, seenList()) || []).length;
+    const label = done ? '再练一遍' : (n > 1 ? '练习这 ' + n + ' 题' : '练习这道题');
+    return h('button', { type: 'button', class: 'practice-btn no-print',
       onclick: function (e) { e.stopPropagation(); e.preventDefault(); startPractice(id); } },
-      done ? '再练一遍' : '练习这 3 题');
+      label);
   }
 
   function renderResult() {
