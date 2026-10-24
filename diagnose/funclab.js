@@ -60,6 +60,90 @@
     return { state: 'num', value: parseFloat(tok) };
   }
 
+  /** 由 ax²+bx+c 的系数换算成画板参数 {type:'quadratic', a, h, k}；a=0/非有限 → null */
+  function quadFromABC(a, b, c) {
+    if (!isFinite(a) || !isFinite(b) || !isFinite(c) || a === 0) return null;
+    // 配方换算：y = a(x-h)² + k，其中 h = -b/(2a)，k = c - b²/(4a)
+    // 归一化 -0 → 0，避免 h/k 呈现 -0（deepStrictEqual 与下游标注都干净）
+    let h = -b / (2 * a);
+    let k = c - (b * b) / (4 * a);
+    if (h === 0) h = 0;
+    if (k === 0) k = 0;
+    if (!isFinite(h) || !isFinite(k)) return null;
+    return { type: 'quadratic', a: a, h: h, k: k };
+  }
+
+  /**
+   * 把 "<k>x<b>" 这种一次因子拆成系数。只接受纯数字系数（"2x-3"、"-x"、"x+1"）；
+   * 出现字母（"kx+b"、"px"）或多余符号返回 null。
+   */
+  function linearFactor(str) {
+    const m = /^\s*([+-]?\s*\d*\.?\d*)\s*x\s*([+-]\s*\d+\.?\d*)?\s*$/.exec(String(str || ''));
+    if (!m) return null;
+    const k = coeffNum(m[1]);
+    const b = m[2] ? coeffNum(m[2]) : 0;
+    if (!isFinite(k) || !isFinite(b)) return null;
+    return { k: k, b: b };
+  }
+
+  /**
+   * 方程写成展开式之前的样子（题面不会给出目标式，参数藏在待展开的式子里）。
+   * 目前覆盖两种真实题库写法：
+   *   P1 乘积式：两个一次式相乘 = 常数      例 (2x-1)(x+1)=2
+   *   P2 完全平方 = 一次式：两边都是表达式    例 (x-2)²=3(x-2)
+   * 两者都要"移项 → 展开 → 配方"，画板的零点才是方程的根。
+   * 任何一处含参（字母系数）或右侧不是纯数字，一律返回 undefined 交给后续分支，绝不猜。
+   */
+  function quadFromExpandedEquation(s) {
+    // P1：乘积式方程
+    let m = /\(\s*([^()]{1,16})\)\s*\(\s*([^()]{1,16})\)\s*=\s*([+-]?\d+\.?\d*)(?![.\d])/.exec(s);
+    if (m) {
+      const f1 = linearFactor(m[1]);
+      const f2 = linearFactor(m[2]);
+      const rhs = parseFloat(m[3]);
+      if (f1 && f2 && isFinite(rhs)) {
+        // (k1x+b1)(k2x+b2) = RHS → k1k2 x² + (k1b2+k2b1) x + (b1b2-RHS) = 0
+        return quadFromABC(f1.k * f2.k, f1.k * f2.b + f2.k * f1.b, f1.b * f2.b - rhs);
+      }
+      return undefined;
+    }
+
+    // P2：完全平方 = 一次式（右侧可带数字系数）
+    m = /\(\s*([+-]?\s*\d*\.?\d*)\s*x\s*([+-]\s*\d+\.?\d*)\s*\)\s*²\s*=\s*([+-]?\s*\d*\.?\d*)\s*\(\s*x\s*([+-]\s*\d+\.?\d*)\s*\)(?![²\dx])/.exec(s);
+    if (m) {
+      const A = coeffNum(m[1]);          // 平方项的一次系数
+      const C = coeffNum(m[2]);          // 括号内常数
+      const k = coeffNum(m[3]);          // 右侧一次式系数
+      const C2 = coeffNum(m[4]);         // 右侧一次式常数
+      if ([A, C, k, C2].every(isFinite)) {
+        // (Ax+C)² - k(x+C2) = A²x² + (2AC-k)x + (C²-kC2) = 0
+        return quadFromABC(A * A, 2 * A * C - k, C * C - k * C2);
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 变量名不是 x 的二次式（如球的高度 h=-5t²+20t）。要求：
+   *   · 立方之前的二次项系数必须**显式写出来**（"-5"、"-"、"2"），否则 "a_n=n²" 这类
+   *     递推式记号会被误认成抛物线；
+   *   · 系数必须是数字，不能是字母；
+   *   · 等式右侧不能再接"= 某式"（那说明还有未知量）。
+   * 画板统一用 x 作自变量，曲线形状与顶点/零点不受改名影响。
+   */
+  function quadFromRenamedVar(s) {
+    const m = /(?<![a-zA-Z])([a-zA-Z])\s*=\s*((?:[+-]?\s*\d+\.?\d*)|[+-])\s*([a-zA-Z])\s*²\s*(?:([+-]\s*\d+\.?\d*)\s*\3\s*)?([+-]\s*\d+\.?\d*)?(?![\d.])/.exec(s);
+    if (!m) return null;
+    const tail = s.slice(m.index + m[0].length);
+    if (/^\s*=/.test(tail)) return null;          // 后面还有等式 → 未知量未定
+    const a = coeffNum(m[2]);
+    const b = m[4] ? coeffNum(m[4]) : 0;
+    const c = m[5] ? coeffNum(m[5]) : 0;
+    if (![a, b, c].every(isFinite)) return null;
+    const r = quadFromABC(a, b, c);
+    return r && r.type === 'quadratic' ? r : null;
+  }
+
   /**
    * 从题面解析函数参数 → {type, ...params}，解析不出返回 null。
    * 二次：{type:'quadratic', a, h, k}   一次：{type:'linear', k, b}   反比例：{type:'inverse', k}
@@ -87,6 +171,14 @@
       if (isFinite(k) && isFinite(b)) return { type: 'linear', k: k, b: b };
     }
 
+    // ---------- 展开式方程（乘积式 / 两边都是表达式）：先移项展开再配方 ----------
+    // 这类题面把目标式藏在待展开的式子里（(2x-1)(x+1)=2、(x-2)²=3(x-2)），
+    // 不展开就解析不出；展开后画板零点正是方程的根。
+    // 必须排在顶点式之前：顶点式分支遇到 "= 3(x-2)" 这类表达式右侧会直接放弃，
+    // 但它其实是"移项后可解"的方程，不能当成含参放弃。
+    const expanded = quadFromExpandedEquation(s);
+    if (expanded) return expanded;
+
     // ---------- 二次函数（顶点式/一般式/方程，含配方题） ----------
     // 1) 顶点式：y = a(x±h)² ± k 或 a(x±m)² ± n。x² 前不允许是字母（y=a(x-2)² 的 a 未知，不画）
     m = s.match(/(?<![a-zA-Z)）])([+-]?\s*\d*\.?\d*)\s*\(\s*x\s*([+-]\s*\d*\.?\d*)\s*\)\s*²\s*([+-]\s*\d*\.?\d*)?(?!\s*x)/);
@@ -110,10 +202,16 @@
       }
     }
 
-    // 2/3) 一般式 & 方程：提取 ax²+bx+c（可缺 bx 项；可能接 =0 或 = 某数）。
+    // ---------- 一般式 & 方程：提取 ax²+bx+c（可缺 bx 项；可能接 =0 或 = 某数）。
     // x² 前不允许是字母/括号（如 (m-2)x² 是含参概念题）
     m = s.match(/(?<![a-zA-Z)）])([+-]?\s*\d*\.?\d*)?\s*x²\s*(?:([+-]\s*\d*\.?\d*)\s*x\s*)?([+-]\s*\d*\.?\d*)?/);
-    if (!m) return null;
+    if (!m) {
+      // 变量名不是 x 的二次式（h=-5t²+20t）：前面的 x 型分支都匹配不到
+      return quadFromRenamedVar(s);
+    }
+    // 式子后面还挂着字母项（如 x²+px+q）说明含参，画不出确定曲线 → 不解析
+    const afterPoly = s.slice(m.index + m[0].length);
+    if (/^\s*[+-]?\s*[a-zA-Z]/.test(afterPoly)) return null;
     const a = coeffNum(m[1]);
     const b = m[2] ? coeffNum(m[2]) : 0;
     let c = m[3] ? coeffNum(m[3]) : 0;
