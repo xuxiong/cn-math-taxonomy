@@ -297,6 +297,8 @@ table.log select { min-height: 44px; }
 .funclab-sliders { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-top: 8px; }
 .funclab-slider { display: flex; align-items: center; gap: 6px; font-size: 0.92rem; font-weight: 600; }
 .funclab-slider input[type=range] { width: 130px; }
+.lab-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; font-size: 0.92rem; }
+@media print { .lab-ask { display: none; } }
 @media print { .funclab { display: none; } }
 
 /* 几何画板（geomlab.js）：复用 funclab 的外壳样式，只调画布高度与提示位置 */

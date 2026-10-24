@@ -38,7 +38,7 @@
   let prac = null;         // T3 练习模式：{topicId, list:[q], idx, pact:[]} 非 null 时渲染练习
   let pracResult = null;   // 练习结束返回结果页带上 {topicId, ok, n}
   let pracLoading = null;  // O3 LLM 变式异步加载：{topicId} 非 null 时渲染 loading
-  let ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, labCfg: null, labDesc: null };
+  let ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null };
   let subject = 'math';
   let startQuery = '';
   let startStage = '';
@@ -146,7 +146,7 @@
     if (v.indexOf(qid) < 0) { v.push(qid); lsSet(LS_SEEN, v); }
   }
   function newSeed() { return seedParam != null ? seedParam : Math.random().toString(36).slice(2, 10); }
-  function resetUi() { ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, labCfg: null, labDesc: null }; }
+  function resetUi() { ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null }; }
   function clearRoot() { while (root.firstChild) root.removeChild(root.firstChild); }
   function teardownPath() {
     pathToken++;
@@ -758,7 +758,7 @@
     const t = D.graph.byId[id];
     const pr = !!prac;   // T3 练习模式
     const key = id + '#' + item.attempt;
-    if (ui.key !== key) ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, labCfg: null, labDesc: null };
+    if (ui.key !== key) ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null };
     const n = pr ? prac.idx : session.answers.length;
     const card = h('div', { class: 'card' });
     card.append(
@@ -912,15 +912,34 @@
        * 画板文案与绘制方式仍由 funclab.js 按 intent 决定，LLM 不参与"怎么画"。 */
       try {
         const lab = window.Funclab && window.Funclab.labForScene(t && t.id, q && q.prompt, { itemId: q && q.id });
-        if (lab && window.Labmatch) {
+        /* 学生自己点过「画图给我看」：结果已经定了（ui.labAsk 非 null），这里只呈现，不再请求 LLM。
+         * 注意只有 'ok' 才需要空槽（画板要挂进去）；loading / none / offline 都不该留空容器。 */
+        const asked = !!ui.labAsk;
+        const slot = lab && window.Labmatch && (!asked || ui.labAsk === 'ok' || ui.labAsk === 'loading')
+          ? h('div', { class: 'funclab-slot' }) : null;
+        if (slot && ui.labAsk !== 'loading') box.append(slot);
+        if (asked) {
+          if (ui.labAsk === 'ok' && ui.labCfg) {
+            try {
+              const inst = window.Funclab.mount(ui.labCfg);
+              if (inst && slot) slot.appendChild(inst.el);
+              else if (inst) box.append(inst.el);
+              else renderLabAsk(box, item);   // 重挂失败：降级成「画不了」提示，不留空槽
+            } catch (err) { console.warn('[explain] 重新渲染学生要看到的画板失败：', err); renderLabAsk(box, item); }
+          } else if (ui.labAsk === 'loading') {
+            renderLabAsk(box, item);
+          } else {
+            renderLabAsk(box, item);
+          }
+        } else if (lab && window.Labmatch) {
           /* 先用空槽占位再异步填：不阻塞讲解面板渲染，也不留空画板容器（不挂时整槽移除） */
-          const slot = h('div', { class: 'funclab-slot' });
-          box.append(slot);
           window.Labmatch.resolve({ prompt: q && q.prompt, lab: lab, itemId: q && q.id })
             .then(function (cfg) {
-              if (!cfg) { if (slot.parentNode) slot.remove(); return; }
+              /* 学生在这段时间自己点了按钮：以学生那次（lenient）为准，删掉这里的槽 */
+              if (ui.labAsk) { if (slot.parentNode) slot.remove(); return; }
+              if (!cfg) { if (slot.parentNode) slot.remove(); renderLabAsk(box, item); return; }
               const inst = window.Funclab.mount(cfg);
-              if (!inst) { if (slot.parentNode) slot.remove(); return; }   // 挂载失败不写 labCfg（TDZ 教训）
+              if (!inst) { if (slot.parentNode) slot.remove(); renderLabAsk(box, item); return; }   // 挂载失败不写 labCfg（TDZ 教训）
               slot.appendChild(inst.el);
               /* t_85395e07：AI 讲解看到画板 —— 挂载成功才记录配置与描述；describe 抛错不连累画板 */
               ui.labCfg = cfg;
@@ -928,7 +947,7 @@
               try { ui.labDesc = window.Funclab.describe(cfg.lab, cfg.intent, cfg); }
               catch (err) { ui.labDesc = null; console.warn('[explain] Funclab.describe 失败，画板仍正常显示：', err); }
             })
-            .catch(function () { if (slot.parentNode) slot.remove(); });
+            .catch(function () { if (slot.parentNode) slot.remove(); renderLabAsk(box, item); });
         } else if (!lab && window.Geomlab) {
           /* 几何画板：函数画板没候选时回退尝试（三角形/圆/相似）。
            * answer/choices 必须传 —— 送分门禁靠它判断「答案是否只是题面数值的复制」，
@@ -945,8 +964,14 @@
               ui.labDesc = null;
               try { ui.labDesc = window.Geomlab.describe(glab, glab.state); }
               catch (err) { ui.labDesc = null; console.warn('[explain] Geomlab.describe 失败，画板仍正常显示：', err); }
+            } else {
+              renderLabAsk(box, item);
             }
+          } else {
+            renderLabAsk(box, item);
           }
+        } else {
+          renderLabAsk(box, item);
         }
       } catch (e) { /* 画板挂了不影响讲解 */ }
       box.append(h('div', { class: 'row' },
@@ -1001,6 +1026,77 @@
       ui.askPending ? null : h('div', { class: 'row', style: 'margin-top:8px' },
         h('span', { class: 'grow', style: 'margin-right:8px' }, inp),
         h('button', { class: 'primary', id: 'btn-ask', onclick: sendAsk }, '问 AI 老师')));
+  }
+
+  /* ------------------------------------------------------------ 学生自己要看图（卡 t_f80f900e）
+   *
+   * 只在「系统没挂上图」时出现。能不能画**仍然不放宽**：lenient 只放宽 LLM 的相关性判断
+   * （题目问的落不进 canAnswer 时，允许挂一张"能帮上忙"的图），参数必须代回校验、
+   * 画板/intent 必须来自 funclab 的能力清单 —— 学生点的图不会比系统自动挂的多给任何信息。
+   *
+   * 状态机（ui.labAsk）：null 未点 → 'loading' 请求中 → 'ok' 已挂 | 'none' 画不了 | 'offline' 网关挂。
+   * 点过就记住：重渲染不再请求 LLM（烧钱 + 闪），结果页由 explainPanel 直接按状态呈现。 */
+  const LAB_ASK_TEXT = {
+    none: '这题画图帮不上忙，咱们还是按解析一步步来',
+    offline: '画图功能暂时用不了'
+  };
+
+  function renderLabAsk(box, item) {
+    const state = ui.labAsk;
+    const wrap = h('div', { class: 'lab-ask', id: 'lab-ask' });
+    if (state === 'loading') {
+      wrap.append(h('span', { class: 'muted' }, '正在画…'));
+      return box.append(wrap);
+    }
+    if (state === 'ok') return;   // 画板已经挂在面板里，不再留提示
+    if (state === 'none' || state === 'offline') {
+      wrap.append(h('span', { class: 'muted', id: 'lab-ask-msg' }, LAB_ASK_TEXT[state]));
+      return box.append(wrap);
+    }
+    wrap.append(
+      h('span', { class: 'muted' }, '这题要是画个图看看会更清楚？'),
+      h('button', {
+        class: 'small', id: 'btn-lab-ask',
+        onclick: function (e) {
+          if (e && e.target) e.target.disabled = true;
+          askForLab(item);
+        }
+      }, '画图给我看'));
+    box.append(wrap);
+  }
+
+  function askForLab(item) {
+    if (ui.labAsk) return;   // 已在请求中 / 已有结论
+    const q = item.question;
+    const t = D.graph.byId[item.topicId];
+    const lab = window.Funclab && window.Funclab.labForScene(t && t.id, q && q.prompt, { itemId: q && q.id });
+    if (!lab || !window.Labmatch) { ui.labAsk = 'none'; renderQuestion(item); return; }
+    ui.labAsk = 'loading';
+    ui.labAskMsg = null;
+    renderQuestion(item);
+    const tick = ++explainTick;   // 竞态令牌：只接受当前面板的那次结果
+    window.Labmatch.resolve({ prompt: q && q.prompt, lab: lab, itemId: q && q.id, lenient: true })
+      .then(function (cfg) {
+        if (tick !== explainTick || !ui || ui.phase !== 'explain') return;
+        if (!cfg) {
+          const f = window.Labmatch.lastFailure && window.Labmatch.lastFailure();
+          ui.labAsk = (f && f.kind === 'offline') ? 'offline' : 'none';
+          ui.labAskMsg = f && f.reason || null;
+          renderQuestion(item);
+          return;
+        }
+        /* mount 抛异常会被外层 try/catch 静默吃掉（表现是「图不出现但不报错」），
+         * 所以先确认拿到实例再写 ui.labCfg / ui.labDesc。 */
+        let inst = null;
+        try { inst = window.Funclab.mount(cfg); } catch (err) { console.warn('[explain] 学生要的画板挂载失败：', err); }
+        if (!inst) { ui.labAsk = 'none'; ui.labAskMsg = 'mount-failed'; renderQuestion(item); return; }
+        ui.labAsk = 'ok';
+        ui.labCfg = cfg;
+        ui.labDesc = null;
+        try { ui.labDesc = window.Funclab.describe(cfg.lab, cfg.intent, cfg); }
+        catch (err) { ui.labDesc = null; console.warn('[explain] Funclab.describe 失败，画板仍正常显示：', err); }
+        renderQuestion(item);
+      });
   }
 
   function demoBanner() {

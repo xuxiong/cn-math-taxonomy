@@ -501,4 +501,237 @@ test('没有候选画板（几何题）→ 直接 null，不浪费一次 LLM 调
 
 /* ================================================================ */
 
+console.log('\n--- 8. lenient（学生主动要看图）：放宽 intent 相关性，其余一律不放宽 ---');
+/*
+ * 卡 t_f80f900e：学生在讲解页点「画图给我看」。
+ * 放宽的**只有**「题目所问必须在 canAnswer 里」这一条；代回校验、画板白名单、
+ * intent 白名单、网关失败即不挂，全部与默认路径一致。
+ */
+
+/** cnm_232_q1「把 y=x²-4x+3 化为顶点式」：正常匹配拒绝，lenient 允许挂顶点画板 */
+const VERTEX_232 = {
+  match: 'quadratic-vertex', params: { a: 1, h: 2, k: -1 }, intent: '顶点坐标',
+  reason: '配方是代数操作，但学生想看顶点位置与开口方向'
+};
+const REJECT_232 = '{"match":null,"params":{},"intent":"","reason":"配方是代数操作，图帮不上忙"}';
+
+test('默认路径对 cnm_232_q1 仍有候选（前提），但 LLM 拒绝 → resolve null', function () {
+  L.setStore(freshStore());
+  const prompt = q('cnm_232_q1');
+  const cand = F.labForScene('cnm_232', prompt, { itemId: 'cnm_232_q1' });
+  assert.ok(cand, '测试前提：化顶点式题必须能解析出候选（否则 lenient 无从谈起）');
+  const f = fakeFetch(REJECT_232);
+  return L.resolve({ prompt: prompt, lab: cand, itemId: 'cnm_232_q1' }, { fetchImpl: f, retries: 0 })
+    .then(function (cfg) { assert.strictEqual(cfg, null); });
+});
+
+test('lenient：LLM 给出顶点画板 → 返回可喂 mount 的配置，intent 与参数都正确', function () {
+  L.setStore(freshStore());
+  const prompt = q('cnm_232_q1');
+  const cand = F.labForScene('cnm_232', prompt, { itemId: 'cnm_232_q1' });
+  const f = fakeFetch(JSON.stringify(VERTEX_232));
+  return L.resolve({ prompt: prompt, lab: cand, itemId: 'cnm_232_q1', lenient: true }, { fetchImpl: f, retries: 0 })
+    .then(function (cfg) {
+      assert.ok(cfg, 'lenient 下应挂上图');
+      assert.strictEqual(cfg.type, 'quadratic');
+      assert.strictEqual(cfg.lab, 'quadratic-vertex');
+      assert.strictEqual(cfg.intent, '顶点坐标');
+      assert.strictEqual(cfg.a, 1); assert.strictEqual(cfg.h, 2); assert.strictEqual(cfg.k, -1);
+      assert.ok(cfg.base, 'base（原曲线）应保留');
+      assert.strictEqual(F.intentSupported(cfg.lab, cfg.intent), true);
+    });
+});
+
+test('lenient 的 system prompt 与默认不同，且写明放宽点与仍禁止项', function () {
+  const strict = L.systemPrompt();
+  const lenient = L.systemPrompt({ lenient: true });
+  assert.ok(lenient && lenient !== strict, 'lenient 必须用不同的 system 规则');
+  assert.ok(/顶点式/.test(lenient), 'lenient prompt 要带「化顶点式」的例子：' + lenient);
+  assert.ok(/canAnswer/.test(lenient), '仍须要求 intent 逐字来自 canAnswer');
+  assert.ok(/编造|不许|不能/.test(lenient), '仍须禁止编造参数');
+  assert.ok(/只输出 JSON/.test(lenient), '仍须只输出 JSON');
+});
+
+test('lenient：参数仍必须过 verifyParams —— 假参数 {a:99,h:9,k:9} → null', function () {
+  L.setStore(freshStore());
+  const prompt = q('cnm_232_q1');
+  const cand = F.labForScene('cnm_232', prompt, { itemId: 'cnm_232_q1' });
+  const f = fakeFetch('{"match":"quadratic-vertex","params":{"a":99,"h":9,"k":9},"intent":"顶点坐标"}');
+  return L.resolve({ prompt: prompt, lab: cand, itemId: 'len-fake', lenient: true }, { fetchImpl: f, retries: 0 })
+    .then(function (cfg) { assert.strictEqual(cfg, null, 'lenient 不许绕过代回校验'); });
+});
+
+test('lenient：能力清单外的画板（circle-lab）→ null', function () {
+  L.setStore(freshStore());
+  const prompt = q('cnm_232_q1');
+  const cand = F.labForScene('cnm_232', prompt, { itemId: 'cnm_232_q1' });
+  const f = fakeFetch('{"match":"circle-lab","params":{"r":1},"intent":"顶点坐标"}');
+  return L.resolve({ prompt: prompt, lab: cand, itemId: 'len-circle', lenient: true }, { fetchImpl: f, retries: 0 })
+    .then(function (cfg) { assert.strictEqual(cfg, null, 'lenient 不许新造画板'); });
+});
+
+test('lenient：intent 不在 canAnswer（自创措辞）→ null', function () {
+  L.setStore(freshStore());
+  const prompt = q('cnm_232_q1');
+  const cand = F.labForScene('cnm_232', prompt, { itemId: 'cnm_232_q1' });
+  const f = fakeFetch('{"match":"quadratic-vertex","params":{"a":1,"h":2,"k":-1},"intent":"配方后的顶点式"}');
+  return L.resolve({ prompt: prompt, lab: cand, itemId: 'len-intent', lenient: true }, { fetchImpl: f, retries: 0 })
+    .then(function (cfg) { assert.strictEqual(cfg, null, 'intent 必须逐字属于 canAnswer'); });
+});
+
+test('lenient：LLM 仍拒绝 → null，且 lastFailure 记 rejected', function () {
+  L.setStore(freshStore());
+  const prompt = q('cnm_232_q1');
+  const cand = F.labForScene('cnm_232', prompt, { itemId: 'cnm_232_q1' });
+  const f = fakeFetch(REJECT_232);
+  return L.resolve({ prompt: prompt, lab: cand, itemId: 'len-rej', lenient: true }, { fetchImpl: f, retries: 0 })
+    .then(function (cfg) {
+      assert.strictEqual(cfg, null);
+      const lf = L.lastFailure();
+      assert.ok(lf, 'lastFailure 应记录本次结果');
+      assert.strictEqual(lf.kind, 'rejected');
+      assert.strictEqual(lf.lenient, true);
+    });
+});
+
+test('lenient：网关不可用（deadFetch / 非 200 / 坏 JSON）→ null，lastFailure 记 offline', function () {
+  const prompt = q('cnm_232_q1');
+  const cand = F.labForScene('cnm_232', prompt, { itemId: 'cnm_232_q1' });
+  const bad = [
+    ['deadFetch', function () { return deadFetch(); }],
+    ['500', function () { return fakeFetch('boom', 500); }],
+    ['坏 JSON', function () { return fakeFetch('我觉得可以画'); }]
+  ];
+  let p = Promise.resolve();
+  bad.forEach(function (b) {
+    p = p.then(function () {
+      L.setStore(freshStore());
+      return L.resolve({ prompt: prompt, lab: cand, itemId: 'len-off-' + b[0], lenient: true },
+        { fetchImpl: b[1](), retries: 0 })
+        .then(function (cfg) {
+          assert.strictEqual(cfg, null, b[0] + ' 时不得挂图');
+          const lf = L.lastFailure();
+          assert.ok(lf && lf.kind === 'offline', b[0] + ' 应记 offline，实际：' + JSON.stringify(lf));
+        });
+    });
+  });
+  return p;
+});
+
+test('lenient 成功时 lastFailure 为 null（进入时清空，不残留上一题结果）', function () {
+  L.setStore(freshStore());
+  const prompt = q('cnm_232_q1');
+  const cand = F.labForScene('cnm_232', prompt, { itemId: 'cnm_232_q1' });
+  return L.resolve({ prompt: prompt, lab: cand, itemId: 'len-off2', lenient: true },
+    { fetchImpl: deadFetch(), retries: 0 })
+    .then(function () {
+      assert.strictEqual(L.lastFailure().kind, 'offline');
+      return L.resolve({ prompt: prompt, lab: cand, itemId: 'len-ok2', lenient: true },
+        { fetchImpl: fakeFetch(JSON.stringify(VERTEX_232)), retries: 0 });
+    })
+    .then(function (cfg) {
+      assert.ok(cfg, '第二次应成功');
+      assert.strictEqual(L.lastFailure(), null, '成功时不得残留上一次的失败状态');
+    });
+});
+
+test('缓存隔离：lenient 成功不写入正常 key', function () {
+  const s = freshStore();
+  L.setStore(s);
+  const prompt = q('cnm_232_q1');
+  const cand = F.labForScene('cnm_232', prompt, { itemId: 'cnm_232_q1' });
+  return L.resolve({ prompt: prompt, lab: cand, itemId: 'cnm_232_q1', lenient: true },
+    { fetchImpl: fakeFetch(JSON.stringify(VERTEX_232)), retries: 0 })
+    .then(function (cfg) {
+      assert.ok(cfg);
+      const strict = s._raw[L.CACHE_KEY];
+      assert.ok(!strict || !strict['cnm_232_q1'], '正常缓存不得被 lenient 结果污染：' + JSON.stringify(strict));
+      assert.ok(s._raw[L.LENIENT_CACHE_KEY], 'lenient 结果应写进自己的 key');
+      assert.ok(s._raw[L.LENIENT_CACHE_KEY]['cnm_232_q1']);
+    });
+});
+
+test('缓存隔离：正常缓存里有成功条目时，lenient 复用它不发请求；反之 lenient 缓存不喂给正常路径', function () {
+  /* 方向一：正常缓存已有 cnm_235_q2 的成功结果 → lenient 直接命中，不再花钱 */
+  const s = freshStore();
+  L.setStore(s);
+  const promptA = q('cnm_235_q2');
+  const candA = F.labForScene('cnm_235', promptA, { itemId: 'cnm_235_q2' });
+  const fA = fakeFetch(JSON.stringify(VERTEX_OK));
+  return L.resolve({ prompt: promptA, lab: candA, itemId: 'cnm_235_q2' }, { fetchImpl: fA, retries: 0 })
+    .then(function (cfg) {
+      assert.ok(cfg);
+      assert.strictEqual(fA.calls, 1);
+      const fB = fakeFetch(REJECT_232);
+      return L.resolve({ prompt: promptA, lab: candA, itemId: 'cnm_235_q2', lenient: true }, { fetchImpl: fB, retries: 0 })
+        .then(function (cfg2) {
+          assert.ok(cfg2, '正常的成功结果在 lenient 下也是有效答案');
+          assert.strictEqual(fB.calls, 0, '能复用正常缓存，不必再问一次');
+        });
+    })
+    .then(function () {
+      /* 方向二：lenient 缓存里躺着 cnm_232_q1（正常路径本该拒绝）→ 正常 resolve 必须重新问 */
+      L.setStore(freshStore());
+      const promptC = q('cnm_232_q1');
+      const candC = F.labForScene('cnm_232', promptC, { itemId: 'cnm_232_q1' });
+      return L.resolve({ prompt: promptC, lab: candC, itemId: 'cnm_232_q1', lenient: true },
+        { fetchImpl: fakeFetch(JSON.stringify(VERTEX_232)), retries: 0 })
+        .then(function (cfg3) {
+          assert.ok(cfg3, '先让 lenient 缓存上');
+          const fD = fakeFetch(REJECT_232);
+          return L.resolve({ prompt: promptC, lab: candC, itemId: 'cnm_232_q1' }, { fetchImpl: fD, retries: 0 })
+            .then(function (cfg4) {
+              assert.strictEqual(cfg4, null, '正常路径不得读 lenient 缓存（否则宽松判定污染自动挂图）');
+              assert.strictEqual(fD.calls, 1, '正常路径必须真的发请求');
+            });
+        });
+    });
+});
+
+test('并发去重：同一题 lenient 与正常同时飞，不互相串结果', function () {
+  L.setStore(freshStore());
+  const prompt = q('cnm_232_q1');
+  const cand = F.labForScene('cnm_232', prompt, { itemId: 'cnm_232_q1' });
+  let n = 0;
+  const f = function (url, init) {
+    n++;
+    const sys = JSON.parse(init.body).messages[0].content;
+    const content = /顶点式/.test(sys) ? JSON.stringify(VERTEX_232) : REJECT_232;
+    return Promise.resolve({
+      ok: true, status: 200,
+      json: function () { return Promise.resolve({ choices: [{ message: { content: content } }] }); }
+    });
+  };
+  return Promise.all([
+    L.resolve({ prompt: prompt, lab: cand, itemId: 'dup-232' }, { fetchImpl: f, retries: 0 }),
+    L.resolve({ prompt: prompt, lab: cand, itemId: 'dup-232', lenient: true }, { fetchImpl: f, retries: 0 })
+  ]).then(function (r) {
+    assert.strictEqual(n, 2, '两种模式各一次请求（去重 key 必须区分 lenient）');
+    assert.strictEqual(r[0], null, '正常模式拿到拒绝结果');
+    assert.ok(r[1], 'lenient 拿到画板配置，不能被正常模式的 null 串掉');
+  });
+});
+
+test('lenient 请求体：max_tokens 仍 >= 1200，temperature=0', function () {
+  L.setStore(freshStore());
+  const prompt = q('cnm_232_q1');
+  const cand = F.labForScene('cnm_232', prompt, { itemId: 'cnm_232_q1' });
+  let seen = null;
+  const f = function (url, init) {
+    seen = JSON.parse(init.body);
+    return Promise.resolve({
+      ok: true, status: 200,
+      json: function () { return Promise.resolve({ choices: [{ message: { content: JSON.stringify(VERTEX_232) } }] }); }
+    });
+  };
+  return L.resolve({ prompt: prompt, lab: cand, itemId: 'len-body', lenient: true }, { fetchImpl: f, retries: 0 })
+    .then(function () {
+      assert.ok(seen, '没有发出请求');
+      assert.strictEqual(seen.temperature, 0);
+      assert.ok(seen.max_tokens >= 1200, 'max_tokens 太小：' + seen.max_tokens);
+    });
+});
+
+/* ================================================================ */
+
 runAll();
