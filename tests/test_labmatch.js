@@ -733,5 +733,104 @@ test('lenient 请求体：max_tokens 仍 >= 1200，temperature=0', function () {
 });
 
 /* ================================================================ */
+/* 9. 学生主动要图 = 只判「能不能画」，不判「这图有没有用」（卡 t_4eed15b3）
+ *
+ * 卡面根因：学生点了「画图给我看」，按钮本身就是「我需要图」的表达；
+ * 旧 lenient prompt 让 LLM 判断「这张图对理解这道题有没有帮助」，
+ * 同一道 cnm_241_q1 有时挂上有时拒绝（LLM 漂移），还会对学生说「这题画图帮不上忙」。
+ * 现在：LLM 只提取参数，画不出来就说画不出来，绝不评判图的价值。
+ */
+
+console.log('\n--- 9. 学生主动要图：prompt 只做参数提取，不判断「图有没有用」 ---');
+
+/** cnm_241_q1「求 y=x 与 y=4/x 的交点」：两条曲线，问交点 */
+const CURVES_241 = {
+  match: 'two-curves-intersect',
+  params: { curves: [{ type: 'linear', k: 1, b: 0 }, { type: 'inverse', k: 4 }] },
+  intent: '两条曲线交点的横坐标',
+  reason: '题面里有两个函数表达式 y=x 与 y=4/x'
+};
+
+test('lenient prompt：删掉「有没有帮助 / 值不值得画」的价值判断措辞', function () {
+  const lenient = L.systemPrompt({ lenient: true });
+  /* 出现这些词只允许在「禁止你判断」的否定句里：判断标准不能交给 LLM */
+  assert.ok(!/能不能画出一张.{0,12}有帮助|对学生理解.{0,6}有帮助的图|该不该挂|是不是值得画/.test(lenient),
+    'lenient prompt 不得把「有没有帮助」当成判断标准：' + lenient);
+  assert.ok(!/判断标准放宽/.test(lenient), 'lenient prompt 不得写「判断标准放宽」（已经不再是放宽，而是换了任务）：' + lenient);
+  assert.ok(!/只会误导|与题目完全无关/.test(lenient), 'lenient prompt 不得让 LLM 判断图会不会误导（价值判断）：' + lenient);
+  assert.ok(!/完整回答/.test(lenient), 'lenient prompt 不得要求「能不能完整回答」（那是 strict 的标准）：' + lenient);
+  /* 反向锁：必须明确禁止 LLM 评判用途（否定句是硬要求） */
+  assert.ok(/不要评判这张图有没有用/.test(lenient), '必须显式禁止 LLM 评判图的价值：' + lenient);
+  assert.ok(/不要因为「画出来对理解帮助不大」而给 null/.test(lenient), '必须挡住「帮助不大 → null」这条漂移：' + lenient);
+});
+
+test('lenient prompt：写明任务是提取函数表达式 + 只有没有可画函数才 null', function () {
+  const lenient = L.systemPrompt({ lenient: true });
+  assert.ok(/提取/.test(lenient), 'lenient prompt 要说明这是参数/表达式提取任务：' + lenient);
+  assert.ok(/函数表达式/.test(lenient), 'lenient prompt 要围绕「题面里的函数表达式」：' + lenient);
+  assert.ok(/没有能画出来的函数表达式|根本没有能画出来的函数/.test(lenient), '要说清唯一给 null 的条件：' + lenient);
+  assert.ok(/不要考虑题目问的是什么|不要评判/.test(lenient), '要明确禁止评判图的用途：' + lenient);
+  // strict 路径的标准必须原样保留（不受本卡影响）
+  const strict = L.systemPrompt();
+  assert.ok(/只有题目真正要问的东西落在某个画板的 canAnswer 里/.test(strict), 'strict prompt 不许被改动');
+});
+
+test('lenient：cnm_241_q1 给出两条曲线 → 挂上 two-curves-intersect（含两条曲线参数）', function () {
+  L.setStore(freshStore());
+  const prompt = q('cnm_241_q1');
+  const cand = F.labForScene('cnm_241', prompt, { itemId: 'cnm_241_q1' });
+  assert.ok(cand && cand.type === 'curves', '测试前提：cnm_241_q1 必须解析出多曲线候选');
+  const f = fakeFetch(JSON.stringify(CURVES_241));
+  return L.resolve({ prompt: prompt, lab: cand, itemId: 'ask-241', lenient: true }, { fetchImpl: f, retries: 0 })
+    .then(function (cfg) {
+      assert.ok(cfg, '学生要图必须挂得上');
+      assert.strictEqual(cfg.lab, 'two-curves-intersect');
+      assert.strictEqual(cfg.curves.length, 2, '必须两条曲线都在');
+      const types = cfg.curves.map(function (c) { return c.type; }).sort().join(',');
+      assert.strictEqual(types, 'inverse,linear');
+      assert.strictEqual(cfg.curves.filter(function (c) { return c.type === 'linear'; })[0].k, 1);
+      assert.strictEqual(cfg.curves.filter(function (c) { return c.type === 'inverse'; })[0].k, 4);
+    });
+});
+
+test('lenient：题面没有可画函数（LLM 说 null）→ null，lastFailure.kind=rejected（对应「暂时画不出来」文案）', function () {
+  L.setStore(freshStore());
+  const prompt = q('cnm_232_q1');
+  const cand = F.labForScene('cnm_232', prompt, { itemId: 'cnm_232_q1' });
+  const f = fakeFetch('{"match":null,"params":{},"intent":"","reason":"题面没有可画出的函数表达式"}');
+  return L.resolve({ prompt: prompt, lab: cand, itemId: 'ask-none', lenient: true }, { fetchImpl: f, retries: 0 })
+    .then(function (cfg) {
+      assert.strictEqual(cfg, null);
+      const lf = L.lastFailure();
+      assert.ok(lf && lf.kind === 'rejected', '必须是 rejected（技术限制），不能是 offline：' + JSON.stringify(lf));
+      assert.ok(lf.lenient === true);
+    });
+});
+
+test('lenient：lenient 缓存换到 v2（旧 v1 判定作废）', function () {
+  assert.strictEqual(L.LENIENT_CACHE_KEY, 'cnmLabMatchLenient.v2', 'lenient 缓存 key 必须升版，否则学生本地旧「拒绝」继续生效');
+  assert.ok(L.CACHE_KEY === 'cnmLabMatch.v1', 'strict 缓存 key 不动');
+});
+
+test('strict prompt 未被本卡改动：仍是「只有题目真正要问的东西落在 canAnswer 里才挂」', function () {
+  const strict = L.systemPrompt();
+  assert.ok(/只有题目真正要问的东西落在某个画板的 canAnswer 里/.test(strict), 'strict 规则必须原样保留：' + strict);
+  assert.ok(/判断该不该挂画板/.test(strict), 'strict 仍由系统判断「该不该挂」');
+});
+
+test('strict 路径回归：cnm_241_q1 上 LLM 拒绝 → null（strict 不放水，与 lenient 不同是设计要求）', function () {
+  L.setStore(freshStore());
+  const prompt = q('cnm_241_q1');
+  const cand = F.labForScene('cnm_241', prompt, { itemId: 'cnm_241_q1' });
+  const f = fakeFetch(REJECT_232);
+  return L.resolve({ prompt: prompt, lab: cand, itemId: 'strict-241' }, { fetchImpl: f, retries: 0 })
+    .then(function (cfg) {
+      assert.strictEqual(cfg, null, 'strict 拒绝就返回 null');
+      const lf = L.lastFailure();
+      assert.ok(lf && lf.kind === 'rejected' && lf.lenient === false, JSON.stringify(lf));
+    });
+});
+
+/* ================================================================ */
 
 runAll();
