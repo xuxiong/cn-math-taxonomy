@@ -853,7 +853,10 @@ test('[缺陷1] 方程右式数值要移到左边（(x-1)²=9 → k=-9），零�
 });
 
 test('[缺陷1] 方程右式是算式/含参 → null，不要画"顶点在 x 轴"的错图', function () {
-  assert.strictEqual(F.fromPrompt(q('cnm_224_q4')), null);   // (x-2)²=3(x-2)
+  // (x-2)²=3(x-2) 原先是 null（那时解析器不会移项展开）；E 卡补上展开后它可解，
+  // 且零点 2、5 == 题库答案（由 [E-3]/[E-4] 与必修4 的绿点扫描共同锁定），故改为精确断言。
+  assert.deepStrictEqual(F.fromPrompt(q('cnm_224_q4')), { type: 'quadratic', a: 1, h: 3.5, k: -2.25 });
+  // 右侧真的含参（k 未知）的仍然 null —— 这类题画什么曲线都是猜
   assert.strictEqual(F.fromPrompt(q('cnm_220_q4')), null);   // (x-2)²=k-3
 });
 
@@ -934,6 +937,90 @@ test('[缺陷10] 放行 cnm_221_q3 后，q4 的"配方成 2(x-m)²=n 的形式"�
 test('[缺陷10b] 形态门禁不误伤正常题面：以「解方程」「用配方法解」开头的题照常挂载', function () {
   assert.deepStrictEqual(F.labFor('cnm_221', q('cnm_221_q3'), { itemId: 'cnm_221_q3' }), { type: 'quadratic', a: 1, h: -3, k: -16 });
   assert.deepStrictEqual(F.labFor('cnm_222', q('cnm_222_q2'), { itemId: 'cnm_222_q2' }), { type: 'quadratic', a: 1, h: 0.5, k: -6.25 });
+});
+
+/* ================================================================
+ * 11. E 卡：fromPrompt 解析增强（救回 docs/fromprompt-gaps.md 的 (a) 类）
+ *
+ * 三条新解析路径，均由 data/questions.json 的真实题面驱动：
+ *   P1 乘积式方程：两个一次式相乘 = 常数          → cnm_222_q4
+ *   P2 完全平方 = 一次式：两边都是表达式需移项展开 → cnm_224_q4
+ *   P3 变量名不是 x/y：h=-5t²+20t                → cnm_236_q2
+ * 后面 5 条是同一批解析路径的守卫：宁可解析不出，也不能挂错曲线。
+ * ================================================================ */
+
+console.log('\n--- 11. fromPrompt 解析增强（E 卡） ---');
+
+test('[E-1] 乘积式方程 (2x-1)(x+1)=2 展开成 2x²+x-3（cnm_222_q4）', function () {
+  // (2x-1)(x+1)=2 → 2x²+x-1=2 → 2x²+x-3=0 → 顶点 (-1/4, -25/8)，零点 1、-3/2
+  assert.deepStrictEqual(F.fromPrompt(q('cnm_222_q4')), { type: 'quadratic', a: 2, h: -0.25, k: -3.125 });
+});
+
+test('[E-2] 乘积式方程的零点就是题库答案 1、-3/2（cnm_222_q4，且必须挂载）', function () {
+  const item = QMAP.get('cnm_222_q4');
+  assert.ok(item, '题库里找不到 cnm_222_q4');
+  const p = F.labFor(t('cnm_222'), q('cnm_222_q4'), { itemId: 'cnm_222_q4' });
+  assert.ok(p, 'cnm_222_q4 答案 1、-3/2 就是画板绿点，应救回');
+  assert.strictEqual(p.type, 'quadratic');
+  const got = Array.from(labRootSet(p)).sort();
+  const want = Array.from(answerRootSet(item)).sort();
+  assert.deepStrictEqual(got, want, '绿点 ≠ 答案');
+});
+
+test('[E-3] 两边都是表达式 (x-2)²=3(x-2) 移项得 x²-7x+10（cnm_224_q4）', function () {
+  // (x-2)²-3(x-2) = x²-7x+10 → 顶点 (7/2, -9/4)，零点 2、5
+  assert.deepStrictEqual(F.fromPrompt(q('cnm_224_q4')), { type: 'quadratic', a: 1, h: 3.5, k: -2.25 });
+});
+
+test('[E-4] 上式零点就是题库答案 2、5（cnm_224_q4，且必须挂载）', function () {
+  const item = QMAP.get('cnm_224_q4');
+  assert.ok(item, '题库里找不到 cnm_224_q4');
+  const p = F.labFor(t('cnm_224'), q('cnm_224_q4'), { itemId: 'cnm_224_q4' });
+  assert.ok(p, 'cnm_224_q4 答案 2、5 就是画板绿点，应救回');
+  const got = Array.from(labRootSet(p)).sort();
+  const want = Array.from(answerRootSet(item)).sort();
+  assert.deepStrictEqual(got, want, '绿点 ≠ 答案');
+});
+
+test('[E-5] 变量名不是 x/y 的二次式 h=-5t²+20t（cnm_236_q2）', function () {
+  // a=-5, b=20, c=0 → 顶点 (2, 20)：题目问"最大高度"，答案 20 就是顶点纵坐标
+  assert.deepStrictEqual(F.fromPrompt(q('cnm_236_q2')), { type: 'quadratic', a: -5, h: 2, k: 20 });
+});
+
+test('[E-6] 顶点纵坐标 20 与题库答案一致，且必须挂载（cnm_236_q2）', function () {
+  const p = F.labFor(t('cnm_236'), q('cnm_236_q2'), { itemId: 'cnm_236_q2' });
+  assert.ok(p, 'cnm_236_q2 的答案 20 就是画板顶点纵坐标，应救回');
+  assert.strictEqual(p.k, 20);
+});
+
+test('[E-守卫1] 非方程语境的两个一次式相乘不展开（cnm_146_q1 整式乘法）', function () {
+  // 「计算 (x+2)(x-3)。」问的是展开结果，不是函数图像 → 解析必须保持 null
+  assert.strictEqual(F.fromPrompt(q('cnm_146_q1')), null);
+});
+
+test('[E-守卫2] 系数被除法约掉的式子仍不挂（cnm_236_q5 y=-x²/8 拱桥）', function () {
+  // 水面宽 16 不是画板标注量（画板只标顶点与 x 轴交点），且 y=-x²/8≠-x² 不能近似
+  assert.strictEqual(F.fromPrompt(q('cnm_236_q5')), null);
+  assert.strictEqual(F.labFor(t('cnm_236'), q('cnm_236_q5'), { itemId: 'cnm_236_q5' }), null);
+});
+
+test('[E-守卫3] 含参系数的二次式仍不解析（cnm_229_q1 (m-2)x²+3x-1）', function () {
+  assert.strictEqual(F.fromPrompt(q('cnm_229_q1')), null);
+});
+
+test('[E-守卫4] 等式右侧含参的方程仍不解析（cnm_220_q4 (x-2)²=k-3）', function () {
+  assert.strictEqual(F.fromPrompt(q('cnm_220_q4')), null);
+  assert.strictEqual(F.labFor(t('cnm_220'), q('cnm_220_q4'), { itemId: 'cnm_220_q4' }), null);
+});
+
+test('[E-守卫5] 乘积式里出现参数 p、q 时不当作二次函数（cnm_150_q4）', function () {
+  // 若 x²+px+q=(x+2)(x-5)，求 p、q —— 左边含参，画不出确定曲线
+  assert.strictEqual(F.fromPrompt(q('cnm_150_q4')), null);
+});
+
+test('[E-守卫6] 数列记号 a_n=n² 不被当成抛物线（cnm_h199_q2）', function () {
+  // 变量改名分支要求二次项系数显式写出，否则 "a_n=n²" 这类递推式会被误认成 y=x²
+  assert.strictEqual(F.fromPrompt(q('cnm_h199_q2')), null);
 });
 
 /* ================================================================
