@@ -646,12 +646,53 @@ test('checkRows：真实值只出现在自检面板里，且覆盖图上留 ? �
     if (c.id === 'cnm_174_q3') assert.ok(/面积/.test(names), '自检应含面积：' + names);
     rows.forEach(function (r) {
       assert.ok(r.real != null && isFinite(r.real), c.id + ' 的自检行 ' + r.name + ' 应有真实数值');
-      /* 旧断言这里写的是 r.yours === ''，把「面板根本没有输入框」固化成契约：
-       * 意图（不能预填答案）正确，实现方式错误 —— 学生唯一的作答入口被写成了空字符串。
-       * 现在改为「每行必须有输入位，且初值为空」，见下面第 11 节。 */
-      assert.ok(Object.prototype.hasOwnProperty.call(r, 'yours'), c.id + ' 的自检行 ' + r.name + ' 必须带学生作答位 yours（不能没有作答入口）');
+      assert.ok(r.ans && typeof r.ans === 'object', c.id + ' 的自检行 ' + r.name + ' 应带可渲染的作答槽位');
+      assert.strictEqual(r.ans.value, '', '「我算的」默认必须是空位（不能预先填好答案）');
+      assert.strictEqual(r.ans.kind, 'number', c.id + ' 的作答槽位应是数值输入框');
+      assert.strictEqual(r.ans.unit, r.unit, c.id + ' 的作答槽位单位应与行单位一致');
+      assert.ok(!('yours' in r), c.id + ' 不该再保留硬编码的 yours 字段');
     });
   });
+});
+
+/* 逐行判定：填空 → 未作答（不泄露真实值）；数值等价写法 → ✓；别的一律 ✗ + 实际值 */
+test('judgeRow：未填只说「未作答」，不显示 ____ 也不给真实值', function () {
+  const l = lab('cnm_174_q3');            // BC 未给 → 自检行里有「直角边 BC = 15」
+  const rows = G.checkRows(l, G.solve(l));
+  rows.forEach(function (r) {
+    ['', '   ', '　'].forEach(function (blank) {
+      const v = G.judgeRow(r, blank);
+      assert.strictEqual(v.status, 'empty', r.name + ' 空白应为 empty，实际 ' + v.status);
+      assert.strictEqual(v.text, '未作答', r.name + ' 空白应显示「未作答」');
+      assert.strictEqual(v.real, false, r.name + ' 未作答不得允许渲染真实值');
+      assert.ok(v.text.indexOf('____') < 0, r.name + ' 不该再出现 ____');
+    });
+  });
+});
+
+test('judgeRow：数值等价写法判对（16 / 16.0 / 0.46 / 23/50 / 2/5）', function () {
+  const row16 = { name: 'BC', unit: '', real: 16 };
+  ['16', '16.0', '16.00', ' 16 ', '16°'].forEach(function (s) {
+    assert.strictEqual(G.judgeRow(row16, s).status, 'ok', s + ' 应判对（16）');
+  });
+  const row046 = { name: 'k', unit: '', real: 0.46 };
+  ['0.46', '23/50', '.46', '0.460'].forEach(function (s) {
+    assert.strictEqual(G.judgeRow(row046, s).status, 'ok', s + ' 应判对（0.46）');
+  });
+  const row25 = { name: 'x', unit: '', real: 0.4 };
+  ['2/5', '0.4', '4/10'].forEach(function (s) {
+    assert.strictEqual(G.judgeRow(row25, s).status, 'ok', s + ' 应判对（2/5）');
+  });
+});
+
+test('judgeRow：填错给 ✗ + 实际值；非数字也算错', function () {
+  const row = { name: 'BC', unit: '', real: 16 };
+  const wrong = G.judgeRow(row, '15');
+  assert.strictEqual(wrong.status, 'wrong');
+  assert.strictEqual(wrong.text, '✗');
+  assert.strictEqual(wrong.real, true, '填错才允许显示实际值');
+  assert.strictEqual(G.judgeRow(row, '16.5').status, 'wrong');
+  assert.strictEqual(G.judgeRow(row, 'abc').status, 'wrong', '写了非数字按填错处理');
 });
 
 test('自检行不输出「题面已知量」的假结果：cnm_174_q3 不给 AB 再列一遍', function () {
