@@ -41,6 +41,14 @@
   function normalize(prompt) {
     let s = String(prompt || '');
     s = s.replace(/[（]/g, '(').replace(/[）]/g, ')');   // 全角括号只影响系数，转半角防解析偏
+    /* t_1d3fe77a：题库里的减号是 U+2212（cnm_h172 的「x−y=1」），不归一化就解析不出隐式直线。
+     * 只动 U+2212 / 全角减号，ASCII 减号与其他符号一律不碰（对老分支零影响）。
+     * 注：这里只归一化「数字/字母/右括号 + U+2212 + 数字/字母/左括号」这种二元减号形态，
+     * 「-3」这种一元负号不在本规则内（题库里未出现 U+2212 版本的一元负号）。 */
+    s = s.replace(/([\dxX)）])\s*[−－]\s*(?=[\dxX(（a-zA-Z])/g, function (all, head) {
+      return head + '-';
+    });
+    s = s.replace(/[−－]/g, '-');
     s = s.replace(/x\s*\^\s*2/g, 'x²');
     return s;
   }
@@ -154,12 +162,97 @@
   }
 
   /**
+   * 隐式直线 ax + by = c（没有 y= 前缀）→ {type:'linear', k, b}：
+   *   例 x+y=5 → {k:-1, b:5}；x−y=1（U+2212 已由 normalize 归一化）→ {k:1, b:-1}；2x+3y=6 → {k:-2/3, b:2}
+   * 只接受 a、b、c 都是**纯数字**（省略系数 ±1 也允许）；含字母系数（mx+y=5、x+my=1）一律 null；
+   * b=0（x=5 这种竖直线）不是函数图象，也返回 null。
+   */
+  /* 隐式直线的一次全局扫描：把「<x 系数>x <y 系数>y = 常数」整段抓出来。
+   * 关键点：y 前面可能就是「+」（x+y=5），所以匹配的是 **x 项在前** 的完整形态，
+   * 不去要求「y 紧邻某个符号」。系数允许省略（coeffNum 把空串 / "+" / "-" 当 ±1）。 */
+  const IMPLICIT_LINE_RE = /(?:^|[^\d.a-zA-Z)])([+-]?\d*\.?\d*)\s*x\s*([+-]\d*\.?\d*)\s*y\s*=\s*([+-]?\d+\.?\d*)/g;
+
+  /** 隐式直线 ax+by=c → {type:'linear', k, b}；含字母系数（mx+y=5）/竖直线（b=0）一律 null */
+  function linearFromImplicit(s) {
+    IMPLICIT_LINE_RE.lastIndex = 0;
+    const m = IMPLICIT_LINE_RE.exec(s);
+    if (!m) return null;
+    /* 字母紧贴在两个系数前（mx+y、x+my）说明是含参系数，不解析 */
+    const head = String(m[1] == null ? '' : m[1]).replace(/\s+/g, '');
+    const mid = String(m[2] == null ? '' : m[2]).replace(/\s+/g, '');
+    if (!/^[+-]?\d*\.?\d*$/.test(head) || !/^[+-]\d*\.?\d*$/.test(mid)) return null;
+    const a = coeffNum(m[1]);            // x 的系数（空串 = 1）
+    const b = coeffNum(m[2]);            // y 的系数（空串 = 1）
+    const c = parseFloat(String(m[3]).replace(/\s+/g, ''));
+    if (!isFinite(a) || !isFinite(b) || !isFinite(c)) return null;
+    if (a === 0 || b === 0) return null; // 无 y 项 = 竖直线，不是函数图象
+    let k = -a / b;
+    let bb = c / b;
+    if (k === 0) k = 0;
+    if (bb === 0) bb = 0;
+    return { type: 'linear', k: k, b: bb };
+  }
+
+  /** 一条题面子串 → 曲线参数（先反比例、再一次函数 y=、再隐式 ax+by=c），解析不出 null */
+  function curveFromFragment(s) {
+    let m = s.match(/y\s*=\s*([+-]?\s*\d*\.?\d*)\s*\/\s*x/);
+    if (m) {
+      const k = coeffNum(m[1]);
+      if (k !== 0 && isFinite(k)) return { type: 'inverse', k: k };
+    }
+    m = s.match(/y\s*=\s*([+-]?\s*\d*\.?\d*)?\s*x(?![\u00B2\u00B3\u00B9^])\s*([+-]\s*\d*\.?\d*)?/);
+    if (m) {
+      const kS = String(m[1] == null ? '' : m[1]).replace(/\s+/g, '');
+      if (/[a-zA-Z]/.test(kS)) return null;
+      const k = coeffNum(m[1]);
+      const b = m[2] ? coeffNum(m[2]) : 0;
+      if (isFinite(k) && isFinite(b)) return { type: 'linear', k: k, b: b };
+    }
+    return linearFromImplicit(s);
+  }
+
+  /**
+   * 题面上**每一处**「y=…」/「x+y=c」表达式 → 曲线数组（按出现顺序，可重复出现同一条）。
+   * 只做「题面写了几条可解析的曲线」这一件事：
+   *   · 反比例 / 一次 / 隐式直线都认；
+   *   · 二次表达式（y=x²…、y=a(x-h)²+k）**不在此列** —— 与 fromPrompt 的分支优先级保持一致，
+   *     避免同一段题面在两条路径上解析出不同结论；
+   *   · 不做去重（题面重复写同一条也算两次，由调用方决定怎么用）。
+   * 解析不出任何曲线 → []。
+   */
+  function curvesFromPrompt(prompt) {
+    const s = normalize(prompt);
+    if (!s) return [];
+    const out = [];
+    const re = /y\s*=\s*[+-]?\s*\d*\.?\d*\s*(?:\/\s*x|(?:[+-]?\s*\d*\.?\d*)?\s*x(?![\u00B2\u00B3\u00B9^])\s*(?:[+-]\s*\d*\.?\d*)?)/g;
+    let m;
+    while ((m = re.exec(s)) !== null) {
+      const c = curveFromFragment(m[0]);
+      if (c) out.push(c);
+    }
+    const imp = /(?:[+-]?\s*\d*\.?\d*\s*y\s*[+-]\s*\d*\.?\d*\s*x|[+-]?\s*\d*\.?\d*\s*x\s*[+-]\s*\d*\.?\d*\s*y)\s*=\s*[+-]?\s*\d+\.?\d*/g;
+    while ((m = imp.exec(s)) !== null) {
+      const c = linearFromImplicit(m[0].replace(/\s+/g, ''));
+      if (c) out.push(c);
+    }
+    return out;
+  }
+
+  /**
    * 从题面解析函数参数 → {type, ...params}，解析不出返回 null。
    * 二次：{type:'quadratic', a, h, k}   一次：{type:'linear', k, b}   反比例：{type:'inverse', k}
    */
   function fromPrompt(prompt) {
     const s = normalize(prompt);
     if (!s) return null;
+
+    // ---------- t_1d3fe77a：隐式直线 ax+by=c（x+y=5 / x−y=1 / 2x+3y=6）----------
+    // 只认纯数字系数（含字母的一律 null）；题面同时写了显式 y=… 时以显式分支为准，
+    // 这样「x+y=5 与 y=2x 的交点」这类混写题不会因为隐式分支先命中而丢掉更准的解析结果。
+    // explicit 判定只认「前面不是字母/数字/系数的 y=」，x+y=5 里的 y= 不算显式。
+    const implicit = linearFromImplicit(s);
+    const explicit = /(?:^|[^a-zA-Z0-9.+\-])y\s*=/.test(s);
+    if (implicit && !explicit) return implicit;
 
     // ---------- 反比例：y = k/x（k 可能带符号/省略=1） ----------
     let m = s.match(/y\s*=\s*([+-]?\s*\d*\.?\d*)\s*\/\s*x/);
@@ -249,9 +342,14 @@
     return null;
   }
 
+  /* t_1d3fe77a：高中「两条直线的交点」知识点（cnm_h172）单独放行，但类型标成 curves ——
+   * 它的题面天然是两条曲线求交点，走 labFor 的单曲线解析只会取到第一条线（画错题）。
+   * 只放行这一个 id：cnm_h208 / h241 / h251 是高中其他章节，保持不支持。 */
+  const CURVES_TOPICS = { cnm_h172: true };
+
   /** 兼容旧 API：topicSupported(topicId) 是否可能是某种函数类型 */
   function topicSupported(topicId) {
-    return topicKind(topicId) !== null;
+    return topicKind(topicId) !== null || !!CURVES_TOPICS[String(topicId || '')];
   }
 
   /**
@@ -354,8 +452,29 @@
     return { type: 'quadratic', a: a, h: parsed.h, k: 0 };
   }
 
+  /** 题面是否「有 ≥2 条可解析曲线 且 在问交点」——多曲线画板的唯一准入条件（t_1d3fe77a）
+   *  这条同时被 labFor（不给单曲线候选）与 labmatch.verifyParams（拒绝单曲线画板）复用，
+   *  保证「同一份判断题」只有一处口径。 */
+  const INTERSECT_WORDS = /交点|公共点|相交|位置关系/;
+  /* 交点不是答案的两类题必须排除（否则画板把答案之外的量当成交点，答非所问）：
+   *   1. 求参数：「交点的横坐标为 1，求 m 的值」—— 交点是**已知量**，m 才是答案
+   *      （cnm_208_q4：y=-x+m 里的 m 还会被解析成 b=1，画出来的线就是错的）
+   *   2. 解不等式：「…解集是？」—— 交点坐标题面已给，答案是解集/选项（cnm_241_q4 答案 B）
+   * 注意「求…」后面必须紧跟单个字母参数（m/a/k/…），不能是 y=/x= 这种函数式开头：
+   * cnm_241_q1「求 y=x 与 y=4/x 的交点」是正当的交点题，不能被误杀。 */
+  const CURVES_EXCLUDE = /求\s*([a-wz])\s*(?:的值|[＝=])|解集|取值范围|不等式/;
+  function isMultiCurveIntersect(prompt) {
+    const s = String(prompt || '');
+    if (!INTERSECT_WORDS.test(s)) return false;
+    if (CURVES_EXCLUDE.test(s)) return false;
+    const cs = curvesFromPrompt(s);
+    return cs.length >= 2 && cs.length <= 2;
+  }
+
   /** 组合入口：知识点支持 && 题面能解析 && 类型匹配 && 题面门禁 → 参数对象，否则 null
-   *  opts.itemId 可选（题库题 id）：方程章里决定个别题是否放行（cnm_221_q3） */
+   *  opts.itemId 可选（题库题 id）：方程章里决定个别题是否放行（cnm_221_q3）
+   *  注意：labFor 维持「单曲线解析」语义不变（它有独立的通用测试锁着类型一致性）；
+   *  多曲线候选由 labForScene 产出（见下）。 */
   function labFor(topicId, prompt, opts) {
     const kind = topicKind(topicId);
     if (!kind) return null;
@@ -369,8 +488,18 @@
     return r;
   }
 
-  /** 挂载用的完整配置：解析出目标参数时，附带原曲线用于叠画对比 */
+  /** 挂载用的完整配置：解析出目标参数时，附带原曲线用于叠画对比
+   *  t_1d3fe77a：题面「≥2 条可解析曲线 + 问交点」时，改给多曲线画板候选
+   *  （type:'curves' + curves 数组），绝不落到单曲线画板 —— cnm_208_q1 只取第一条直线、
+   *  cnm_241_q1 只取那条双曲线，画出来都答非所问。 */
   function labForScene(topicId, prompt, opts) {
+    const kind = topicKind(topicId);
+    const curvesTopic = !!CURVES_TOPICS[String(topicId || '')];
+    if ((kind || curvesTopic) && isMultiCurveIntersect(prompt)) {
+      const cs = curvesFromPrompt(prompt);
+      if (cs.length === 2) return { type: 'curves', curves: cs };
+    }
+    if (!kind) return null;      // curves 专属知识点不落到单曲线画板（画出来只能是半道题）
     const target = labFor(topicId, prompt, opts);
     if (!target) return null;
     const base = baseOf(target, prompt);
@@ -441,6 +570,22 @@
       canAnswer: ['点与坐标轴围成的矩形或三角形面积', '由面积反求 |k|'],
       params: ['k'],
       note: '点 P 在 y=k/x 上，过 P 作两坐标轴的垂线：矩形面积 = |k|，三角形（原点、P、一个垂足）面积 = |k|/2。'
+    },
+    /* ---- 多曲线：一个坐标系里两条曲线 + 它们的交点（t_1d3fe77a） ---- */
+    'two-curves-intersect': {
+      type: 'curves',
+      canAnswer: ['两条曲线的交点坐标', '两条曲线交点的横坐标', '两条曲线交点的纵坐标', '两条曲线的位置关系'],
+      params: ['curves'],
+      /* params 说明**必须写清 JSON 结构**：实测 LLM 会把 curves 写成 ["y=x+1","y=-x+3"] 这种
+       * 表达式字符串数组，正是这段说明缺失导致的（verifyParams 只认对象，报「类型不支持: (空)」）。
+       * 这里给出三种曲线各自的字段名与一个完整例子，让模型照着填。 */
+      paramsDoc: 'curves 是**对象数组**，恰好 2 项，每项是一个曲线对象（不是表达式字符串）：'
+        + '直线 {type:"linear",k:<斜率>,b:<截距>}；双曲线 {type:"inverse",k:<系数>}；'
+        + '抛物线 {type:"quadratic",a:<二次项>,h:<顶点横坐标>,k:<顶点纵坐标>}。'
+        + '例（y=x+1 与 y=-x+3）："curves":[{"type":"linear","k":1,"b":1},{"type":"linear","k":-1,"b":3}]',
+      note: '同一坐标系里画两条函数的图象：蓝色是第一条、橙色是第二条，交点位置已标出但坐标留白。'
+        + '参数给对象数组，例（y=x+1 与 y=-x+3）：'
+        + '{"curves":[{"type":"linear","k":1,"b":1},{"type":"linear","k":-1,"b":3}]}'
     }
   };
 
@@ -454,7 +599,8 @@
     'linear-trend': 'linear',
     'linear-equation': 'linear',
     'inverse-quadrants': 'inverse',
-    'inverse-area': 'inverse'
+    'inverse-area': 'inverse',
+    'two-curves-intersect': 'curves'
   };
 
   /**
@@ -510,6 +656,16 @@
     'inverse-area': {
       '点与坐标轴围成的矩形或三角形面积': '点 P 在 y = k/x 上，k = {k}：过 P 向两条坐标轴作垂线，就围出矩形和三角形。**矩形的面积是多少？三角形（原点、P、一个垂足）的面积是多少？** 用 |k| 的关系自己算，图上不标数值。',
       '由面积反求 |k|': '面积只由 |k| 决定：矩形的面积就等于 |k|，三角形（原点、P、一个垂足）的面积是矩形的一半。**反过来，由题面给的面积求出 |k| 是多少？** 再结合图象落在哪几个象限定符号。'
+    },
+    /* 多曲线画板（t_1d3fe77a）：两条曲线的表达式是题面已知量，交点坐标是派生量 → 一律留白。
+     * 文案里不许出现「根」字（test_labmatch 的通用断言），只说「交点」。 */
+    'two-curves-intersect': {
+      /* 渲染层是 note.textContent（不做 Markdown），所以这 4 条文案里**不许出现 ** 强调符** ——
+       * 否则学生看到的是字面星号。老画板那 22 条按卡面要求一个字不动。 */
+      '两条曲线的交点坐标': '蓝色实线是题面给出的第一条曲线，橙色实线是第二条，两条线的表达式都在题面上写着。它们在图上交叉的地方已经画了点——这个交点的横、纵坐标分别是多少？坐标留给你读，图上只标了点。',
+      '两条曲线交点的横坐标': '蓝色实线是第一条曲线，橙色实线是第二条。交点位置已经标出，但只标了点：不看纵坐标，只看这个点正下方 x 轴上的刻度，横坐标是多少？数值留给你读。',
+      '两条曲线交点的纵坐标': '蓝色实线是第一条曲线，橙色实线是第二条。交点位置已经标出：从交点往左看 y 轴上的刻度，纵坐标是多少？数值留给你读。',
+      '两条曲线的位置关系': '蓝色实线是第一条曲线，橙色实线是第二条：它们有几个公共点？相交、相切还是不相交？图上的交点已标出位置，坐标与个数都留给你判断。'
     }
   };
 
@@ -578,6 +734,17 @@
     const type = CAP_TYPE[String(lab || '')] || 'quadratic';
     const xMin = p.xMin != null ? p.xMin : '-∞';
     const xMax = p.xMax != null ? p.xMax : '+∞';
+    /* curves 画板：文案必须与实际画的东西一致 —— 没有交点时图上没有红点，
+     * 再说「图上交叉的地方已经画了点」就是骗人（学生对着空图找点）。 */
+    if (CAP_TYPE[String(lab || '')] === 'curves') {
+      const cs = curvesOf(p);
+      const pts = cs && cs.length === 2 ? intersectionsOf(cs) : [];
+      if (!pts.length) {
+        return '蓝色实线是题面给出的第一条曲线，橙色实线是第二条，两条线的表达式都在题面上写着。'
+          + '请按这两条曲线的表达式自己判断：**它们有几个公共点？相交、相切还是不相交？**'
+          + '图上不标交点（这条画板不在图上给答案）。';
+      }
+    }
     return fill(NOTE_BY_INTENT[it], {
       /* 已知量：a（二次系数）、b（一次截距）、k（一次斜率/反比例系数）—— 题面原样给出 */
       a: fmtQuad(p.a), k: fmtQuad(p.k), b: fmtQuad(p.b),
@@ -723,11 +890,41 @@
     return { xMin: xMin, xMax: xMax };
   }
 
+  /**
+   * 多曲线画板的视野（世界坐标范围）—— 与 mount 内部 view() 的 curves 分支逐行同口径。
+   *
+   * 规则（确定性、可单测）：
+   *   1) 先取所有可见交点（|x|,|y| ≤ WINDOW_CAP）为参考点；
+   *   2) 横向半宽 = max(4, 交点横坐标最大绝对值 + 2)；
+   *   3) 纵向半宽同口径按交点纵坐标算；
+   *   4) **必须包含原点区间**：x/y 范围都扩到跨 0（交点题学生要在坐标轴上读坐标）；
+   *   5) 没有交点（平行 / 无交点）时退回 [-8, 8] 的固定窗口，同样含原点。
+   * 这样「有交点 → 交点一定在画布内」，describe 与绘制不会出现「描述说标了、图上没有」。
+   */
+  const CURVES_WINDOW_CAP = 40;
+  function curvesWindow(curves) {
+    const cs = curvesOf({ curves: curves }) || [];
+    const pts = intersectionsOf(cs).filter(function (pt) {
+      return Math.abs(pt.x) <= CURVES_WINDOW_CAP && Math.abs(pt.y) <= CURVES_WINDOW_CAP;
+    });
+    if (!pts.length) return { xMin: -8, xMax: 8, yMin: -8, yMax: 8 };
+    const maxAbs = function (key) {
+      return pts.reduce(function (m, pt) { return Math.max(m, Math.abs(pt[key])); }, 0);
+    };
+    const hx = Math.max(4, maxAbs('x') + 2);
+    const hy = Math.max(4, maxAbs('y') + 2);
+    /* 扩到含 0：交点全在正半轴时也要能从 y 轴（或 x 轴）开始读 */
+    const xMin = Math.min(-hx, 0), xMax = Math.max(hx, 0);
+    const yMin = Math.min(-hy, 0), yMax = Math.max(hy, 0);
+    return { xMin: xMin, xMax: xMax, yMin: yMin, yMax: yMax };
+  }
+
   /** 画板类型 → 画板标题（describe 首行用） */
   function typeTitle(type) {
     return type === 'linear' ? '一次函数图象（直线）'
       : type === 'inverse' ? '反比例函数图象（双曲线）'
-        : '二次函数图象（抛物线）';
+        : type === 'curves' ? '两条函数的图象与它们的交点'
+          : '二次函数图象（抛物线）';
   }
 
   /** 目标曲线描述：只印题面已知量（a/直线的 k,b/反比例 k），quadratic 不印 h/k（顶点是派生量） */
@@ -751,6 +948,54 @@
     return '与蓝色抛物线开口、对称轴相同、顶点落在 x 轴上的基准曲线（顶点横坐标与蓝色曲线相同，图中未标数值）';
   }
 
+  /** 一条曲线的「已知量」描述（多曲线画板用）：只印题面原样给出的表达式，不印交点等派生量 */
+  function curveKnownDesc(c) {
+    const cc = c || {};
+    if (cc.type === 'linear') {
+      if (!isFinite(cc.k) || !isFinite(cc.b)) return '一条直线';
+      return '直线（' + formatFormula({ type: 'linear', k: cc.k, b: cc.b }) + '）';
+    }
+    if (cc.type === 'inverse') {
+      if (!isFinite(cc.k) || cc.k === 0) return '一条双曲线';
+      return '双曲线（' + formatFormula({ type: 'inverse', k: cc.k }) + '）';
+    }
+    if (!isFinite(cc.a) || !isFinite(cc.h) || !isFinite(cc.k) || cc.a === 0) return '一条抛物线';
+    /* 抛物线不印 h/k：顶点是派生量（与单曲线画板 P 卡同一条规矩） */
+    return '抛物线（a = ' + fmtQuad(cc.a) + '，' + (cc.a > 0 ? '开口向上' : '开口向下') + '）';
+  }
+
+  /** 多曲线画板的元素清单（paintModel 的 curves 分支）。缺 curves 时给通用措辞、不报错。 */
+  function paintCurves(it, p) {
+    const raw = Array.isArray(p.curves) ? p.curves : [];
+    const valid = raw.length === 2 && raw.every(function (c) {
+      return c && (c.type === 'linear' || c.type === 'inverse' || c.type === 'quadratic');
+    });
+    const elements = [];
+    elements.push({ kind: 'grid-axes', text: '坐标平面：黑色 x 轴与 y 轴、浅灰网格与刻度数字', style: '坐标轴与网格' });
+    if (!valid) {
+      /* 通用措辞：参数没带全（如 describe 的空参数调用）时也要能说清画板长什么样 */
+      elements.push({ kind: 'curve', text: '蓝色实线：第一条曲线（题面给出的第一个函数表达式）', style: '蓝色实线' });
+      elements.push({ kind: 'curve-2', text: '橙色实线：第二条曲线（题面给出的第二个函数表达式）', style: '橙色实线' });
+      elements.push({ kind: 'intersection', text: '红色圆点：两条曲线的交点位置，旁边标「' + intersectText(null, false) + '」（坐标留白）', style: '红色圆点' });
+    } else {
+      const cs = curvesOf({ curves: raw });
+      elements.push({ kind: 'curve', text: '蓝色实线：第一条曲线，' + curveKnownDesc(cs[0]), style: '蓝色实线' });
+      elements.push({ kind: 'curve-2', text: '橙色实线：第二条曲线，' + curveKnownDesc(cs[1]), style: '橙色实线' });
+      /* 交点个数按解析解说，但坐标一律 (?, ?)（派生量）。与绘制层同一份 intersectionsOf。 */
+      const pts = intersectionsOf(cs);
+      if (pts.length === 0) {
+        elements.push({ kind: 'intersection', text: '两条曲线在这张图里没有公共点：图上不标交点，也没有「' + derivePair() + '」标注', style: '无交点' });
+      } else if (pts.length === 1) {
+        elements.push({ kind: 'intersection', text: '红色圆点：两条曲线的一个交点，旁边标「' + intersectText(pts[0], false) + '」（坐标留白）', style: '红色圆点' });
+      } else {
+        elements.push({ kind: 'intersection', text: '红色圆点：两条曲线的两个交点，每个旁边标「' + intersectText(pts[0], false) + '」（坐标留白）', style: '红色圆点' });
+      }
+    }
+    const note0 = noteText('two-curves-intersect', it, p);
+    if (note0) elements.push({ kind: 'note', text: '画板下方的说明文案：' + note0, style: '说明文字' });
+    return { type: 'curves', lab: 'two-curves-intersect', intent: it, title: typeTitle('curves'), elements: elements };
+  }
+
   /**
    * 画板元素清单（含每段可见文字），绘制与 describe 的唯一来源。
    * @param {string} lab    画板名（CAPABILITIES 的键，如 'quadratic-vertex'）
@@ -769,6 +1014,9 @@
     if (type === 'linear' && (!isFinite(p.k) || !isFinite(p.b) || p.k === 0)) return null;
     if (type === 'inverse' && (!isFinite(p.k) || p.k === 0)) return null;
     if (type === 'quadratic' && (!isFinite(p.a) || !isFinite(p.h) || !isFinite(p.k) || p.a === 0)) return null;
+    /* curves：缺 curves（或不合法）时**照样出描述** —— 通用测试会拿空参数调 describe，
+     * 那时只能说「两条曲线」的通用措辞，不能返回 null（返回 null 会让 AI 讲解拿不到画板）。 */
+    if (type === 'curves') return paintCurves(it, p);
 
     const elements = [];
     elements.push({ kind: 'grid-axes', text: '坐标平面：黑色 x 轴与 y 轴、浅灰网格与刻度数字', style: '坐标轴与网格' });
@@ -892,6 +1140,115 @@
     return lines.join('\n');
   }
 
+  /* ============================================================ 多曲线（t_1d3fe77a）
+   *
+   * 把单曲线画板升级为「两条曲线 + 交点」画板 two-curves-intersect。
+   * 老画板的 80 处 p.a/p.h/p.k 引用一律不动：绘制层通过 curvesOf(p) 把扁平参数归一化成
+   * 单条曲线数组，多曲线画板则直接用 params.curves。intersectionsOf 给出解析解交点，
+   * 交点坐标是派生量 → 图上标 (?, ?)（intersectText，与 describe 同一来源）。
+   */
+
+  /** 曲线求值（与 mount 内 fAt 同口径，但按单条曲线参数算；type 缺省按 quadratic） */
+  function fAtCurve(c, x) {
+    const t = (c && c.type) || 'quadratic';
+    if (t === 'linear') return c.k * x + c.b;
+    if (t === 'inverse') return c.k / x;
+    return c.a * (x - c.h) * (x - c.h) + c.k;
+  }
+
+  /**
+   * 归一化参数为曲线数组（纯函数，无 DOM）：
+   *   curvesOf({ curves: [ {type:'linear',k:1,b:0}, {type:'inverse',k:4} ] })
+   *     → [{type:'linear',k:1,b:0}, {type:'inverse',k:4}]
+   *   curvesOf({ type:'quadratic', a:1, h:2, k:-1 })   // 老画板扁平参数
+   *     → [{type:'quadratic', a:1, h:2, k:-1}]
+   * 有 curves 数组就逐条浅拷贝（保留原长度，含 0 / >2 —— 非法判定由 mount/verifyParams 做）；
+   * 否则有 type 就包成单条；都没有返回 null。
+   */
+  function curvesOf(params) {
+    const p = params || {};
+    if (Array.isArray(p.curves)) {
+      return p.curves.map(function (c) { return Object.assign({}, c); });
+    }
+    if (p && p.type) {
+      const single = { type: p.type };
+      if (p.type === 'quadratic') { single.a = p.a; single.h = p.h; single.k = p.k; }
+      else if (p.type === 'linear') { single.k = p.k; single.b = p.b; }
+      else if (p.type === 'inverse') { single.k = p.k; }
+      else return null;
+      return [single];
+    }
+    return null;
+  }
+
+  /** 多曲线专用浮点容差（与 labmatch EPS 同口径，1e-9 严而不过严） */
+  const CURVES_EPS = 1e-9;
+
+  /** 解一元二次方程 ax²+bx+c=0 的实根（|disc|≤eps 当重根返回一个）；a=0 退化一次；无实根返回 [] */
+  function solveQuad(a, b, c, eps) {
+    const E = eps == null ? CURVES_EPS : eps;
+    if (Math.abs(a) < E) {
+      if (Math.abs(b) < E) return [];        // 0=0 或 0=非0：都不是有限交点
+      return [-c / b];
+    }
+    const disc = b * b - 4 * a * c;
+    if (disc < -E) return [];
+    if (Math.abs(disc) <= E) return [-b / (2 * a)];   // 重根
+    const r = Math.sqrt(disc);
+    return [(-b - r) / (2 * a), (-b + r) / (2 * a)];
+  }
+
+  /**
+   * 两条曲线的解析交点（纯函数，禁止数值迭代）：intersectionsOf(curves) → [{x,y}]，按 x 升序，无交点 []。
+   *   linear×linear      k1x+b1 = k2x+b2 → 一次；斜率相同（重合或平行）→ []
+   *   linear×quadratic   a(x-h)²+k = k1x+b1 → 二次
+   *   linear×inverse     k1x+b1 = k2/x → 二次（排除 x=0）
+   *   quadratic×quadratic → 二次（a1==a2 退化一次）；解不出或重合 → []
+   *   quadratic×inverse  → []（高次，卡面明确不做）
+   *   inverse×inverse    k1/x = k2/x → k1==k2 重合 []，否则 []
+   * 顺序不敏感：内部按 type 排序配对，结果与传入顺序无关。返回的 y 用第一条曲线求值。
+   */
+  function intersectionsOf(curves) {
+    if (!Array.isArray(curves) || curves.length !== 2) return [];
+    const cs = curves.slice().sort(function (a, b) { return (a.type || '') < (b.type || '') ? -1 : (a.type || '') > (b.type || '') ? 1 : 0; });
+    const c1 = cs[0], c2 = cs[1];
+    const t1 = c1.type, t2 = c2.type;
+    let xs = null;
+    if (t1 === 'inverse' && t2 === 'inverse') return [];
+    if (t1 === 'inverse' && t2 === 'quadratic') return [];
+    if (t1 === 'inverse' && t2 === 'linear') {
+      // k_inv/x = k_lin*x + b_lin  →  k_lin*x² + b_lin*x - k_inv = 0  (x≠0)
+      const kInv = c1.k, kL = c2.k, bL = c2.b;
+      xs = solveQuad(kL, bL, -kInv).filter(function (x) { return Math.abs(x) > CURVES_EPS; });
+    } else if (t1 === 'linear' && t2 === 'linear') {
+      const k1 = c1.k, b1 = c1.b, k2 = c2.k, b2 = c2.b;
+      if (Math.abs(k1 - k2) < CURVES_EPS) return [];   // 平行或重合：交点无穷多/零，画板画不出
+      xs = [(b2 - b1) / (k1 - k2)];
+    } else if (t1 === 'linear' && t2 === 'quadratic') {
+      // a(x-h)² + k = kL*x + bL  →  a*x² + (-2ah - kL)*x + (a h² + k - bL) = 0
+      const a = c2.a, h = c2.h, k = c2.k, kL = c1.k, bL = c1.b;
+      xs = solveQuad(a, -2 * a * h - kL, a * h * h + k - bL);
+    } else if (t1 === 'quadratic' && t2 === 'quadratic') {
+      // a1(x-h1)²+k1 = a2(x-h2)²+k2 → (a1-a2)x² + (-2a1h1+2a2h2)x + (a1h1²-a2h2²+k1-k2)=0
+      const a1 = c1.a, h1 = c1.h, k1 = c1.k, a2 = c2.a, h2 = c2.h, k2 = c2.k;
+      const A = a1 - a2, B = -2 * a1 * h1 + 2 * a2 * h2, C = a1 * h1 * h1 - a2 * h2 * h2 + k1 - k2;
+      if (Math.abs(A) < CURVES_EPS && Math.abs(B) < CURVES_EPS) return [];  // 同一条抛物线
+      xs = solveQuad(A, B, C);
+    } else {
+      return [];
+    }
+    if (!xs || !xs.length) return [];
+    const pts = xs.map(function (x) { return { x: x, y: fAtCurve(c1, x) }; });
+    pts.sort(function (p, q) { return p.x - q.x; });
+    return pts;
+  }
+
+  /** 交点标注（与 describe 同一来源）：shown 时真值，否则「(?, ?)」（派生量留白） */
+  function intersectText(pt, shown) {
+    if (!pt) return '(?, ?)';
+    return shown ? '(' + fmt(pt.x) + ', ' + fmt(pt.y) + ')' : derivePair();
+  }
+
   /** 数值对 → 文案里的短句：3、-4 → 「3、-4」（学生按题目要求依次写横坐标、纵坐标） */
   function fmtPair(pair) {
     const arr = (pair && pair.length) ? pair : [];
@@ -978,14 +1335,41 @@
         default: return [];
       }
     }
-    if (!isFinite(p.k) || p.k === 0) return [];
-    const absK = Math.abs(p.k);
-    switch (it) {
-      case '点与坐标轴围成的矩形或三角形面积':
-        return [res('矩形面积', 'scalar', [absK]), res('三角形面积', 'scalar', [absK / 2])];
-      case '由面积反求 |k|': return [res('|k|', 'scalar', [absK])];
-      default: return [];
+    if (type === 'curves') {
+      /* 多曲线画板（t_1d3fe77a）：交点坐标是派生量（答案），表达式是已知量（不限行）。
+       * 没有交点（平行/相离）时不给输入行 —— 判断题不该有输入框。 */
+      const cs = curvesOf(p);
+      if (!cs || cs.length !== 2) return [];
+      const pts = intersectionsOf(cs);
+      if (!pts.length) return [];
+      if (it === '两条曲线的交点坐标') {
+        if (pts.length === 1) return [res('交点坐标（横、纵坐标）', 'pair', [pts[0].x, pts[0].y])];
+        return [
+          res('第 1 个交点（横、纵坐标）', 'pair', [pts[0].x, pts[0].y]),
+          res('第 2 个交点（横、纵坐标）', 'pair', [pts[1].x, pts[1].y])
+        ];
+      }
+      if (it === '两条曲线交点的横坐标') {
+        return pts.length === 1 ? [res('交点的横坐标', 'scalar', [pts[0].x], 'x')]
+          : [res('两个交点的横坐标（用、隔开）', 'pair', [pts[0].x, pts[1].x], 'x')];
+      }
+      if (it === '两条曲线交点的纵坐标') {
+        return pts.length === 1 ? [res('交点的纵坐标', 'scalar', [pts[0].y], 'y')]
+          : [res('两个交点的纵坐标（用、隔开）', 'pair', [pts[0].y, pts[1].y], 'y')];
+      }
+      return [];    // 位置关系（几个公共点/相交相切）：不是数值题
     }
+    if (type === 'inverse') {
+      if (!isFinite(p.k) || p.k === 0) return [];
+      const absK = Math.abs(p.k);
+      switch (it) {
+        case '点与坐标轴围成的矩形或三角形面积':
+          return [res('矩形面积', 'scalar', [absK]), res('三角形面积', 'scalar', [absK / 2])];
+        case '由面积反求 |k|': return [res('|k|', 'scalar', [absK])];
+        default: return [];
+      }
+    }
+    return [];
   }
 
   /**
@@ -1062,8 +1446,312 @@
         { key: 'k', label: 'k(正负定象限,|k| 定远近)', min: -10, max: 10, step: 0.1 }
       ],
       defaults: { k: 1 }
+    },
+    /* t_1d3fe77a: curves 画板不给滑块 (表达式是已知量, 交点才是答案) */
+    curves: {
+      sliders: [],
+      defaults: {}
     }
   };
+
+  /**
+   * 多曲线画板（two-curves-intersect）：一个坐标系里画两条曲线 + 它们的交点。
+   *
+   * 与老画板的关系：**完全独立的分支**，不复用 mount 内部那套 p.a/p.h/p.k 逻辑
+   * （老画板 80 处引用保持原样，零回归）。共享的三样东西都有单测锁同口径：
+   *   - curvesWindow()：视野规则（describe 与绘制同源）
+   *   - intersectionsOf()：解析交点（不做数值迭代）
+   *   - intersectText()：交点标注 (?, ?) / 真值（describe 与绘制同源）
+   *
+   * P 卡纪律照旧：交点坐标是派生量 → 默认全画 (?, ?)；学生点「我算好了」并**全部答对**
+   * 之后才把真值画到图上（那时已经是他自己算出来的）。
+   */
+  function mountCurves(o) {
+    const argv = o || {};
+    const intent = intentKey(argv.intent);
+    const noteLab = argv.lab || 'two-curves-intersect';
+    if (CAP_TYPE[noteLab] !== 'curves') return null;
+    const cs = curvesOf(argv);
+    if (!cs || cs.length !== 2) return null;                 // 卡面硬约束：只有两条曲线，>2 不挂
+    const note0 = noteText(noteLab, intent, { curves: cs });
+    if (!note0) return null;                                  // intent 不在 canAnswer 里
+
+    const p = { curves: cs };
+    let shown = false;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'funclab funclab-curves';
+    const info = document.createElement('div');
+    info.className = 'funclab-formula';
+    /* 公式行只印题面已知的两条表达式；交点（答案）绝不进这里 */
+    info.textContent = cs.map(curveKnownDesc).join('；');
+    const note = document.createElement('div');
+    note.className = 'funclab-note';
+    note.textContent = note0;
+    const canvas = document.createElement('canvas');
+    canvas.className = 'funclab-canvas';
+    wrap.appendChild(info);
+    wrap.appendChild(note);
+    wrap.appendChild(canvas);
+
+    const dpr = (typeof devicePixelRatio !== 'undefined' ? devicePixelRatio : 1) || 1;
+    const ctx = canvas.getContext('2d');
+    let syncCheck = function () {};
+
+    /** 世界坐标 → 屏幕坐标（视野规则与 describe 共用 curvesWindow） */
+    function curvesView() {
+      const win = curvesWindow(cs);
+      const w = canvas.clientWidth || 560, hpx = canvas.clientHeight || 320;
+      canvas.width = Math.round(w * dpr); canvas.height = Math.round(hpx * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return { w: w, hp: hpx, xMin: win.xMin, xMax: win.xMax, yMin: win.yMin, yMax: win.yMax };
+    }
+    function sx(v, w) { return (v.x - w.xMin) / (w.xMax - w.xMin) * w.w; }
+    function sy(v, w) { return (w.yMax - v.y) / (w.yMax - w.yMin) * w.hp; }
+
+    /** 曲线在 [xFrom, xTo] 上取样。x=0 处跳过（反比例的中断点） */
+    function plotCurve(w, c, xFrom, xTo, color, width, dash) {
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.setLineDash(dash || []);
+      ctx.beginPath();
+      let first = true;
+      const N = 480;
+      for (let i = 0; i <= N; i++) {
+        const x = xFrom + (xTo - xFrom) * i / N;
+        if (Math.abs(x) < 1e-12) { first = true; continue; }
+        const y = fAtCurve(c, x);
+        if (!isFinite(y)) { first = true; continue; }
+        const X = sx({ x: x }, w), Y = sy({ y: y }, w);
+        if (Y < -4000 || Y > w.hp + 4000) { first = true; continue; }
+        if (first) { ctx.moveTo(X, Y); first = false; } else ctx.lineTo(X, Y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    /** 画一整条曲线：反比例画两支（中间在 x=0 断开），其余一条 */
+    function plotShape(w, c, color, width, dash) {
+      if (c.type === 'inverse') {
+        const gap = Math.max((w.xMax - w.xMin) / 2000, 1e-6);
+        plotCurve(w, c, w.xMin, -gap, color, width, dash);
+        plotCurve(w, c, gap, w.xMax, color, width, dash);
+      } else {
+        plotCurve(w, c, w.xMin, w.xMax, color, width, dash);
+      }
+    }
+
+    function curvesGridAndAxes(w) {
+      ctx.strokeStyle = 'rgba(0,0,0,.08)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let gx = Math.ceil(w.xMin); gx <= w.xMax; gx++) {
+        const X = sx({ x: gx }, w);
+        ctx.moveTo(X, 0); ctx.lineTo(X, w.hp);
+      }
+      for (let gy = Math.ceil(w.yMin); gy <= w.yMax; gy++) {
+        const Y = sy({ y: gy }, w);
+        ctx.moveTo(0, Y); ctx.lineTo(w.w, Y);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(0,0,0,.5)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      const Y0 = sy({ y: 0 }, w), X0 = sx({ x: 0 }, w);
+      if (Y0 >= 0 && Y0 <= w.hp) { ctx.moveTo(0, Y0); ctx.lineTo(w.w, Y0); }
+      if (X0 >= 0 && X0 <= w.w) { ctx.moveTo(X0, 0); ctx.lineTo(X0, w.hp); }
+      ctx.stroke();
+      ctx.fillStyle = '#000';
+      ctx.font = '11px sans-serif';
+      for (let gx = Math.ceil(w.xMin); gx <= w.xMax; gx++) {
+        if (gx === 0) continue;
+        ctx.fillText(String(gx), sx({ x: gx }, w) + 3, Math.min(Math.max(Y0 + 14, 12), w.hp - 2));
+      }
+      for (let gy = Math.ceil(w.yMin); gy <= w.yMax; gy++) {
+        if (gy === 0) continue;
+        const Y = sy({ y: gy }, w);
+        if (Y < 0 || Y > w.hp) continue;
+        ctx.fillText(String(gy), Math.min(Math.max(X0 + 4, 2), w.w - 20), Y - 3);
+      }
+    }
+
+    /** 交点标注：位置恒标（红点 + 十字准线），文字走 intersectText（describe 同源）→ 默认 (?, ?) */
+    function annotateCurves(w) {
+      const pts = intersectionsOf(cs);
+      pts.forEach(function (pt) {
+        const X = sx({ x: pt.x }, w), Y = sy({ y: pt.y }, w);
+        if (X < -20 || X > w.w + 20 || Y < -20 || Y > w.hp + 20) return;
+        /* 十字准线：横向指向 y 轴、纵向指向 x 轴，学生照着读刻度（数值不写） */
+        ctx.save();
+        ctx.strokeStyle = 'rgba(192,57,43,.40)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(0, Y); ctx.lineTo(w.w, Y);
+        ctx.moveTo(X, 0); ctx.lineTo(X, w.hp);
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.fillStyle = '#c0392b';
+        ctx.beginPath(); ctx.arc(X, Y, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.font = 'bold 12px sans-serif';
+        const label = intersectText(pt, shown);
+        const tw = ctx.measureText(label).width;
+        const lx = Math.min(Math.max(X + 8, 4), Math.max(w.w - tw - 10, 4));
+        const ly = Math.min(Math.max(Y - 9, 14), w.hp - 4);
+        ctx.fillStyle = 'rgba(255,255,255,.9)';
+        ctx.fillRect(lx - 4, ly - 12, tw + 8, 17);
+        ctx.fillStyle = '#b03a2e';
+        ctx.fillText(label, lx, ly);
+      });
+    }
+
+    function draw() {
+      const w = curvesView();
+      ctx.clearRect(0, 0, w.w, w.hp);
+      curvesGridAndAxes(w);
+      /* 颜色顺序与 describe 一致：蓝色 = 第一条，橙色 = 第二条 */
+      plotShape(w, cs[0], '#2a7de1', 2.4);
+      plotShape(w, cs[1], '#e67e22', 2.4);
+      annotateCurves(w);
+    }
+
+    /* ---------------- 自检面板（与老画板同一套判定口径） ---------------- */
+    function buildCheck() {
+      const box = document.createElement('div');
+      box.className = 'funclab-check';
+      box.hidden = true;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'small funclab-check-btn';
+      btn.textContent = '我算好了，对答案';
+      const out = document.createElement('div');
+      out.className = 'funclab-check-out';
+      out.hidden = true;
+      let rows = [];
+      const inputsOf = function () { return Array.prototype.slice.call(out.querySelectorAll('input.funclab-check-ans')); };
+      function judgeLine(row, input, res) {
+        const v = checkAnswerRow(row, input.value);
+        res.className = 'funclab-check-res ' + (
+          v.verdict === 'right' ? 'is-ok' : v.verdict === 'wrong' ? 'is-no' : 'is-empty'
+        );
+        res.textContent = v.shown;
+      }
+      function judgeAll() {
+        const ins = inputsOf();
+        rows.forEach(function (r, i) { if (ins[i]) judgeLine(r, ins[i], out.querySelectorAll('.funclab-check-res')[i]); });
+        syncShown();
+        draw();
+      }
+      /* 全部答对才把交点真值画上去（与老画板同一条规矩） */
+      function syncShown() {
+        const ins = inputsOf();
+        if (!ins.length || !rows.length) { shown = false; return; }
+        const allDone = ins.every(function (input) { return String(input.value || '').trim() !== ''; });
+        shown = allDone && ins.every(function (input, i) {
+          return checkAnswerRow(rows[i], input.value).verdict === 'right';
+        });
+      }
+      syncCheck = function () {
+        if (out.hidden) return;
+        out.textContent = '';
+        out.hidden = true;
+        btn.textContent = '我算好了，对答案';
+        shown = false;
+      };
+      btn.addEventListener('click', function () {
+        const list = answerRows(noteLab, intent, p);
+        rows = list;
+        const existing = inputsOf();
+        if (!out.hidden && existing.length && existing.length === list.length) { judgeAll(); return; }
+        out.textContent = '';
+        if (!list.length) {
+          out.textContent = '这类图没有可核对的数值答案。';
+          out.hidden = false;
+          return;
+        }
+        list.forEach(function (r, i) {
+          const line = document.createElement('div');
+          line.className = 'funclab-check-row';
+          const name = document.createElement('span');
+          name.className = 'funclab-check-name';
+          name.textContent = r.label + (/[=：]$/.test(r.label) ? ' ' : '：');
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.inputMode = 'decimal';
+          input.autocomplete = 'off';
+          input.className = 'funclab-check-ans';
+          input.value = '';                    // 绝不预填真值
+          input.setAttribute('aria-label', '我算的 ' + r.label);
+          input.dataset.idx = String(i);
+          const res = document.createElement('span');
+          res.className = 'funclab-check-res is-empty';
+          res.textContent = '未作答';
+          line.appendChild(name);
+          line.appendChild(input);
+          line.appendChild(res);
+          out.appendChild(line);
+          input.addEventListener('input', function () { judgeLine(r, input, res); syncShown(); draw(); });
+          input.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter') { ev.preventDefault(); judgeAll(); }
+          });
+        });
+        out.hidden = false;
+        btn.textContent = '重新核对';
+        const first = out.querySelector('input.funclab-check-ans');
+        if (first) first.focus();
+      });
+      box.appendChild(btn);
+      box.appendChild(out);
+      return box;
+    }
+    if (answerRows(noteLab, intent, p).length) {
+      const chk = buildCheck();
+      chk.hidden = false;
+      wrap.appendChild(chk);
+    }
+
+    draw();
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(function () { draw(); });
+      ro.observe(canvas);
+      wrap._funclabRo = ro;
+    }
+
+    const inst = {
+      el: wrap,
+      /* 供测试/排查读取画板状态（纯数据，不依赖 DOM） */
+      state: function () {
+        const pts = intersectionsOf(cs);
+        return {
+          type: 'curves',
+          lab: noteLab,
+          intent: intent,
+          note: note.textContent,
+          params: { curves: cs.map(function (c) { return Object.assign({}, c); }) },
+          curves: cs.map(function (c) { return Object.assign({}, c); }),
+          /* 交点个数按解析解算（与绘制/describe 同源）；坐标真值仍然只在 shown 后才外露 */
+          intersectionsCount: pts.length,
+          shown: shown,
+          base: null,
+          shift: null,
+          focus: {
+            intersections: true, vertex: false, axis: false, interval: false,
+            roots: false, intercepts: false, quadrants: false
+          }
+        };
+      },
+      /* 供测试驱动「学生答对」这个状态（不暴露真值本身） */
+      _forceShown: function (v) { shown = !!v; draw(); },
+      clear: function () {
+        if (wrap._funclabRo) wrap._funclabRo.disconnect();
+        wrap.remove();
+      }
+    };
+    wrap._funclab = inst;
+    return inst;
+  }
+
 
   /** 数字小数化：0 -> "0"，1.5 -> "1.5"，去掉尾零 */
   function fmt(n) {
@@ -1119,6 +1807,8 @@
    */
   function mount(opts) {
     const o = opts || {};
+    /* t_1d3fe77a：多曲线画板走独立分支（不改老画板那 80 处 p.a/p.h/p.k 的任何一行） */
+    if (o.type === 'curves') return mountCurves(o);
     const type = TYPE_DEF[o.type] ? o.type : 'quadratic';
     const def = TYPE_DEF[type];
     const p = Object.assign({}, def.defaults, o);
@@ -1743,6 +2433,9 @@
     quadRangeExtrema: quadRangeExtrema, fmtPair: fmtPair, fmtQuad: fmtQuad,
     /* t_85395e07：画板描述（AI 讲解看到画板）。paintModel 是绘制与 describe 的唯一事实来源 */
     paintModel: paintModel, describe: describe,
+    /* t_1d3fe77a：多曲线画板（two-curves-intersect）的纯函数，供测试与审计脚本复用 */
+    curvesOf: curvesOf, intersectionsOf: intersectionsOf, intersectText: intersectText,
+    fAtCurve: fAtCurve, curvesFromPrompt: curvesFromPrompt,
     /** 某类画板（quadratic/linear/inverse）的能力清单子集（匹配层只喂相关画板，减少 LLM 误选） */
     capabilitiesFor: function (type) {
       const out = {};

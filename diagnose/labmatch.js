@@ -186,6 +186,24 @@
     const p = c.params || {};
     const need = cap.params.slice();
     const type = Funclab.CAP_TYPE[lab];
+
+    /* ---- 多曲线画板（t_1d3fe77a）：参数是数组，形状与单曲线完全不同，先单独走 ----
+     * 铁律不变：**每条曲线**都要与题面解析结果逐条对上（不是只对上其中一条就算过），
+     * 交点是推导量、不进参数，所以这里校验的是「表达式认对没有」。 */
+    if (type === 'curves') return verifyCurves(prompt, c, why);
+
+    /* ---- 拒绝规则（t_1d3fe77a）：题面有 ≥2 条表达式 + 问交点 → 不许挂单曲线画板 ----
+     * 单曲线画板只能画其中一条，学生看到的是「半道题」，还容易被当成完整图。
+     * 这条必须在代回校验**之前**判：否则 LLM 挑中第一条直线时参数是能对上的，
+     * 代回校验会放它过去（cnm_208_q1 / cnm_h172_q1 就是这么被误挂的）。 */
+    if (INTERSECT_WORDS.test(String(prompt || '')) && curvesOfPrompt(prompt).length >= 2) {
+      return {
+        ok: false,
+        why: ['题面含两条以上曲线且问交点：单曲线画板（' + lab + '）画不全，'
+          + '这类题只能用 ' + CURVES_LAB]
+      };
+    }
+
     for (let i = 0; i < need.length; i++) {
       const key = need[i];
       const v = Number(p[key]);
@@ -227,6 +245,143 @@
   }
 
   function round6(x) { return isFinite(x) ? Math.round(x * 1e6) / 1e6 : String(x); }
+
+  /* ============================================================ 多曲线（t_1d3fe77a）
+   *
+   * 三条卡面硬性纪律，这里逐条落地：
+   *   1. `curves` 数组长度必须恰好 2（多于 2 条返回 null 的规则由 funclab.mountCurves 兜；
+   *      匹配层同样拒绝 3 条以上 / 1 条 —— 单曲线题不该走多曲线画板）。
+   *   2. **每条曲线都要代回**：拿题面自己的解析结果（curvesFromPrompt，与 LLM 完全独立的另一条路径）
+   *      逐条比对，缺一条或多一条都算不符 —— 只对上其中一条就放过，等于放它画半道题。
+   *   3. 题面必须真的是「两条曲线 + 问交点」；否则即使 LLM 报了 curves 画板也不挂。
+   */
+  const CURVES_LAB = 'two-curves-intersect';
+  /** 题面里能数出几条可解析曲线 */
+  function curvesOfPrompt(prompt) {
+    if (!Funclab || typeof Funclab.curvesFromPrompt !== 'function') return [];
+    try { return Funclab.curvesFromPrompt(prompt) || []; } catch (e) { return []; }
+  }
+  const INTERSECT_WORDS = /交点|公共点|相交|位置关系/;
+  /* 与 funclab.CURVES_EXCLUDE 同一口径（单测两边都锁）：
+   * 「求 m 的值/求 m=」类（交点是已知量）与「解集/不等式」类（答案不是交点）都不算交点题。
+   * 「求…」后必须紧跟单个字母参数，不能是 y=/x= 这种函数式开头（cnm_241_q1 是正当交点题）。 */
+  const CURVES_EXCLUDE = /求\s*([a-wz])\s*(?:的值|[＝=])|解集|取值范围|不等式/;
+  /** 题面是否「两条曲线 + 问交点」（交点坐标才是答案的那类） */
+  function isIntersectItem(prompt) {
+    const s = String(prompt || '');
+    if (!INTERSECT_WORDS.test(s)) return false;
+    if (CURVES_EXCLUDE.test(s)) return false;
+    return curvesOfPrompt(s).length === 2;
+  }
+
+  /** 两条曲线数值上是否同一条（type 相同 + 参数逐个 close） */
+  function sameCurve(a, b) {
+    if (!a || !b) return false;
+    if (String(a.type) !== String(b.type)) return false;
+    if (a.type === 'quadratic') {
+      return close(Number(a.a), Number(b.a)) && close(Number(a.h), Number(b.h)) && close(Number(a.k), Number(b.k));
+    }
+    if (a.type === 'linear') return close(Number(a.k), Number(b.k)) && close(Number(a.b), Number(b.b));
+    if (a.type === 'inverse') return close(Number(a.k), Number(b.k));
+    return false;
+  }
+
+  /**
+   * 把「表达式字符串」形态的一条曲线规约成曲线对象（纯确定性解析，不做任何猜测）。
+   *
+   * 为什么需要：实测 LLM 会把 curves 写成 ["y=x+1", "y=-x+3"]（式子串）而不是对象数组。
+   * **这不是放宽严格性** —— 规约用的是 funclab 自己的解析器，解析结果仍然要拿回下面的
+   * 第 3 步与题面解析结果逐项比系数；解析不出来、或解析出不止一条曲线（有歧义）就拒绝。
+   *
+   * 返回 {ok:true, curve} 或 {ok:false, why}
+   */
+  function coerceCurveSpec(raw) {
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return { ok: true, curve: raw };
+    if (typeof raw !== 'string') return { ok: false, why: '既不是对象也不是表达式字符串: ' + JSON.stringify(raw) };
+    const text = raw.trim();
+    if (!text) return { ok: false, why: '空字符串' };
+    let parsed = null;
+    try {
+      // 先按多曲线解析（题面里可能写了 y=… 与 y=…），再退到单函数解析
+      const list = (typeof Funclab.curvesFromPrompt === 'function') ? (Funclab.curvesFromPrompt(text) || []) : [];
+      if (list.length === 1) parsed = list[0];
+      else if (list.length > 1) return { ok: false, why: '字符串里有 ' + list.length + ' 条曲线，无法确定是哪一条: ' + text };
+    } catch (e) { parsed = null; }
+    if (!parsed) {
+      try {
+        const one = Funclab.fromPrompt(text);
+        if (one && (one.type === 'linear' || one.type === 'inverse' || one.type === 'quadratic')) parsed = one;
+      } catch (e) { parsed = null; }
+    }
+    if (!parsed) return { ok: false, why: '解析不出曲线（不是可识别的函数表达式）: ' + text };
+    /* 只回传画板认识的字段，别把 base/原始串等杂质带进后续比对 */
+    const curve = { type: parsed.type };
+    if (parsed.type === 'linear') { curve.k = parsed.k; curve.b = parsed.b; }
+    else if (parsed.type === 'inverse') { curve.k = parsed.k; }
+    else { curve.a = parsed.a; curve.h = parsed.h; curve.k = parsed.k; }
+    return { ok: true, curve: curve };
+  }
+
+  /** 多曲线参数校验（verifyParams 的 curves 分支） */
+  function verifyCurves(prompt, c, why) {
+    const p = c.params || {};
+    const raw = p.curves;
+    /* 1. 形状：恰好两条，且每条都是画板支持的类型 */
+    if (!Array.isArray(raw)) return { ok: false, why: ['curves 必须是数组（两条曲线的参数）'] };
+    if (raw.length !== 2) {
+      return { ok: false, why: ['curves 长度必须为 2（收到 ' + raw.length + ' 条）：多曲线画板只画两条'] };
+    }
+    /* 1'. 逐条规约：对象照收；表达式字符串用确定性解析转成对象（解析不出就拒绝） */
+    const got = [];
+    for (let i = 0; i < raw.length; i++) {
+      const co = coerceCurveSpec(raw[i]);
+      if (!co.ok) return { ok: false, why: ['第 ' + (i + 1) + ' 条曲线' + co.why] };
+      got.push(co.curve);
+    }
+    const TYPES = ['linear', 'inverse', 'quadratic'];
+    for (let i = 0; i < got.length; i++) {
+      const g = got[i] || {};
+      if (TYPES.indexOf(String(g.type)) < 0) return { ok: false, why: ['第 ' + (i + 1) + ' 条曲线类型不支持: ' + (g.type || '(空)')] };
+      if (g.type === 'inverse' && Number(g.k) === 0) return { ok: false, why: ['第 ' + (i + 1) + ' 条双曲线 k=0，画不出图象'] };
+      if (g.type === 'quadratic' && Number(g.a) === 0) return { ok: false, why: ['第 ' + (i + 1) + ' 条抛物线 a=0，不是二次函数'] };
+      if (g.type === 'linear' && Number(g.k) === 0) return { ok: false, why: ['第 ' + (i + 1) + ' 条直线 k=0（水平线）：多曲线画板只画能解出交点的斜率'] };
+      if (g.type === 'linear' && !isFinite(Number(g.k))) return { ok: false, why: ['第 ' + (i + 1) + ' 条直线缺 k'] };
+      if (g.type === 'linear' && !isFinite(Number(g.b))) return { ok: false, why: ['第 ' + (i + 1) + ' 条直线缺 b'] };
+      if (g.type === 'inverse' && !isFinite(Number(g.k))) return { ok: false, why: ['第 ' + (i + 1) + ' 条双曲线缺 k'] };
+      if (g.type === 'quadratic' && (!isFinite(Number(g.h)) || !isFinite(Number(g.k)) || !isFinite(Number(g.a)))) {
+        return { ok: false, why: ['第 ' + (i + 1) + ' 条抛物线缺 a/h/k'] };
+      }
+    }
+
+    /* 2. 题面必须真的是「两条曲线 + 问交点」 */
+    if (!INTERSECT_WORDS.test(String(prompt || ''))) {
+      return { ok: false, why: ['题面没有问交点/公共点/位置关系：不该挂多曲线画板'] };
+    }
+    /* 交点是已知量（求 m 的值）或答案不是交点（解集/不等式）→ 不挂 */
+    if (CURVES_EXCLUDE.test(String(prompt || ''))) {
+      return { ok: false, why: ['题面问的是参数/解集（交点不是答案）：不该挂多曲线画板'] };
+    }
+    const ref = curvesOfPrompt(prompt);
+    if (ref.length !== 2) {
+      return { ok: false, why: ['题面只解析出 ' + ref.length + ' 条曲线（需要 2 条）：多曲线画板画不了'] };
+    }
+
+    /* 3. 每条曲线都要对上（顺序不敏感：LLM 可能把两条调换了） */
+    const used = [false, false];
+    for (let i = 0; i < got.length; i++) {
+      let hit = -1;
+      for (let j = 0; j < ref.length; j++) {
+        if (!used[j] && sameCurve(got[i], ref[j])) { hit = j; break; }
+      }
+      if (hit < 0) {
+        why.push('第 ' + (i + 1) + ' 条曲线代回不符：LLM ' + JSON.stringify(got[i])
+          + ' 不在题面解析结果 ' + JSON.stringify(ref) + ' 里');
+      } else {
+        used[hit] = true;
+      }
+    }
+    return { ok: why.length === 0, why: why };
+  }
 
   /* ============================================================ LLM 调用 */
 
@@ -278,6 +433,7 @@
       return '- ' + name
         + '\n  能回答: ' + c.canAnswer.join('、')
         + '\n  参数: ' + c.params.join(',')
+        + (c.paramsDoc ? '\n  参数格式: ' + c.paramsDoc : '')
         + '\n  说明: ' + c.note;
     }).join('\n');
     return '可用画板：\n' + capText + '\n\n题目：' + String(prompt || '');
@@ -498,6 +654,19 @@
     if (!choice || !choice.match || !Funclab.CAPABILITIES[choice.match]) return null;
     const params = {};
     (Funclab.CAPABILITIES[choice.match].params || []).forEach(function (k) {
+      /* 多曲线（t_1d3fe77a）：curves 是对象数组，**不能 Number()** ——
+       * Number([{...}]) 会变成 NaN，画板挂不上（也会把 LLM 给的两条曲线丢掉）。
+       * 深拷贝一层，防止调用方之后改配置影响缓存里的对象。 */
+      if (k === 'curves' && Array.isArray(choice.params[k])) {
+        /* 与 verifyParams 同一套规约：LLM 给的可能是表达式串，这里转成对象再交给 mount
+         * （verifyParams 已经用同一函数判定过，能走到这里的都解析得出来） */
+        params.curves = choice.params[k].map(function (c) {
+          if (c && typeof c === 'object' && !Array.isArray(c)) return Object.assign({}, c);
+          const co = coerceCurveSpec(c);
+          return co.ok ? co.curve : null;
+        }).filter(Boolean);
+        return;
+      }
       params[k] = Number(choice.params[k]);
     });
     const cfg = Object.assign({ type: type, lab: choice.match, intent: choice.intent }, params);
@@ -513,6 +682,8 @@
     PROXY: PROXY, MODEL: MODEL, CACHE_KEY: CACHE_KEY, LENIENT_CACHE_KEY: LENIENT_CACHE_KEY,
     MAX_TOKENS: MAX_TOKENS, EPS: EPS,
     matchLab: matchLab, resolve: resolve, verifyParams: verifyParams,
+    /* t_1d3fe77a：choice → mount 配置（含 curves 字符串→对象规约），供测试直接验证 */
+    buildCfg: buildCfg,
     getLastError: getLastError, lastFailure: getLastFailure,
     promptInterval: promptInterval, expandVertex: expandVertex,
     systemPrompt: systemPrompt, userPrompt: userPrompt, extractJson: extractJson,
