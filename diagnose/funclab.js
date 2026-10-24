@@ -210,6 +210,43 @@
     return hasCleanRoots(parsed.a, parsed.k);
   }
 
+  /**
+   * 画板要叠画的「原曲线」参数：题目给出/默认参数的那条，灰色虚线。
+   *
+   * 图形讲解的核心价值是让学生**直接看见**「原曲线 → 目标曲线」的变化，所以只靠解析出的
+   * 目标参数（labFor 的 a/h/k）不够 —— 例如「将 y=x² 先向左平移 2，再向下平移 3」，
+   * 解析出的 r 就是 a:1,h:0,k:0，只画 r 等于什么都没变。这里按题型补出原曲线：
+   *
+   *   linear    原曲线 = 同斜率、b=0 的过原点直线（b 的变化就是上下平移量）
+   *   inverse   原曲线 = k=1 的基准双曲线（k 的变化是软件缩放）
+   *   quadratic 由题面措辞定：
+   *     · 题面里出现「y=x² / y＝x²」这种显式基准 → 原曲线就是它（a=1,h=0,k=0）
+   *     · 「向左/向右/向上/向下平移」类题 → 默认基准 y=x²
+   *     · 否则（配方/求顶点/一般式）原曲线 = 目标抛物线的对称轴与开口下的基准：
+   *       a 不变、顶点 x 不变、顶点 y 拉到 y=0，即 a(x-h)² —— 只体现代数配方里的「k」
+   *
+   * 一律返回 null 表示「没有可对比的原曲线」→ 调用方降级为只画一条，不报错。
+   */
+  function baseOf(parsed, prompt) {
+    if (!parsed) return null;
+    const type = parsed.type || 'quadratic';
+    if (type === 'linear') {
+      return { type: 'linear', k: parsed.k, b: 0 };
+    }
+    if (type === 'inverse') {
+      return { type: 'inverse', k: 1 };
+    }
+    const s = normalize(prompt);
+    const shiftWord = /平移|向左|向右|向上|向下/.test(s);
+    const explicitBase = /y\s*=\s*[+-]?\s*x²/.test(s) && !/y\s*=\s*[+-]?\s*\d/.test(s);
+    if (shiftWord || explicitBase) {
+      return { type: 'quadratic', a: 1, h: 0, k: 0 };
+    }
+    // 配方/顶点类：a 与顶点横坐标不变，顶点纵坐标拉到 y=0
+    const a = parsed.a === 0 ? 1 : parsed.a;
+    return { type: 'quadratic', a: a, h: parsed.h, k: 0 };
+  }
+
   /** 组合入口：知识点支持 && 题面能解析 && 类型匹配 && 题面门禁 → 参数对象，否则 null
    *  opts.itemId 可选（题库题 id）：方程章里决定个别题是否放行（cnm_221_q3） */
   function labFor(topicId, prompt, opts) {
@@ -223,6 +260,15 @@
       if (!equationAllowed(String(topicId), prompt, r, itemId)) return null;
     }
     return r;
+  }
+
+  /** 挂载用的完整配置：解析出目标参数时，附带原曲线用于叠画对比 */
+  function labForScene(topicId, prompt, opts) {
+    const target = labFor(topicId, prompt, opts);
+    if (!target) return null;
+    const base = baseOf(target, prompt);
+    if (!base) return target;
+    return Object.assign({}, target, { base: base });
   }
 
   /* ------------------------------------------------------------ 渲染（需要 DOM） */
@@ -304,6 +350,10 @@
     const def = TYPE_DEF[type];
     const p = Object.assign({}, def.defaults, o);
     p.type = type;
+    delete p.base;      // 原曲线配置只放进 base，不污染目标参数 p（否则滑块/公式会带上它）
+    // 原曲线（题目给出/默认参数那条）：只有调用方给了才叠画，没给就降级为单曲线
+    const baseRaw = (o.base && (!o.base.type || o.base.type === type)) ? o.base : null;
+    const base = baseRaw ? Object.assign({}, def.defaults, baseRaw, { type: type }) : null;
     const start = {};
 
     const wrap = document.createElement('div');
@@ -366,8 +416,17 @@
     function view() {
       let xMin, xMax, yMin, yMax;
       if (type === 'quadratic') {
-        xMin = p.h - 6; xMax = p.h + 6;
-        yMin = p.k - 4; yMax = p.k + 4;
+        // 叠画原曲线时，视野要同时容下两个顶点（顶点 + 各自 ±4 的纵向窗口），
+        // 否则原曲线整个跑出画布，对比就白做了。
+        const refs = [{ h: p.h, k: p.k }];
+        if (base) refs.push({ h: base.h, k: base.k });
+        let hMin = p.h, hMax = p.h, kMin = p.k, kMax = p.k;
+        refs.forEach(function (r) {
+          hMin = Math.min(hMin, r.h); hMax = Math.max(hMax, r.h);
+          kMin = Math.min(kMin, r.k); kMax = Math.max(kMax, r.k);
+        });
+        xMin = hMin - 6; xMax = hMax + 6;
+        yMin = kMin - 4; yMax = kMax + 4;
         if (yMin > 0) yMin = 0;
         if (yMax < 0) yMax = 0;
         if (yMax - yMin < 6) {
@@ -385,10 +444,12 @@
     }
     function sx(v, w) { return (v.x - w.xMin) / (w.xMax - w.xMin) * w.w; }
     function sy(v, w) { return (w.yMax - v.y) / (w.yMax - w.yMin) * w.hp; }
-    function f(x) {
-      if (type === 'linear') return p.k * x + p.b;
-      if (type === 'inverse') return p.k / x;
-      return p.a * (x - p.h) * (x - p.h) + p.k;
+    /** 求值：不传 pp 就用当前目标参数 p（滑块控制的那条） */
+    function fAt(pp, x) {
+      const q = pp || p;
+      if (type === 'linear') return q.k * x + q.b;
+      if (type === 'inverse') return q.k / x;
+      return q.a * (x - q.h) * (x - q.h) + q.k;
     }
 
     function gridAndAxes(w) {
@@ -423,44 +484,40 @@
       }
     }
 
-    /** 画多项式曲线（一次/二次直线段采样；反比例跳过 x=0 断点） */
-    function plotCurve(w, xFrom, xTo) {
-      ctx.strokeStyle = '#2a7de1';
-      ctx.lineWidth = 2.4;
+    /** 画多项式曲线（一次/二次直线段采样；反比例跳过 x=0 断点）
+     *  opts: { color, width, dash, params } —— 不传 params 就画当前目标曲线 */
+    function plotCurve(w, xFrom, xTo, opts) {
+      const oc = opts || {};
+      ctx.save();
+      ctx.strokeStyle = oc.color || '#2a7de1';
+      ctx.lineWidth = oc.width == null ? 2.4 : oc.width;
+      ctx.setLineDash(oc.dash || []);
       ctx.beginPath();
       let first = true;
       const N = 240;
+      const pp = oc.params || p;
       for (let i = 0; i <= N; i++) {
         const x = xFrom + (xTo - xFrom) * i / N;
-        const y = f(x);
+        const y = fAt(pp, x);
         if (!isFinite(y)) { first = true; continue; }
         const X = sx({ x: x }, w), Y = sy({ y: y }, w);
         if (Y < -2000 || Y > w.hp + 2000) { first = true; continue; }
         if (first) { ctx.moveTo(X, Y); first = false; } else ctx.lineTo(X, Y);
       }
       ctx.stroke();
+      ctx.restore();
     }
-    function plotAll(w) {
+    /** 按给定参数画整条曲线（反比例画两支） */
+    function plotShape(w, pp, opts) {
+      const oc = Object.assign({}, opts, { params: pp });
       if (type === 'inverse') {
-        // 两支曲线，避免连过渐近线 x=0
         const EPS = 0.02;
-        plotCurve(w, w.xMin, -EPS);
-        plotCurve(w, EPS, w.xMax);
-        // 渐近线虚线（坐标轴本就实线，这里补 x=0 竖虚线警示）
-        ctx.save();
-        ctx.strokeStyle = 'rgba(120,120,120,.5)';
-        ctx.setLineDash([4, 4]);
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        const X0 = sx({ x: 0 }, w);
-        if (X0 >= 0 && X0 <= w.w) { ctx.moveTo(X0, 0); ctx.lineTo(X0, w.hp); }
-        ctx.stroke();
-        ctx.restore();
+        plotCurve(w, w.xMin, -EPS, oc);
+        plotCurve(w, EPS, w.xMax, oc);
       } else {
-        plotCurve(w, w.xMin, w.xMax);
+        plotCurve(w, w.xMin, w.xMax, oc);
       }
     }
-
     /** 类型相关标注 + 教学说明 */
     function annotate(w) {
       if (type === 'quadratic') {
@@ -520,12 +577,73 @@
       }
     }
 
+    /** 顶点/基准点：平移向量从它指向目标顶点 */
+    function anchorOf(pp) {
+      if (type === 'linear') return { x: 0, y: pp.b };
+      if (type === 'inverse') return { x: pp.k >= 0 ? 1 : -1, y: pp.k >= 0 ? pp.k : -pp.k };
+      return { x: pp.h, y: pp.k };
+    }
+    /** 带箭头的平移向量 + 位移量标注（「←2, ↓3」），数值由两顶点坐标差算出 */
+    function drawShift(w, from, to) {
+      const dx = to.x - from.x, dy = to.y - from.y;
+      if (!isFinite(dx) || !isFinite(dy)) return;
+      if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return;    // 没有位移就不画箭头
+      const X1 = sx(from, w), Y1 = sy(from, w), X2 = sx(to, w), Y2 = sy(to, w);
+      const ang = Math.atan2(Y2 - Y1, X2 - X1);
+      const head = 10;
+      const tipX = X2 - Math.cos(ang) * 6, tipY = Y2 - Math.sin(ang) * 6;
+      ctx.save();
+      ctx.strokeStyle = '#e67e22';
+      ctx.fillStyle = '#e67e22';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(X1, Y1);
+      ctx.lineTo(tipX, tipY);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(X2 - Math.cos(ang) * 6, Y2 - Math.sin(ang) * 6);
+      ctx.lineTo(X2 - Math.cos(ang - 0.4) * (head + 6), Y2 - Math.sin(ang - 0.4) * (head + 6));
+      ctx.lineTo(X2 - Math.cos(ang + 0.4) * (head + 6), Y2 - Math.sin(ang + 0.4) * (head + 6));
+      ctx.closePath();
+      ctx.fill();
+      // 位移量标注：x 方向 "←2 / →2"，y 方向 "↓3 / ↑3"（屏幕 y 向下为正，所以 y 减用 ↓）
+      const parts = [];
+      if (Math.abs(dx) >= 1e-9) parts.push((dx < 0 ? '←' : '→') + fmt(Math.abs(dx)));
+      if (Math.abs(dy) >= 1e-9) parts.push((dy < 0 ? '↓' : '↑') + fmt(Math.abs(dy)));
+      const label = parts.join(', ');
+      const mx = (X1 + X2) / 2, my = (Y1 + Y2) / 2;
+      ctx.font = 'bold 12px sans-serif';
+      const tw = ctx.measureText(label).width;
+      const lx = Math.min(Math.max(mx + 8, 4), w.w - tw - 10);
+      const ly = Math.max(my - 8, 14);
+      ctx.fillStyle = 'rgba(255,255,255,.88)';
+      ctx.fillRect(lx - 4, ly - 12, tw + 8, 17);
+      ctx.fillStyle = '#b35c00';
+      ctx.fillText(label, lx, ly);
+      ctx.restore();
+    }
+
     function draw() {
       const w = view();
       ctx.clearRect(0, 0, w.w, w.hp);
       gridAndAxes(w);
-      plotAll(w);
+      if (type === 'inverse') {
+        // 渐近线虚线（坐标轴本就实线，这里补 x=0 竖虚线警示）
+        ctx.save();
+        ctx.strokeStyle = 'rgba(120,120,120,.5)';
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        const X0 = sx({ x: 0 }, w);
+        if (X0 >= 0 && X0 <= w.w) { ctx.moveTo(X0, 0); ctx.lineTo(X0, w.hp); }
+        ctx.stroke();
+        ctx.restore();
+      }
+      // 原曲线先画（灰色细虚线），目标曲线压在上面（实线主色）—— 变化关系一眼看见
+      if (base) plotShape(w, base, { color: 'rgba(120,120,120,.85)', width: 1.6, dash: [6, 5] });
+      plotShape(w, p, { color: '#2a7de1', width: 2.4 });
       annotate(w);
+      if (base) drawShift(w, anchorOf(base), anchorOf(p));
     }
 
     // 首次绘制（canvas 可能尚未布局,ResizeObserver 会补一次）
@@ -535,14 +653,27 @@
       ro.observe(canvas);
       wrap._funclabRo = ro;
     }
-    return {
+    // 实例引用挂到元素上，便于浏览器侧排查/验收读取画板状态（不新增全局变量）
+    const inst = {
       el: wrap,
+      /* 供测试/排查读取当前画板状态（纯数据，不依赖 DOM） */
+      state: function () {
+        return {
+          type: type,
+          params: Object.assign({}, p),
+          base: base ? Object.assign({}, base) : null,
+          curves: base ? 2 : 1,
+          shift: base ? { dx: p.h - base.h, dy: p.k - base.k } : null
+        };
+      },
       clear: function () {
         if (wrap._funclabRo) wrap._funclabRo.disconnect();
         wrap.remove();
       }
     };
+    wrap._funclab = inst;
+    return inst;
   }
 
-  return { fromPrompt: fromPrompt, topicSupported: topicSupported, topicKind: topicKind, labFor: labFor, mount: mount, formatFormula: formatFormula };
+  return { fromPrompt: fromPrompt, topicSupported: topicSupported, topicKind: topicKind, labFor: labFor, labForScene: labForScene, baseOf: baseOf, mount: mount, formatFormula: formatFormula };
 });
