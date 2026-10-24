@@ -856,9 +856,11 @@
    * 每行结构：
    *   name  —— 量名（显示在输入框左边）
    *   unit  —— 单位后缀（° 等，显示在输入框右边）
-   *   ans   —— 学生的作答槽位：value 恒为空初值（绝不预填真实值），
-   *            渲染层据此生成 <input type="text" inputmode="decimal">
-   *   real  —— 真实值。只给 judgeRow() 用，未作答时渲染层不得显示它。
+   *   yours —— 学生的作答位：恒为空串初值（绝不预填真实值），
+   *            渲染层据此生成 <input type="text" inputmode="decimal">；
+   *            判分不读它，只认学生当场输入的原样文本。
+   *   ans   —— 同上的结构化写法（value/kind/unit），供渲染层取单位与输入类型
+   *   real  —— 真实值。只给 checkOne() 用，未作答时渲染层不得显示它。
    */
   function checkRows(lab, sol) {
     if (!lab || !sol) return [];
@@ -866,7 +868,10 @@
     const rows = [];
     const add = function (name, real, unit) {
       const u = unit || '';
-      rows.push({ name: name, unit: u, ans: { value: '', kind: 'number', unit: u }, real: real });
+      rows.push({
+        name: name, unit: u, yours: '',
+        ans: { value: '', kind: 'number', unit: u }, real: real
+      });
     };
     switch (lab.skel) {
       case 'circle-chord':
@@ -911,23 +916,38 @@
   }
 
   /**
-   * 逐行判定学生填的答案（纯函数，渲染层只负责显示）。
-   * 返回 { status: 'empty'|'ok'|'wrong'|'n/a', text: 面板上要显示的文字, real: 是否可显示真实值 }
+   * 逐行判定学生填的答案（纯函数，渲染层只负责显示）。对外判分出口。
+   * 返回 { verdict: 'right'|'wrong'|'blank', shown: 面板上要显示的全文案, real: 是否可显示真实值 }
    *
    * 判定规则：
-   *   · 空白 → 'empty'：只出「未作答」，既不出 ____ 也不出真实值（不能变相给答案）
-   *   · 数值等价 → 'ok'：16 / 16.0 / 16° / 2/5 / 0.4 这类写法都算对，
+   *   · 空白 → 'blank'：只出「未作答」，既不出真实值也不出 ✓/✗（不能变相给答案）
+   *   · 数值等价 → 'right'：16 / 16.0 / 16° / 2/5 / 0.4 这类写法都算对，
    *     等价交给 engine.js 的 numericEqual（唯一归一化出处）
-   *   · 其余 → 'wrong'：显示 ✗ + 实际值
+   *   · 其余 → 'wrong'：shown 同时回显学生原样输入与格式化后的实际值
+   * 显示口径优先：学生填的就是面板上显示的那个数（fmt 口径）时直接判对，
+   * 免得「抄面板的答案被判错」，这与 numericEqual 的 1e-3 容差是同一条口径。
    */
-  function judgeRow(row, text) {
-    if (!row) return { status: 'n/a', text: '', real: false };
-    const raw = String(text == null ? '' : text).trim();
-    if (!raw) return { status: 'empty', text: '未作答', real: false };
-    const eq = numEqual(raw, row.real);
-    if (eq === true) return { status: 'ok', text: '✓', real: false };
+  function checkOne(row, raw) {
+    if (!row || !isFinite(row.real)) return { verdict: 'wrong', shown: '✗', real: false };
+    const text = String(raw == null ? '' : raw);
+    const trimmed = text.trim();
+    if (!trimmed) return { verdict: 'blank', shown: '未作答', real: false };
+    const eq = numEqual(trimmed, row.real);
+    if (eq === true || trimmed === fmt(row.real)) return { verdict: 'right', shown: '✓', real: false };
     /* eq === null 说明两边至少一侧解析不出数值 —— 学生写的东西不是数，按填错处理 */
-    return { status: 'wrong', text: '✗', real: true };
+    return {
+      verdict: 'wrong',
+      shown: '✗ 你的答案：' + trimmed + '，实际值：' + fmt(row.real) + (row.unit || ''),
+      real: true
+    };
+  }
+
+  /** 旧接口兼容壳：内部转调 checkOne()，保留旧字段 status/text（text 只出标记，实际值另给） */
+  function judgeRow(row, text) {
+    const v = checkOne(row, text);
+    const status = v.verdict === 'right' ? 'ok' : v.verdict === 'wrong' ? 'wrong' : 'empty';
+    const mark = v.verdict === 'right' ? '✓' : v.verdict === 'wrong' ? '✗' : '未作答';
+    return { status: status, text: mark, shown: v.shown, real: v.real };
   }
 
   /* 画布顶部「题面已知」行用的量名（带单位符号），顺序即展示顺序 */
@@ -1507,7 +1527,7 @@
           input.inputMode = 'decimal';
           input.autocomplete = 'off';
           input.className = 'geomlab-check-ans';
-          input.value = (r.ans && r.ans.value) || '';
+          input.value = typeof r.yours === 'string' ? r.yours : ((r.ans && r.ans.value) || '');
           input.setAttribute('aria-label', '我算的 ' + r.name + (r.unit || ''));
           input.dataset.idx = String(i);
           if (r.unit) {
@@ -1547,15 +1567,15 @@
       return box;
     }
 
-    /** 单行判定 → 只改这一行的标记与（填错时的）实际值 */
+    /** 单行判定 → 只改这一行的标记与文案（✓ / 未作答 / ✗ 你的答案：…，实际值：…） */
     function judgeLine(row, input, res, real) {
-      const v = judgeRow(row, input.value);
+      const v = checkOne(row, input.value);
       res.className = 'geomlab-check-res ' + (
-        v.status === 'ok' ? 'is-ok' : v.status === 'wrong' ? 'is-no' : 'is-empty'
+        v.verdict === 'right' ? 'is-ok' : v.verdict === 'wrong' ? 'is-no' : 'is-empty'
       );
-      res.textContent = v.text;
-      /* 未作答绝不显示真实值 —— 否则等于把答案摆在空白输入框旁边 */
-      real.textContent = v.real ? '实际值：' + fmt(row.real) + (row.unit || '') : '';
+      /* shown 已承担全部文案（含学生输入与实际值），这里不再重复渲染实际值 */
+      res.textContent = v.shown;
+      real.textContent = '';
     }
 
     function judgeAll() {
@@ -1661,6 +1681,7 @@
     fmt: fmt,
     /* 渲染层「已知量 / 派生量」判据（单测用：保证图上不会出现推导结论） */
     checkRows: checkRows,
+    checkOne: checkOne,
     judgeRow: judgeRow,
     knownText: knownText,
     deriveText: deriveText,

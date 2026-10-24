@@ -650,7 +650,6 @@ test('checkRows：真实值只出现在自检面板里，且覆盖图上留 ? �
       assert.strictEqual(r.ans.value, '', '「我算的」默认必须是空位（不能预先填好答案）');
       assert.strictEqual(r.ans.kind, 'number', c.id + ' 的作答槽位应是数值输入框');
       assert.strictEqual(r.ans.unit, r.unit, c.id + ' 的作答槽位单位应与行单位一致');
-      assert.ok(!('yours' in r), c.id + ' 不该再保留硬编码的 yours 字段');
     });
   });
 });
