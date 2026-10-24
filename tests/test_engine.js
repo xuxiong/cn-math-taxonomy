@@ -1537,6 +1537,7 @@ const G_PRAC = {
       { id: 'c', difficulty: 'standard' },
       { id: 'd', difficulty: 'basic' },
     ],
+    t4: [{ id: 'f', difficulty: 'basic' }, { id: 'g', difficulty: 'standard' }],
     t2: [{ id: 'e', difficulty: 'basic' }],
     t3: [],
   },
@@ -1568,6 +1569,16 @@ test('pickPracticeQuestions：n 至少为 1（不会返回空列表给练习）'
   assert.strictEqual(E.pickPracticeQuestions(G_PRAC, 't1', 0, []).length, 1);
 });
 
+test('pickPracticeQuestions：4 题知识点取 3 道，2 题知识点取 2 道（文案 N 与真实道数对齐）', () => {
+  assert.strictEqual(E.pickPracticeQuestions(G_PRAC, 't1', 3, []).length, 3, '4 题知识点最多取 3 道');
+  assert.strictEqual(E.pickPracticeQuestions(G_PRAC, 't4', 3, []).length, 2, '2 题知识点只有 2 道');
+});
+
+test('app.js：练习按钮文案不再硬编码「练习这 3 题」', () => {
+  const appSrc = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'app.js'), 'utf8');
+  assert.ok(appSrc.indexOf('练习这 3 题') < 0, 'app.js 不应再出现硬编码的练习这 3 题');
+});
+
 /* ------------------------------------------------------------ studentAdvice（学习小结） */
 function mkSum(extra) {
   return Object.assign({
@@ -1595,7 +1606,14 @@ test('studentAdvice：只有 1 个根因不强加第二个', () => {
 test('studentAdvice：无根因有不稳时给巩固建议', () => {
   const s = mkSum({ shaky: ['C'] });
   const text = E.studentAdvice(s, sumName);
-  assert.ok(text.indexOf('不太稳') >= 0 && text.indexOf('练习这 3 题') >= 0, text);
+  assert.ok(text.indexOf('不太稳') >= 0 && text.indexOf('练习') >= 0 && text.indexOf('再测一次') >= 0, text);
+});
+
+test('studentAdvice：不稳分支文案已更新为通用措辞（不含硬编码 3）', () => {
+  const s = mkSum({ shaky: ['C'] });
+  const text = E.studentAdvice(s, sumName);
+  assert.ok(text.indexOf('练习') >= 0 && text.indexOf('再测一次') >= 0, '应含练习与再测一次');
+  assert.ok(text.indexOf('练习这 3 题') < 0, '不应再含旧硬编码 3');
 });
 
 test('studentAdvice：有答错但没判出根因时提示再测', () => {

@@ -409,7 +409,7 @@
         '。练熟后回来再测一次，就能过关啦！');
     } else if (sum.shaky.length) {
       lines.push('有几个点还不太稳：' + sum.shaky.slice(0, 3).map(nameOf).join('、'));
-      lines.push('点「练习这 3 题」练熟它们，再测一次。');
+      lines.push('点「练习」按钮把题练熟，再测一次。');
     } else if (sum.weak.length) {
       lines.push('有几题答错了，卡点还没找出来。');
       lines.push('多答几题找找卡点，或点「为什么错了」再讲一遍。');
