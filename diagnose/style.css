@@ -231,6 +231,12 @@ table.log select { min-height: 44px; }
 .funclab-slider { display: flex; align-items: center; gap: 6px; font-size: 0.92rem; font-weight: 600; }
 .funclab-slider input[type=range] { width: 130px; }
 @media print { .funclab { display: none; } }
+
+/* 几何画板（geomlab.js）：复用 funclab 的外壳样式，只调画布高度与提示位置 */
+.geomlab-canvas { height: 340px; cursor: default; }
+.geomlab .funclab-formula { font-size: 0.98rem; }
+.geomlab .funclab-note { margin-bottom: 4px; }
+@media (max-width: 520px) { .geomlab-canvas { height: 300px; } }
 .ai-tag { font-size: 0.8rem; color: var(--brand); border: 1px solid var(--brand); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
 .ai-tag.static { color: var(--muted, #888); border-color: var(--muted, #888); }
 /* T3.5 追问区 */

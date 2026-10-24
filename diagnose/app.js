@@ -687,6 +687,9 @@
   }
 
   function renderQuestion(item) {
+    /* 面板每次重建都会重新挂画板：先销毁上一块几何画板（断开 ResizeObserver + 摘掉画布），
+     * 否则来回翻步骤会累积画布与观察者（funclab 靠 DOM 替换回收，geomlab 显式销毁更稳）。 */
+    try { if (window.Geomlab && window.Geomlab.destroy) window.Geomlab.destroy(); } catch (e) { /* 不影响渲染 */ }
     const id = item.topicId;
     const q = item.question;
     const t = D.graph.byId[id];
@@ -846,6 +849,17 @@
         if (lab) {
           const inst = window.Funclab.mount(lab);
           box.append(inst.el);
+        } else if (window.Geomlab) {
+          /* 几何画板：函数画板挂不上时回退尝试（三角形/圆/相似）。
+           * answer/choices 必须传 —— 送分门禁靠它判断「答案是否只是题面数值的复制」，
+           * 缺了会 fail-closed 不挂（见 geomlab.gate 的 answer-unknown）。 */
+          const glab = window.Geomlab.labFor(t && t.id, q && q.prompt, {
+            itemId: q && q.id, topic: t, answer: q && q.answer, choices: q && q.choices
+          });
+          if (glab) {
+            const ginst = window.Geomlab.mount(glab);
+            if (ginst) box.append(ginst.el);
+          }
         }
       } catch (e) { /* 画板挂了不影响讲解 */ }
       box.append(h('div', { class: 'row' },
