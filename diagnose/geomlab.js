@@ -288,6 +288,65 @@
     'cnm_275_q5': '同上，位似中心不在原点时对应点仍是答案本身'
   };
 
+  /* ------------------------------------------------------------ 可观测性（只统计，不改判定）
+   *
+   * 线上「画板静默消失」无法排查，因此这里累计门禁与挂载的计数。原则：
+   *   · 统计只读，任何分支都不改变 gate()/labFor() 的返回值（fail-closed 原样保留）；
+   *   · 两种「取不到答案」分开计：调用方没传 key（undefined，集成 bug）与传了 null（数据问题）；
+   *   · reason 一律保持 'answer-unknown'（对外契约，既有测试锁死），只在统计里分栏；
+   *   · console.warn 同一 itemId 只打一次（Set 去重），不打印答案内容。
+   */
+  const STATS = { blocked: Object.create(null), missingAnswer: 0, nullAnswer: 0, mounted: 0, calls: 0, seen: [] };
+  const WARNED = Object.create(null);   // itemId -> true，去重用（不打进快照）
+
+  function snapshotStats() {
+    const blocked = {};
+    Object.keys(STATS.blocked).forEach(function (k) { blocked[k] = STATS.blocked[k]; });
+    return {
+      blocked: blocked,
+      missingAnswer: STATS.missingAnswer,
+      nullAnswer: STATS.nullAnswer,
+      mounted: STATS.mounted,
+      calls: STATS.calls,
+      seen: STATS.seen.slice()
+    };
+  }
+
+  /** 门禁/挂载累计快照（副本，改它不影响内部计数） */
+  function gateStats() { return snapshotStats(); }
+
+  /** 清空累计（测试隔离用） */
+  function resetGateStats() {
+    STATS.blocked = Object.create(null);
+    STATS.missingAnswer = 0;
+    STATS.nullAnswer = 0;
+    STATS.mounted = 0;
+    STATS.calls = 0;
+    STATS.seen = [];
+    Object.keys(WARNED).forEach(function (k) { delete WARNED[k]; });
+  }
+
+  /** 记一次 blocked（含缺 answer 的细分与一次性告警）；calls 由 labFor 统一计 */
+  function noteBlocked(reason, opts) {
+    const o = opts || {};
+    STATS.blocked[reason] = (STATS.blocked[reason] || 0) + 1;
+    if (reason === 'answer-unknown') {
+      const isNull = o.answer === null;
+      if (isNull) STATS.nullAnswer++; else STATS.missingAnswer++;
+      const key = o.itemId == null ? '(no-itemId)' : String(o.itemId);
+      if (!WARNED[key]) {
+        WARNED[key] = true;
+        STATS.seen.push(key);
+        /* 只在缺参时告警；不打印正确答案 */
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('[geomlab] labFor 缺 answer：itemId=' + key +
+            (isNull ? '（值为 null，数据问题）' : '（未传该 key，调用方集成问题）'),
+            '调用方必须传 answer，画板 fail-closed 不挂图');
+        }
+      }
+    }
+  }
+
   /**
    * 答案语义门禁。命中即「不许挂」。
    * @param {string} prompt 题面
@@ -300,17 +359,23 @@
   function gate(prompt, opts) {
     const o = opts || {};
     const s = plain(prompt);
-    if (RE_PROOF.test(s)) return { blocked: true, reason: 'proof' };
-    if (RE_JUDGE.test(s)) return { blocked: true, reason: 'judge-statement' };
-    if (RE_LOCUS.test(s)) return { blocked: true, reason: 'locus-motion' };
-    if (RE_PURE_CALC.test(s)) return { blocked: true, reason: 'pure-arithmetic' };
-    if (RE_COUNT_ASK.test(s)) return { blocked: true, reason: 'asks-count' };
-    if (RE_APPLIED.test(s)) return { blocked: true, reason: 'applied-model' };
-    if (o.itemId && MANUAL_NO[o.itemId]) return { blocked: true, reason: 'manual:' + o.itemId };
-    if (o.answer == null) return { blocked: true, reason: 'answer-unknown' };
+    if (RE_PROOF.test(s)) return block('proof', o);
+    if (RE_JUDGE.test(s)) return block('judge-statement', o);
+    if (RE_LOCUS.test(s)) return block('locus-motion', o);
+    if (RE_PURE_CALC.test(s)) return block('pure-arithmetic', o);
+    if (RE_COUNT_ASK.test(s)) return block('asks-count', o);
+    if (RE_APPLIED.test(s)) return block('applied-model', o);
+    if (o.itemId && MANUAL_NO[o.itemId]) return block('manual:' + o.itemId, o);
+    if (o.answer == null) return block('answer-unknown', o);
     const echo = answerEchoesGiven(prompt, o.answer, o.choices);
-    if (echo) return { blocked: true, reason: 'answer-echoes-given' };
+    if (echo) return block('answer-echoes-given', o);
     return { blocked: false, reason: null };
+  }
+
+  /** gate() 的 blocked 出口：先计数再原样返回（返回值与旧版逐字相同） */
+  function block(reason, o) {
+    noteBlocked(reason, o);
+    return { blocked: true, reason: reason };
   }
 
   /* ============================================================ 3. 知识点 → 题类
@@ -658,6 +723,7 @@
    */
   function labFor(topicId, prompt, opts) {
     const o = opts || {};
+    STATS.calls++;
     const cls = classOf(topicId, o);
     if (!cls) return null;
     const g = gate(prompt, { itemId: o.itemId, answer: o.answer, choices: o.choices });
@@ -671,6 +737,7 @@
       lab.prompt = prompt;
       lab.cls = cls;
       lab.topicId = topicId;
+      STATS.mounted++;
       return lab;
     }
     return null;
@@ -1672,6 +1739,18 @@
     return inst;
   }
 
+  /* 浏览器：暴露实时累计（读 window.__geomlabStats 即可看到当前值）。
+   * 用 getter 绑定到统计对象本身，读数永远是最新累计；Node 下没有 window，跳过。 */
+  const GLOBAL = (typeof self !== 'undefined' ? self : (typeof window !== 'undefined' ? window : null));
+  if (GLOBAL && GLOBAL.window === GLOBAL) {
+    try {
+      Object.defineProperty(GLOBAL, '__geomlabStats', {
+        get: snapshotStats,
+        configurable: true
+      });
+    } catch (e) { /* 老浏览器不支持 defineProperty 时静默跳过，不影响渲染 */ }
+  }
+
   return {
     /* 对外契约（与 funclab 对齐） */
     labFor: labFor,
@@ -1690,6 +1769,8 @@
     GIVEN_KEYS: GIVEN_KEYS,
     /* 单测/排查用 */
     gate: gate,
+    gateStats: gateStats,
+    resetGateStats: resetGateStats,
     answerEchoesGiven: answerEchoesGiven,
     givenQuantities: givenQuantities,
     classOf: classOf,
