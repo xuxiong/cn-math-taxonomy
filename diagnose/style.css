@@ -53,6 +53,54 @@ label { font-weight: 700; }
 button.choice { text-align: left; width: 100%; min-height: 48px; padding: 12px 14px; font-size: 1.02rem; font-weight: 600; white-space: pre-wrap; border-radius: 12px; }
 button.choice.picked { border-color: var(--brand); background: var(--brand-soft); box-shadow: inset 0 0 0 2px var(--brand); }
 
+/* ---- 讲解/判定态的只读选项（N 卡）：可见可读、不可点 ----
+ * 用 div 而不是 disabled button：Tab 不会停在上面，但读屏和选中复制都正常。
+ * 配色沿用 .verdict.ok / .verdict.no（--ok / --ok-bg、--bad / --bad-bg）。 */
+.choice-ro {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 14px;
+  font-size: 1.02rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-muted);
+  color: var(--text);
+  cursor: default;
+}
+/* 正确项：绿底绿框（与 .verdict.ok 同色） */
+.choice-ro.choice-correct { border-color: var(--ok); background: var(--ok-bg); color: var(--ok); box-shadow: inset 0 0 0 1px var(--ok); }
+/* 学生选对的项：picked 蓝框 + 绿色底（只用来标「这是你选的」） */
+.choice-ro.choice-picked { box-shadow: inset 0 0 0 2px var(--brand); }
+/* 学生选错的项：红底红框（与 .verdict.no 同色），并压过绿色底 */
+.choice-ro.choice-picked-wrong { border-color: var(--bad); background: var(--bad-bg); color: var(--bad); box-shadow: inset 0 0 0 2px var(--bad); }
+/* 只读态的选项图标同样不给拖拽/指针暗示 */
+.choice-ro.fig-choice { cursor: default; }
+@media print { .choice-ro { break-inside: avoid; } }
+
+/* ---- 非选择题在讲解/判定态的答案回显：一行文字，不重建输入框 ---- */
+.answer-echo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  align-items: baseline;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg-muted);
+  font-size: 1rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.answer-echo b { color: var(--muted); font-weight: 700; margin-right: 2px; }
+.answer-echo .echo-ref b { color: var(--ok); }
+
 .tag { display: inline-block; font-size: 0.78rem; font-weight: 800; padding: 2px 8px; border-radius: 999px; margin-right: 4px; background: var(--bg-muted); color: var(--text); vertical-align: 1px; }
 .tag.weak { background: var(--bad-bg); color: var(--bad); }
 .tag.mastered { background: var(--ok-bg); color: var(--ok); }
