@@ -753,6 +753,188 @@ test('route.html 的跳转地址由 route.js 生成（页面层不自己拼 ?tar
   assert.ok(!/esc\(k\.url\)/.test(code), '页面层不许读 k.url（undefined → href 为空）');
 });
 
+
+/* ================================================================
+ * 13. 诊断结果写回 route：候选换成真结论（kanban t_d623773c）
+ * ================================================================
+ * 全部针对纯函数 buildResultView(session, sum, currentTopicId)，不测 DOM。
+ * session / sum 都是手造的：这里验的是「什么情况下敢说结论」，不是 engine 的判题逻辑。
+ */
+
+console.log('\n--- 13. 诊断结果写回 route ---');
+
+const PID = idOf('配方法');            /* 本页定位到的知识点 */
+const FULL_SQ = idOf('完全平方公式');   /* 期待判出来的根因 */
+
+/** 造一份与 app.js:239 同构的 session；answers 只填长度，内容按用例需要 */
+const mkSession = (over) => Object.assign({
+  v: 2, mode: 'target', targets: [PID], limit: 16, label: '配方法',
+  answers: [{ id: PID, attempt: 1, result: 'wrong' }], seed: 'x', avoid: [],
+  savedAt: '2026-10-25T00:00:00.000Z'
+}, over || {});
+
+/** 造一份 summarize() 同构的结果；roots 每项 {id, pendingPrereqs, outOfScopePrereqs, externalPrereqs} */
+const mkSum = (over) => Object.assign({
+  mode: 'target', targets: [PID], asked: 3, limit: 16,
+  finished: true, limitReached: false,
+  mastered: [], shaky: [], weak: [FULL_SQ], unconfirmed: [], untested: [],
+  roots: [{ id: FULL_SQ, pendingPrereqs: [], outOfScopePrereqs: [], externalPrereqs: [] }],
+  path: []
+}, over || {});
+
+test('① 目标匹配 + 已完成 + 有根因 → 显示根因（名字、依据、建议顺序）', () => {
+  const v = R.buildResultView(mkSession(), mkSum(), PID);
+  assert.strictEqual(v.ok, true, '这份 session 就是本页跳过去的，必须显示');
+  assert.strictEqual(v.stage, 'roots');
+  assert.deepStrictEqual(v.roots.map((r) => r.name), ['完全平方公式'], '根因要显示知识点名，不只是 id');
+  assert.strictEqual(v.roots[0].id, FULL_SQ);
+  assert.ok(v.detail.includes('你卡在：完全平方公式（初二）'), '文案：' + v.detail);
+  assert.ok(v.detail.includes('依据：该知识点答错'), '要写依据');
+  assert.ok(v.detail.includes('建议顺序：完全平方公式 → 配方法'), '建议顺序：根因在前，定位点在后');
+  assert.deepStrictEqual(v.order.map((o) => o.id), [FULL_SQ, PID]);
+  assert.strictEqual(v.roots[0].unreliable, false, 'pendingPrereqs 为空 → 根因可靠');
+});
+
+test('② 目标不匹配（换了题重新定位）→ 不显示任何诊断结果', () => {
+  const other = idOf('一元二次方程的概念');
+  const v = R.buildResultView(mkSession(), mkSum(), other);
+  assert.strictEqual(v.ok, false, '旧 session 不能串到新定位上');
+  assert.strictEqual(v.why, 'target-mismatch');
+  assert.deepStrictEqual(v.roots, []);
+  assert.strictEqual(v.detail, '');
+  /* 反过来：session 含多个 target 时，只要含当前定位就算本页跳过去的 */
+  const multi = R.buildResultView(mkSession({ targets: [other, PID] }), mkSum(), PID);
+  assert.strictEqual(multi.ok, true, 'targets 是数组，包含当前定位即可');
+});
+
+test('③ 有 session 但一题没答 → 不显示（没有结论可讲）', () => {
+  const v = R.buildResultView(mkSession({ answers: [] }), mkSum({ asked: 0, roots: [] }), PID);
+  assert.strictEqual(v.ok, false);
+  assert.strictEqual(v.why, 'no-answers');
+  /* 一题没答却带着 roots 的脏数据也不许显示 */
+  const dirty = R.buildResultView(mkSession({ answers: [] }), mkSum(), PID);
+  assert.strictEqual(dirty.ok, false, '零答案时哪怕 sum 有根因也不显示');
+  assert.deepStrictEqual(dirty.roots, []);
+});
+
+test('④ finished=false → 只说「没做完」，一个字都不提根因', () => {
+  const v = R.buildResultView(
+    mkSession({ answers: [{ id: PID, result: 'wrong' }, { id: FULL_SQ, result: 'wrong' }] }),
+    mkSum({ finished: false, asked: 2, roots: [{ id: FULL_SQ, pendingPrereqs: [idOf('直接开平方法')] }], untested: ['a', 'b', 'c'] }),
+    PID
+  );
+  assert.strictEqual(v.ok, true, '「没做完」本身是要显示的提示');
+  assert.strictEqual(v.stage, 'unfinished');
+  assert.deepStrictEqual(v.roots, [], '没做完就不许给根因');
+  assert.ok(v.detail.includes('诊断还没做完'), v.detail);
+  assert.ok(v.detail.includes('已答 2 题'), '要报已答几题：' + v.detail);
+  assert.ok(v.detail.includes('还有 3 个知识点没测到'), '要报还有几个没测到：' + v.detail);
+  /* 文案本身就带「现在还不说『你卡在哪』」——只匹配肯定式断言，避免误伤这句否定 */
+  assert.ok(!/你卡在：/.test(v.detail), '没做完绝不能说「你卡在哪」：' + v.detail);
+  assert.ok(v.detail.includes('现在还不说「你卡在哪」'), '要明确告诉学生结论还没定：' + v.detail);
+  assert.ok(!v.detail.includes('完全平方公式'), '没做完不许出现任何根因名字：' + v.detail);
+  assert.strictEqual(v.sectionTitle, undefined, '没做完时第 ⑥ 段维持原样，不换标题');
+});
+
+test('⑤ limitReached=true → 按「没做完」处理（即使 finished 也为 true）', () => {
+  const v = R.buildResultView(mkSession(), mkSum({ limitReached: true, asked: 16 }), PID);
+  assert.strictEqual(v.stage, 'unfinished', '题量用完但还有前置没测到 → 不能说卡在哪');
+  assert.deepStrictEqual(v.roots, []);
+  assert.ok(!v.detail.includes('完全平方公式'));
+  /* 题量用完时说清是「题量上限」，别让学生以为是自己没继续答（浏览器实测 16 题的结果） */
+  assert.ok(v.detail.includes('题量上限'), '要说明是题量用完了：' + v.detail);
+  /* 两个字段都真、但 limitReached 为真 → 仍按没做完（坑 6） */
+  const both = R.buildResultView(mkSession(), mkSum({ finished: true, limitReached: true }), PID);
+  assert.strictEqual(both.stage, 'unfinished');
+  assert.deepStrictEqual(both.roots, [], '哪怕 sum.roots 非空，limitReached 也不许显示根因');
+});
+
+test('⑥ 已完成有根因 → 第 ⑥ 段标题「你的薄弱点」，候选列表不再出现', () => {
+  const v = R.buildResultView(mkSession(), mkSum(), PID);
+  assert.strictEqual(v.sectionTitle, '你的薄弱点');
+  assert.ok(v.sectionNote.includes('没测到的仍然未知'), '要保留一行小字说明范围：' + v.sectionNote);
+  /* 与候选列表的措辞互斥：结果里不许出现「候选，待测确认」这类候选话术 */
+  assert.ok(!/候选/.test(v.detail), '真结论里不许再出现候选话术：' + v.detail);
+  /* 页面层：有根因时直接 return，不走候选列表那条分支 */
+  const src = stripComments(fs.readFileSync(path.join(ROOT, 'diagnose', 'route-page.js'), 'utf8'));
+  const fn = src.slice(src.indexOf('function renderPath'), src.indexOf('function renderStage6'));
+  const hasRootsBranch = fn.slice(fn.indexOf('if (hasRoots) {'), fn.indexOf('if (!path'));
+  assert.ok(hasRootsBranch.includes('return;'), 'hasRoots 分支必须先 return，候选列表才不会跟着渲染');
+  assert.ok(!hasRootsBranch.includes('候选，待测确认'), '真结论分支不许拼候选节点');
+  assert.ok(fn.includes('R.WEAK_TITLE'), '标题取自 route.js 的常量');
+  /* 没做完时标题不变 */
+  const un = R.buildResultView(mkSession(), mkSum({ finished: false }), PID);
+  assert.strictEqual(un.sectionTitle, undefined);
+  assert.ok(fs.readFileSync(path.join(ROOT, 'diagnose', 'route.html'), 'utf8').includes('接下来需要确认的知识点'));
+});
+
+test('⑦ 根因超过 2 个只取前 2 个（与 engine 小结规则一致）', () => {
+  const three = mkSum({
+    roots: [
+      { id: FULL_SQ, pendingPrereqs: [] },
+      { id: PID, pendingPrereqs: [] },
+      { id: idOf('直接开平方法'), pendingPrereqs: [] }
+    ]
+  });
+  const v = R.buildResultView(mkSession(), three, PID);
+  assert.strictEqual(v.roots.length, 2, '只取前 2 个');
+  assert.deepStrictEqual(v.roots.map((r) => r.id), [FULL_SQ, PID], '按 sum.roots 的原顺序取前 2');
+  assert.ok(!v.detail.includes('直接开平方法'), '第 3 个根因不许出现：' + v.detail);
+  assert.strictEqual(R.ROOT_LIMIT, 2);
+});
+
+test('⑧ 根因 pendingPrereqs 非空 → 标注「可能不准，还有前置没测」', () => {
+  const v = R.buildResultView(mkSession(), mkSum({
+    roots: [{ id: FULL_SQ, pendingPrereqs: [idOf('直接开平方法'), idOf('一元二次方程的概念')], outOfScopePrereqs: [], externalPrereqs: [] }]
+  }), PID);
+  assert.strictEqual(v.roots[0].unreliable, true, '还有前置没测到 → 根因不可靠');
+  assert.deepStrictEqual(v.roots[0].pendingPrereqs, [idOf('直接开平方法'), idOf('一元二次方程的概念')]);
+  assert.ok(R.rootCaveat(v.roots[0]).includes('可能不准'), '页面标注文案');
+  assert.ok(R.rootCaveat(v.roots[0]).includes('还有前置没测'));
+  assert.strictEqual(R.rootCaveat({ unreliable: false }), '', '可靠的根因不标任何东西');
+});
+
+test('⑨ 已完成但没根因：有 shaky 说「答得不稳」，什么都没有就不显示', () => {
+  const shaky = R.buildResultView(mkSession(), mkSum({ roots: [], weak: [], shaky: [FULL_SQ] }), PID);
+  assert.strictEqual(shaky.ok, true);
+  assert.strictEqual(shaky.stage, 'no-root');
+  assert.deepStrictEqual(shaky.roots, []);
+  assert.ok(shaky.detail.includes('没有明确的断点'), shaky.detail);
+  assert.ok(shaky.detail.includes('完全平方公式'), '要说出哪个知识点不稳：' + shaky.detail);
+  assert.ok(shaky.detail.includes('再练几道'));
+  const clean = R.buildResultView(mkSession(), mkSum({ roots: [], weak: [], shaky: [] }), PID);
+  assert.strictEqual(clean.ok, false, '做完了、没根因、没不稳 → 不显示');
+  assert.strictEqual(clean.why, 'no-finding');
+});
+
+test('⑩ 纯函数契约：不改入参、坏输入不抛异常、sum 缺失按没做完', () => {
+  const sess = mkSession();
+  const sum = mkSum();
+  const before = JSON.stringify({ sess, sum });
+  R.buildResultView(sess, sum, PID);
+  assert.strictEqual(JSON.stringify({ sess, sum }), before, 'buildResultView 不许改 session/sum');
+  [null, undefined, {}, { targets: 'x' }, { targets: [PID] }].forEach((s) => {
+    assert.doesNotThrow(() => R.buildResultView(s, null, PID), '坏 session 不许抛：' + JSON.stringify(s));
+  });
+  const noSum = R.buildResultView(mkSession(), null, PID);
+  assert.strictEqual(noSum.stage, 'unfinished', 'sum 算不出来时宁可说没做完，也不猜结论');
+  assert.deepStrictEqual(noSum.roots, []);
+  assert.strictEqual(R.buildResultView(mkSession(), mkSum(), '').ok, false, '没有当前定位 id 就不显示');
+});
+
+test('⑪ 页面层只读 session、不删 localStorage、复用 engine（读源码断言，不测 DOM）', () => {
+  const src = stripComments(fs.readFileSync(path.join(ROOT, 'diagnose', 'route-page.js'), 'utf8'));
+  assert.ok(src.includes("'cnmDiagnose.session.v2'"), '键名必须是 app.js:9 的那个');
+  assert.ok(/localStorage\.getItem/.test(src), '要读 session');
+  ['removeItem', 'clear()', 'setItem'].forEach((bad) => {
+    assert.ok(!src.includes(bad), 'route 不许删/写 localStorage（那是 app.js 的数据）：' + bad);
+  });
+  assert.ok(/DiagEngine\.replay/.test(src) && /DiagEngine\.summarize/.test(src), '必须复用 engine，不自己实现 statusOf');
+  const html = fs.readFileSync(path.join(ROOT, 'diagnose', 'route.html'), 'utf8');
+  assert.ok(/<script src="engine\.js"><\/script>/.test(html), 'route.html 要加载 engine.js');
+  assert.ok(html.indexOf('engine.js') < html.indexOf('route.js'), 'engine 要先于 route 加载');
+});
+
 /* ================================================================ */
 
 Promise.all(ASYNC).then(() => {

@@ -777,6 +777,220 @@
   function structureNote() { return { title: STRUCTURE_TITLE, text: STRUCTURE_NOTE }; }
 
   /* ================================================================
+   * 4c. 诊断结果写回 route（kanban t_d623773c）—— 候选 → 真结论
+   * ================================================================
+   * 定位→做题→判出根因→回到 route，页面必须变。本段只做**纯函数**：
+   *   入参是 diagnose 存在 localStorage 的 session（app.js:239 的结构）和 E.summarize() 的结果，
+   *   不读 localStorage、不调 engine、不碰 DOM —— 读与算都在 route-page.js。
+   *
+   * 四条不可妥协的判据：
+   *   a) 不是本页跳过去的（session.targets 不含当前定位 id）→ 当作没有结果，不显示。
+   *   b) 一题没答（answers 为空）→ 没有结果可讲。
+   *   c) 没做完（finished===false 或 limitReached===true）→ **绝不显示半截结论**。
+   *      limitReached 即使 finished 也为真时也按没做完算：可能还有前置没测到。
+   *   d) 有真结论（根因）时，第 ⑥ 段的候选列表必须被**换掉**，不能两条并列 ——
+   *      候选是图上的前置节点，根因是实测的断点，两个都显示学生不知道信哪个。
+   */
+
+  var RESULT_TITLE = '刚才的诊断结果';
+  var WEAK_TITLE = '你的薄弱点';
+  var ROOT_LIMIT = 2;   /* 与 engine.js studentAdvice「根因取前 2 个」一致 */
+
+  var RESULT_NOTE = '同一道题重新定位不会改变这里；换了题（定位到别的知识点）就不再显示上一次的诊断。';
+
+  /** localStorage 里 session 的键（与 app.js:9 一致，本文件只当常量用，不读写存储） */
+  var LS_SESSION_KEY = 'cnmDiagnose.session.v2';
+
+  /** 「没有结果」的唯一表示：所有渲染点都判 null，不判 stage。 */
+  function noResult(why) {
+    return { ok: false, why: why, stage: null, topicId: null, roots: [], shaky: [], asked: 0, limit: null, detail: '' };
+  }
+
+  function numOr(x, dflt) {
+    var n = Number(x);
+    return isFinite(n) ? n : dflt;
+  }
+
+  function nameOfTopic(id) {
+    var t = BY_ID[id];
+    return t ? t.name : String(id == null ? '' : id);
+  }
+
+  /**
+   * 这份 session 是不是本页跳过去的诊断？三条前置条件缺一不可。
+   * @param {Object|null} session localStorage 里 cnmDiagnose.session.v2 的内容
+   * @param {string} currentTopicId 第 ④ 段校验通过、正被展示的那个知识点
+   */
+  function matchSession(session, currentTopicId) {
+    var id = String(currentTopicId == null ? '' : currentTopicId).trim();
+    if (!session || typeof session !== 'object') return { ok: false, why: 'no-session' };
+    if (!id) return { ok: false, why: 'no-topic' };
+    if (!Array.isArray(session.targets) || session.targets.indexOf(id) < 0) {
+      /* 换了一道题重新定位：旧 session 与本页无关，当作没有（不删 localStorage） */
+      return { ok: false, why: 'target-mismatch' };
+    }
+    if (!Array.isArray(session.answers) || session.answers.length === 0) {
+      return { ok: false, why: 'no-answers' };
+    }
+    return { ok: true, why: null };
+  }
+
+  /**
+   * 是不是「做完了」？两个字段都可能缺（页面层算出 sum 之后才调，但测试会手造）。
+   * limitReached 为真时一律算没做完（坑 6）。
+   */
+  function isUnfinished(sum) {
+    if (!sum) return true;
+    if (sum.limitReached === true) return true;
+    return sum.finished !== true;
+  }
+
+  /**
+   * 根因的前 N 个，带上名字/年级/可靠性标注。
+   * pendingPrereqs 非空的根因不可靠（还有前置没测到）→ unreliable:true，页面要标注。
+   */
+  function rootItems(sum) {
+    var roots = sum && Array.isArray(sum.roots) ? sum.roots : [];
+    var out = [];
+    var seen = Object.create(null);
+    for (var i = 0; i < roots.length && out.length < ROOT_LIMIT; i++) {
+      var r = roots[i];
+      var rid = typeof r === 'string' ? r : (r && r.id);
+      if (!rid || seen[rid]) continue;
+      seen[rid] = 1;
+      var pending = (r && Array.isArray(r.pendingPrereqs)) ? r.pendingPrereqs.slice() : [];
+      out.push({
+        id: rid,
+        name: nameOfTopic(rid),
+        grade: BY_ID[rid] ? BY_ID[rid].grade : null,
+        pendingPrereqs: pending,
+        unreliable: pending.length > 0
+      });
+    }
+    return out;
+  }
+
+  /** shaky 的名字（最多 3 个，页面只用来提示「再练几道」） */
+  function shakyNames(sum) {
+    var list = sum && Array.isArray(sum.shaky) ? sum.shaky : [];
+    var out = [];
+    for (var i = 0; i < list.length && out.length < 3; i++) {
+      var sid = typeof list[i] === 'string' ? list[i] : (list[i] && list[i].id);
+      if (!sid) continue;
+      if (out.indexOf(nameOfTopic(sid)) < 0) out.push(nameOfTopic(sid));
+    }
+    return out;
+  }
+
+  /**
+   * 建议顺序：根因（按年级从低到高）→ 定位到的知识点本身。去重。
+   * 只有一个根因且它就是要定位的点时，顺序就只有它自己（不硬凑第二个）。
+   */
+  function suggestedOrder(roots, targetId) {
+    var list = (roots || []).slice();
+    var ids = [];
+    list.forEach(function (r) { if (ids.indexOf(r.id) < 0) ids.push(r.id); });
+    if (targetId && ids.indexOf(targetId) < 0) ids.push(targetId);
+    return ids.map(function (id) {
+      var r = null;
+      list.forEach(function (x) { if (x.id === id) r = x; });
+      return { id: id, name: nameOfTopic(id), grade: BY_ID[id] ? BY_ID[id].grade : null, isTarget: id === targetId };
+    });
+  }
+
+  /** 「没做完」里「还有 M 个知识点没测到」—— untested 优先，缺了就用 limit-asked 兜底 */
+  function untestedCount(sum, session) {
+    if (sum && Array.isArray(sum.untested)) return sum.untested.length;
+    var limit = numOr(sum && sum.limit, numOr(session && session.limit, 0));
+    var asked = numOr(sum && sum.asked, Array.isArray(session && session.answers) ? session.answers.length : 0);
+    return Math.max(0, limit - asked);
+  }
+
+  /** 短年级标签（「初二」这种），rootItems 里展示用；gradeLabel 太长不适合放进一句话里 */
+  function shortGradeLabel(g) {
+    if (g == null) return '';
+    if (g <= 6) return ['一', '二', '三', '四', '五', '六'][g - 1] + '年级';
+    if (g <= 9) return '初' + ['一', '二', '三'][g - 7];
+    if (g === 12) return '高三';
+    if (g === 13) return '选必一';
+    if (g === 14) return '选必二';
+    return '高' + ['一', '二'][Math.min(g - 10, 2)];
+  }
+
+  /**
+   * buildResultView(session, sum, currentTopicId) —— 第 ⑥ 段「刚才的诊断结果」的唯一数据来源。
+   *
+   * @param {Object|null} session localStorage 里的诊断 session（可为 null）
+   * @param {Object|null} sum E.summarize(graph, session) 的结果（可为 null → 只能报「没做完」）
+   * @param {string} currentTopicId 当前定位出的知识点 id
+   * @returns {Object} 见文件头；ok:false 时页面什么都不显示。
+   *   stage: 'roots'     —— 做完且有根因：显示「你卡在」+ 建议顺序，并**盖住候选列表**
+   *          'no-root'   —— 做完但没根因（shaky 非空才值得讲，否则 ok:false）
+   *          'unfinished'—— 没做完：只说没做完，一个字都不提根因
+   */
+  function buildResultView(session, sum, currentTopicId) {
+    var m = matchSession(session, currentTopicId);
+    if (!m.ok) return noResult(m.why);
+
+    if (isUnfinished(sum)) {
+      var asked = numOr(sum && sum.asked, Array.isArray(session.answers) ? session.answers.length : 0);
+      var missing = untestedCount(sum, session);
+      return {
+        ok: true, stage: 'unfinished', topicId: String(currentTopicId), roots: [], shaky: [],
+        asked: asked, limit: numOr(sum && sum.limit, numOr(session.limit, null)), missing: missing,
+        /* 题量用完时 engine 会同时给 finished:true 和 limitReached:true（可能还有前置没测），
+         * 这时说清「题量用完了」，别让学生以为是自己没继续答 */
+        limitReached: !!(sum && sum.limitReached === true),
+        detail: (sum && sum.limitReached === true
+            ? '诊断做到题量上限了（已答 ' + asked + ' 题' +
+              (missing > 0 ? '，还有 ' + missing + ' 个知识点没测到' : '') + '）'
+            : '诊断还没做完（已答 ' + asked + ' 题' +
+              (missing > 0 ? '，还有 ' + missing + ' 个知识点没测到' : '') + '）') + '\n' +
+          '结论要等测完才能确定 —— 现在还不说「你卡在哪」',
+        title: RESULT_TITLE
+      };
+    }
+
+    var roots = rootItems(sum);
+    var shaky = shakyNames(sum);
+    if (roots.length) {
+      var order = suggestedOrder(roots, currentTopicId);
+      var detail = '你卡在：' + roots.map(function (r) {
+        var g = shortGradeLabel(BY_ID[r.id] ? BY_ID[r.id].grade : r.grade);
+        return r.name + (g ? '（' + g + '）' : '');
+      }).join('、') + '\n' +
+        '依据：该知识点答错；它的所有前置都已经答对（或没测出问题）\n' +
+        '建议顺序：' + order.map(function (o) { return o.name; }).join(' → ');
+      return {
+        ok: true, stage: 'roots', topicId: String(currentTopicId), roots: roots, shaky: shaky,
+        order: order, asked: numOr(sum.asked, session.answers.length), limit: numOr(sum.limit, session.limit),
+        title: RESULT_TITLE,
+        /* 任务二：真结论要盖住候选。标题与内容都换掉，并保留一行小字说明范围 */
+        sectionTitle: WEAK_TITLE,
+        sectionNote: '这是基于刚才诊断的结果：只测了本次范围里的知识点，没测到的仍然未知。',
+        detail: detail
+      };
+    }
+
+    if (!shaky.length) {
+      /* 做完了、没根因、也没不稳：没有可讲的不良结论（已掌握的不需要在这里说教） */
+      return noResult('no-finding');
+    }
+    return {
+      ok: true, stage: 'no-root', topicId: String(currentTopicId), roots: [], shaky: shaky,
+      asked: numOr(sum.asked, session.answers.length), limit: numOr(sum.limit, session.limit),
+      title: RESULT_TITLE,
+      detail: '没有明确的断点，但「' + shaky.join('」「') + '」答得不稳，建议再练几道'
+    };
+  }
+
+  /** 页面渲染用：结果里根因的「可能不准」标注文案（空字符串 = 不需要标注） */
+  function rootCaveat(root) {
+    if (!root || !root.unreliable) return '';
+    return '可能不准：还有前置没测';
+  }
+
+  /* ================================================================
    * 5. LLM 选择（唯一需要网关的一步）
    * ================================================================
    * 网关：http://127.0.0.1:3000/v1/chat/completions（max_tokens ≥ 1200，网关把 reasoning 算进预算）。
@@ -963,6 +1177,11 @@
     diagnosisCandidates: diagnosisCandidates,
     diagnosisUrl: diagnosisUrl,
     structureNote: structureNote,
+    /* 诊断结果写回（kanban t_d623773c）：纯函数，session/sum 由调用方注入 */
+    buildResultView: buildResultView,
+    matchSession: matchSession,
+    rootCaveat: rootCaveat,
+    suggestedOrder: suggestedOrder,
     /* 工具 */
     gradeLabel: gradeLabel,
     stageOfGrade: stageOfGrade,
@@ -977,6 +1196,8 @@
     PROXY: PROXY, MODEL: MODEL, MAX_TOKENS: MAX_TOKENS,
     MIN_COVERAGE: MIN_COVERAGE, MIN_POOL: MIN_POOL,
     PRIMARY_MAX: PRIMARY_MAX, GRADE_GAP_LIMIT: GRADE_GAP_LIMIT,
+    LS_SESSION_KEY: LS_SESSION_KEY, RESULT_TITLE: RESULT_TITLE,
+    WEAK_TITLE: WEAK_TITLE, RESULT_NOTE: RESULT_NOTE, ROOT_LIMIT: ROOT_LIMIT,
     DOMAIN_WORDS: DOMAIN_WORDS
   };
 });
