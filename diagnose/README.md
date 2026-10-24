@@ -9,9 +9,11 @@
 在项目根目录（不是 `diagnose/` 里）：
 
 ```bash
-python3 -m http.server 8000
-# 浏览器打开 http://localhost:8000/diagnose/
+node scripts/serve.js 8920
+# 浏览器打开 http://localhost:8920/diagnose/
 ```
+
+> **不要用 `python3 -m http.server` 做本地验收。** 它不发 `Cache-Control` / `Pragma` / `Expires`，Chrome 按启发式规则把 `diagnose/app.js` 长期缓存：`curl` 和浏览器 `fetch` 都能拿到新文件，页面却执行几小时前的旧代码（`performance.getEntriesByType('resource')` 里 `transferSize: 0` 即命中磁盘缓存），复核时极易误判「功能没做」。`scripts/serve.js` 对代码与数据文件强制 `no-store`。细节见 [../docs/local-serving.md](../docs/local-serving.md)。
 
 页面用 `fetch('../data/*.json')` 读数据（含 `questions.json` 题库；缺失时自动回退到 `topics.json` 里每个知识点的 `diagnostic_question`），不能直接用 `file://` 打开。全站顶部导航都能进来：首页是根目录的 `index.html`，知识图谱在 `../explore/`。样式与首页、图谱共用 `../assets/site.css`，本目录的 `style.css` 只写诊断页自己的布局。
 
