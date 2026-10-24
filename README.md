@@ -262,11 +262,13 @@ screenshots/             首页、知识图谱与诊断页截图（01–05 诊�
 `diagnose/` 是一个基于上述数据的静态、可离线的诊断页面：选一个目标知识点（或整个章节），按先修关系自适应出题（第一题答对则掌握并跳过全部祖先；答错则再出一道同级或更容易的题——第二题也错才算薄弱并回溯到先修，hard 先于 soft；第二题答对标为「不稳」，不回溯），给出薄弱的根因、不稳的知识点、按年级从低到高排列的学习路径（同一年级里先修在前）、相关课标条目原文，以及一张用 Cytoscape 画的路径图（文字列表仍在）。目标可以选择小学、初中、高中必修或选择性必修知识点；答错会继续问到更早的学段；每题作答后显示解析和参考答案；进度保存在 localStorage，可导出 JSON、打印，或生成分享图。核心算法与判题在 `diagnose/engine.js`（纯函数，浏览器与 Node 通用），由 `node tests/test_engine.js` 测试。
 
 ```bash
-python3 -m http.server 8000
-# 访问 http://localhost:8000/diagnose/            （演示：?target=cnm_221&demo=1）
+node scripts/serve.js 8920
+# 访问 http://localhost:8920/diagnose/            （演示：?target=cnm_221&demo=1）
 node tests/test_engine.js                          # 引擎测试
 node scripts/screenshot.js                         # 冒烟测试 + 截图（需要本机 Chrome）
 ```
+
+> 不要用 `python3 -m http.server` 做本地验收：它不发禁缓存头，Chrome 会长期缓存 `diagnose/app.js`，改了代码也照样执行旧版本。有禁缓存的开发服务器请用 `scripts/serve.js`。详见 [docs/local-serving.md](docs/local-serving.md)。
 
 算法说明、判题规则、URL 参数与局限见 [diagnose/README.md](diagnose/README.md)。首页、知识图谱和诊断页顶部都有同一套导航。每个知识点最多问 2 题，诊断结果只是线索。
 
@@ -394,12 +396,14 @@ python3 scripts/validate.py
 页面通过 `fetch` 读取 `data/*.json`，浏览器不允许直接用 `file://` 打开，请在本目录启动一个静态服务器：
 
 ```bash
-python3 -m http.server 8000
-# 首页 http://localhost:8000/
-# 英语（三年级到高中） http://localhost:8000/?subject=english
-# 知识图谱 http://localhost:8000/explore/
-# 诊断 http://localhost:8000/diagnose/
+node scripts/serve.js 8920        # 推荐：带禁缓存头，改完代码刷新就是新代码
+# 首页 http://localhost:8920/
+# 英语（三年级到高中） http://localhost:8920/?subject=english
+# 知识图谱 http://localhost:8920/explore/
+# 诊断 http://localhost:8920/diagnose/
 ```
+
+`python3 -m http.server 8000` 也能开，但**本地验收请别用它**：它不发送禁缓存头，Chrome 会按启发式规则长期缓存 `diagnose/app.js`，改了代码刷新出来还是旧版本（表现是 `curl` 和浏览器 `fetch` 都拿到新文件，页面执行的却是旧逻辑，`performance.getEntriesByType('resource')` 里 `transferSize: 0`）。原因与细节见 [docs/local-serving.md](docs/local-serving.md)。
 
 三个页面共用 `assets/site.css`（柔和青绿主色，小学青绿、初中蓝、高中品红三种辅助色，跟随系统深色模式）和顶部导航：数学 / 英语、首页、知识图谱、诊断、关于（GitHub）。图形库和二维码库放在 `assets/vendor/`，页面不从外网 CDN 加载脚本、样式或字体。旧链接 `#cnm_219`、`#cnm_p001`、`#cnm_ext_002` 写在网站根路径上时，会转到知识图谱的同一哈希。`#cne_…` 转到 `explore/?subject=english#cne_…`。
 
