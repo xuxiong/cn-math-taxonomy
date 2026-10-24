@@ -379,21 +379,25 @@
     }
     if (r0 != null && chord != null && chord > 2 * r0 + 1e-9) return null;   // 弦长超过直径：题面必有问题
 
-    /* 三个量在题面里补齐（缺的那个由垂径定理算出），画板上永远有三个数可用 */
+    /* 三个量在题面里补齐（缺的那个由垂径定理算出）。注意：补出来的那个是**派生量**，
+     * 画板上不标数值（只标题面给了的那两个），否则等于把答案印在图上。 */
     const st = { r: r0, d: dist, chord: chord };
     if (st.chord == null) st.chord = chordLength(st.r, st.d);
     if (st.d == null) st.d = chordDistance(st.r, st.chord);
     if (st.r == null) st.r = radiusFromChordDist(st.chord, st.d);
     return {
       skel: 'circle-chord',
-      title: '垂径定理：半径、半弦、弦心距组成直角三角形',
+      title: '⊙O 中的弦与弦心距',
       prompt: '',
       state: st,
       /* 拖动时谁不动：题面给了半径就锁半径（弦长可动）；只给弦+弦心距时锁弦心距（半径跟着变） */
       fixed: (r0 != null || diameter != null) ? 'r' : 'd',
       given: { r: r0 != null || diameter != null, d: dist != null, chord: chord != null },
       free: 'chord',
-      note: '拖动弦的端点：弦长变了，弦心距跟着变。关系永远是 r² = d² + (AB/2)²。'
+      /* note 只描述「怎么操作」和「看什么在变」，不许写出 r²=d²+(AB/2)² 这种结论式 */
+      note: (r0 != null || diameter != null)
+        ? '拖动弦的端点 B：半径 OA 不变，弦长 AB 与圆心到弦的距离 OH 一起变。'
+        : '拖动弦的端点 B：弦长 AB 与圆心到弦的距离 OH 一起变，半径 OA 随之变化。'
     };
   }
 
@@ -429,15 +433,15 @@
     const onMinor = /劣弧/.test(S);
     return {
       skel: 'circle-inscribed',
-      title: '圆周角定理：同弧所对的圆周角是圆心角的一半',
+      title: '⊙O 中的圆心角与圆周角',
       prompt: '',
       /* cAng：C 在圆上的角度（度）。拖动 C 时只改它 —— 角度不变，正是定理要说明的事 */
       state: { central: th, onMinor: onMinor, cAng: onMinor ? 90 : 270 },
       given: { central: central != null, inscribed: fromInscribed },
       free: 'central',
       note: onMinor
-        ? '拖动 B 改变圆心角；拖动 C 沿弧移动：∠ACB 始终 = 180° − ∠AOB/2。'
-        : '拖动 B 改变圆心角；拖动 C 沿弧移动：∠ACB 始终等于 ∠AOB 的一半。'
+        ? '拖动 B 改变圆心角，拖动 C 沿弧移动：C 在劣弧上，请自己比较 ∠AOB 与 ∠ACB 的度数。'
+        : '拖动 B 改变圆心角，拖动 C 沿弧移动：C 在优弧上，请自己比较 ∠AOB 与 ∠ACB 的度数。'
     };
   }
 
@@ -485,7 +489,7 @@
       if (!(st.OP > st.r)) return null;   // OP 必须大于 r，否则点 P 在圆内、没有切线
       return {
         skel: 'circle-tangent',
-        title: '切线长定理：两条切线长相等，OP 平分 ∠APB',
+        title: '⊙O 的两条切线与切线长',
         prompt: '',
         state: st,
         given: { r: r0 != null, OP: OP != null, angleAPB: angP != null },
@@ -493,7 +497,7 @@
         both: true,
         /* 尺寸是归一化的，不能当真值显示（只有角度是题面给定的） */
         scaleFree: scaleFree,
-        note: '拖动点 P 沿轴移动：PA = PB 始终成立，△OAP、△OBP 都是直角三角形。'
+        note: '拖动点 P 沿轴移动：两条切线 PA、PB 与 ∠APB 都在变，请比较两条切线长的关系。'
       };
     }
 
@@ -513,13 +517,13 @@
     if (!(st.OP > st.r)) return null;
     return {
       skel: 'circle-tangent',
-      title: '切线⊥过切点的半径：△OAP 是直角三角形',
+      title: '⊙O 的切线与过切点的半径',
       prompt: '',
       state: st,
       given: { r: r0 != null, PA: PA != null, OP: OP != null, angleP: angP != null, angleAOP: angAOP != null },
       free: 'PA',
       both: false,
-      note: '拖动点 P 沿切线移动：OA⊥PA 始终成立，OP² = OA² + PA²（勾股定理）。'
+      note: '拖动点 P 沿切线移动：切线长 PA 与 OP 一起变，请观察 △OAP 里哪两条边始终垂直。'
     };
   }
 
@@ -545,12 +549,12 @@
     const AC = ae + ec;
     return {
       skel: 'similar-parallel',
-      title: '平行截线成比例：AD/DB = AE/EC',
+      title: '△ABC 中 DE∥BC',
       prompt: '',
       state: { AB: AB, AC: AC, AD: AD },
       given: { AD: true, DB: true, AE: AE != null, EC: EC != null },
       free: 'AD',
-      note: '拖动点 D 沿 AB 移动：AD/DB 与 AE/EC 始终相等，DE 始终平行于 BC。'
+      note: '拖动点 D 沿 AB 移动：AD、DB、AE、EC 四段都在变，DE 始终平行于 BC。请自己算 AD/DB 与 AE/EC 并比较。'
     };
   }
 
@@ -577,13 +581,13 @@
     const k = biggerFirst ? b / a : (a < b ? b / a : a / b);
     return {
       skel: 'similar-pair',
-      title: '相似比 k：对应边成比例，对应角相等',
+      title: '两个相似三角形',
       prompt: '',
       state: { side: side, k: k },
       given: { side: true, k: true },
       givenRatio: a + ':' + b,
       free: 'k',
-      note: '拖动滑块改变相似比：对应边同比放大，形状不变（对应角相等）。'
+      note: '拖动滑块改变相似比：对应边同比变化、形状不变。请自己算对应边的比与面积的比。'
     };
   }
 
@@ -611,17 +615,15 @@
     const wantsAltitude = /高|CD\s*⊥|⊥\s*AB/.test(S) && /CD/.test(S);
     return {
       skel: 'triangle-right',
-      title: wantsAltitude
-        ? 'Rt△ 与斜边上的高：等面积法 AC·BC = AB·CD'
-        : 'Rt△：勾股定理 a² + b² = c²',
+      title: wantsAltitude ? 'Rt△ 与斜边上的高' : 'Rt△ABC（∠C=90°）',
       prompt: '',
       state: { a: a, b: b },
       given: { a: AC != null, b: BC != null, c: AB != null },
       free: 'b',
       altitude: wantsAltitude,
       note: wantsAltitude
-        ? '拖动 A、B 改变两条直角边：斜边上的高 CD = AC·BC/AB 跟着变。'
-        : '拖动 A、B 改变两条直角边：斜边 c 与面积自动算出。'
+        ? '拖动 A、B 改变两条直角边：斜边 AB 与斜边上的高 CD 都在变，请自己算 CD。'
+        : '拖动 A、B 改变两条直角边：斜边 AB 与面积也随之变化，请自己算。'
     };
   }
 
@@ -678,6 +680,8 @@
   function solve(lab) {
     if (!lab) return null;
     const st = lab.state;
+    /* 题面给出的已知量（画板只许标这些，其余一律 '?'）—— 由各骨架解析时记入 lab.given */
+    const gv = givenValues(lab);
     switch (lab.skel) {
       case 'circle-chord': {
         /* 谁不动由 lab.fixed 决定（题面给了半径就锁半径），另一个按垂径定理跟着算 */
@@ -697,13 +701,14 @@
         if (!(chord > 0) || !(r > 0) || chord > 2 * r + 1e-9) return null;
         return {
           r: r, d: d, chord: chord, halfChord: chord / 2,
-          central: 2 * Math.asin(Math.min(1, chord / (2 * r))) * R2D
+          central: 2 * Math.asin(Math.min(1, chord / (2 * r))) * R2D,
+          given: gv
         };
       }
       case 'circle-inscribed': {
         const central = st.central;
         const inscribed = st.onMinor ? inscribedOnMinorArc(central) : inscribedFromCentral(central);
-        return { central: central, inscribed: inscribed, onMinor: !!st.onMinor };
+        return { central: central, inscribed: inscribed, onMinor: !!st.onMinor, given: gv };
       }
       case 'circle-tangent': {
         const r = st.r;
@@ -724,7 +729,8 @@
         const angleAOB = lab.both ? 180 - apex : null;
         return {
           r: r, OP: OP, PA: PA, angleP: apex, angleAPO: angleAPO, angleAOP: angleAOP,
-          angleAOB: angleAOB, areaPAOB: areaPAOB, both: !!lab.both, scaleFree: !!lab.scaleFree
+          angleAOB: angleAOB, areaPAOB: areaPAOB, both: !!lab.both, scaleFree: !!lab.scaleFree,
+          given: gv
         };
       }
       case 'similar-parallel': {
@@ -738,7 +744,7 @@
         if (!(EC > 0)) return null;
         return {
           AB: AB, AC: AC, AD: AD, DB: DB, AE: AE, EC: EC,
-          ratio: AD / DB, AEoverEC: AE / EC, scale: AD / AB
+          ratio: AD / DB, AEoverEC: AE / EC, scale: AD / AB, given: gv
         };
       }
       case 'similar-pair': {
@@ -747,7 +753,7 @@
         if (!(s > 0) || !(k > 0)) return null;
         return {
           side: s, k: k, big: similarSide(s, k), areaK: similarAreaRatio(k),
-          ratioText: lab.givenRatio || ('1:' + fmt(k))
+          ratioText: lab.givenRatio || ('1:' + fmt(k)), given: gv
         };
       }
       case 'triangle-right': {
@@ -764,7 +770,7 @@
           a: a, b: b, c: c, area: area, altitude: alt,
           /* ∠A 是 BC 边的对角（a=AC、b=BC、c=AB） */
           angleA: lawCosAngle(b, a, c), angleB: lawCosAngle(a, b, c),
-          projA: projA, projB: projB
+          projA: projA, projB: projB, given: gv
         };
       }
       default:
@@ -776,6 +782,138 @@
    *  拆成函数是因为 draw 与 solve 都要用，避免两处各写一遍公式。 */
   function AEof(AD, AB, AC) {
     return AC * AD / AB;
+  }
+
+  /* ============================================================ 5b. 已知量 vs 派生量
+   *
+   * ★ 教学硬规则（用户判据）★
+   * 画板的目的是让学生看懂**问题怎么解决**，所以画板上只许出现「题面给出的已知量」。
+   * 由已知量推出来的东西（第三边、面积、比值、弦心距、定理等式）一律不得静态标注 ——
+   * 那等于图替学生把题算完了，学生只会照抄结论。可推导量只能以 '?' 占位，
+   * 学生自己算完点「我算好了」之后，才在空白处显示对比结果。
+   *
+   * 所以渲染层读数值必须走下面两个函数，不许直接 fmt(v.xxx)：
+   *   knownText(lab, sol, key, v)  → 题面给了这个量就返回已知值，否则 '?'
+   *   deriveText(...)              → 永远是 '?'（派生量，等学生填）
+   */
+
+  /* 骨架 → 该骨架「可被题面给定」的量（与 parse* 里 lab.given 的键一一对应） */
+  const GIVEN_KEYS = {
+    'circle-chord': ['r', 'd', 'chord'],
+    'circle-inscribed': ['central', 'inscribed'],
+    'circle-tangent': ['r', 'PA', 'OP', 'angleP', 'angleAOP', 'angleAPB'],
+    'similar-parallel': ['AD', 'DB', 'AE', 'EC'],
+    'similar-pair': ['side', 'k'],
+    'triangle-right': ['a', 'b', 'c']
+  };
+
+  /**
+   * 取题面已知量的判定表（lab.given 的拷贝）。
+   * similar-pair 的 k 与 side 在解析时恒为 true，但学生拖滑块后画布上的尺寸已经不是
+   * 题面那个数了 —— 所以只在「没有拖动过」时算已知，否则会让标出来的数和题面对不上。
+   */
+  function givenValues(lab) {
+    if (!lab) return {};
+    const g = lab.given ? Object.assign({}, lab.given) : {};
+    if (lab.skel === 'similar-pair') {
+      const s0 = lab._start && lab._start.side;
+      if (s0 != null && Math.abs(lab.state.side - s0) > 1e-9) g.side = false;
+      const k0 = lab._start && lab._start.k;
+      if (k0 != null && Math.abs(lab.state.k - k0) > 1e-9) g.k = false;
+    }
+    return g;
+  }
+
+  /** 题面给了 → 数值；没给 → '?'。用于边长、半径、角度这类标量 */
+  function knownText(lab, sol, key) {
+    const g = (sol && sol.given) || givenValues(lab);
+    const v = sol ? sol[key] : null;
+    return g[key] ? fmt(v) : '?';
+  }
+
+  /** 派生量：题面从没给过，只能等学生自己算 —— 永远是 '?' */
+  function deriveText() {
+    return '?';
+  }
+
+  /**
+   * 自检面板要核对的结果行（学生点「我算好了」之后才显示）。
+   * 这里才允许出现真实值 —— 静态标注一律不许，见上面 5b 的规则。
+   * 只列这道题真正要求 / 真正在图上留了问号的量，不把内部中间量全倒出来。
+   */
+  function checkRows(lab, sol) {
+    if (!lab || !sol) return [];
+    const g = sol.given || givenValues(lab);
+    const rows = [];
+    const add = function (name, real, unit) {
+      rows.push({ name: name, yours: '', real: real, unit: unit || '' });
+    };
+    switch (lab.skel) {
+      case 'circle-chord':
+        if (!g.d) add('弦心距 OH', sol.d);
+        if (!g.chord) add('弦长 AB', sol.chord);
+        if (!g.r) add('半径 OA', sol.r);
+        break;
+      case 'circle-inscribed':
+        if (!g.central) add('圆心角 ∠AOB', sol.central, '°');
+        if (!g.inscribed) add(sol.onMinor ? '圆周角 ∠ACB（劣弧侧）' : '圆周角 ∠ACB', sol.inscribed, '°');
+        break;
+      case 'circle-tangent':
+        if (!lab.scaleFree) {
+          if (!g.PA) add('切线长 PA', sol.PA);
+          if (!g.OP) add('OP', sol.OP);
+          if (lab.both) add('PB（切线长定理）', sol.PA);
+        }
+        if (!g.angleP && !g.angleAPB) add(lab.both ? '∠APB' : '∠P', sol.angleP, '°');
+        break;
+      case 'similar-parallel':
+        if (!g.EC) add('EC', sol.EC);
+        if (!g.AE) add('AE', sol.AE);
+        add('AD/DB', sol.ratio);
+        add('AE/EC', sol.AEoverEC);
+        break;
+      case 'similar-pair':
+        add("A'B'（对应边）", sol.big);
+        add("A'B'/AB 即相似比 k", sol.k);
+        add('面积比 S大:S小 = k²', sol.areaK);
+        break;
+      case 'triangle-right':
+        if (!g.c) add('斜边 AB', sol.c);
+        if (!g.b) add('直角边 BC', sol.b);
+        if (!g.a) add('直角边 AC', sol.a);
+        add('面积 S', sol.area);
+        if (lab.altitude) add('斜边上的高 CD', sol.altitude);
+        break;
+      default:
+        break;
+    }
+    return rows;
+  }
+
+  /* 画布顶部「题面已知」行用的量名（带单位符号），顺序即展示顺序 */
+  const GIVEN_LABEL = {
+    'circle-chord': { r: 'OA', d: 'OH', chord: 'AB' },
+    'circle-inscribed': { central: '∠AOB', inscribed: '∠ACB' },
+    'circle-tangent': { r: 'OA', PA: 'PA', OP: 'OP', angleP: '∠P', angleAPB: '∠APB', angleAOP: '∠AOP' },
+    'similar-parallel': { AD: 'AD', DB: 'DB', AE: 'AE', EC: 'EC' },
+    'similar-pair': { side: 'AB', k: '相似比' },
+    'triangle-right': { a: 'AC', b: 'BC', c: 'AB' }
+  };
+
+  /** 题面已知量 → 「OA = 5、AB = 8」这样的短句；一个都没给就返回「（无）」 */
+  function knownList(lab, sol) {
+    const keys = GIVEN_KEYS[lab.skel] || [];
+    const labels = GIVEN_LABEL[lab.skel] || {};
+    const g = (sol && sol.given) || givenValues(lab);
+    const parts = [];
+    keys.forEach(function (k) {
+      if (!g[k]) return;
+      const name = labels[k] || k;
+      /* 相似比是「2:3」这种字符串，不是标量 */
+      const text = (k === 'k' && lab.givenRatio) ? lab.givenRatio : fmt(sol ? sol[k] : null);
+      parts.push(name + ' = ' + text);
+    });
+    return parts.length ? parts.join('、') : '（题面未给数值）';
   }
 
   /* ============================================================ 6. 渲染
@@ -792,7 +930,8 @@
     angle: '#e67e22',
     fill: 'rgba(42,125,225,.08)',
     text: '#1f2933',
-    handle: '#2ecc71'
+    handle: '#2ecc71',
+    auxText: '#6b7c93'
   };
 
   function destroy() {
@@ -998,17 +1137,20 @@
         name(B, 'B', 8, 16);
         name(O, 'O', 6, 18);
         name(H, 'H', -6, 16);
-        bgLabel(X(-half / 2) - 24, Y(d / 2) - 4, 'OH=' + fmt(d));
-        bgLabel(X(0) - 24, Y(d) + 20, 'AB=' + fmt(v.chord), COLOR.text);
-        bgLabel(X(-r / 2) - 20, Y(d / 2) - 20, 'OA=' + fmt(r), COLOR.text);
-        bgLabel(6, 18, 'r² = d² + (AB/2)² ： ' + fmt(r) + '² = ' + fmt(d) + '² + ' + fmt(half) + '²', COLOR.mark);
+        /* 只标题面给了的量：半径与弦长给过就标数，弦心距是推出来的（或反过来）就留 '?' */
+        bgLabel(X(0) + 8, Y(d) - 8, 'OH = ' + knownText(lab, v, 'd'));
+        bgLabel(X(-half / 2) - 24, Y(d) - 4, 'AB = ' + knownText(lab, v, 'chord'), COLOR.text);
+        bgLabel(X(-r * 0.28), Y(d * 0.7), 'OA = ' + knownText(lab, v, 'r'), COLOR.text);
+        bgLabel(6, 18, '题面已知：' + knownList(lab, v) + '；其余问号处请自己算', COLOR.auxText);
         addHandle(B.x, B.y, function (w) {
-          /* 弦端点水平拖动 → 改弦长；半径固定时弦心距按垂径定理跟着变 */
+          /* 弦端点水平拖动 → 改弦长；半径固定时弦心距按垂径定理跟着变。
+           * 下限取 8% 半径（不是 35%）：弦要能从"几乎直径"拖到"几乎是一条点"，
+           * 弦心距 OH 才会从 ≈0 明显涨到 ≈r，学生才看得见「弦越短、离圆心越远」。 */
           const half2 = Math.abs(w.x);
           let chord = 2 * half2;
-          const rNow = lab.state.r;
+          const rNow = lab.state.r || r;
           if (lab.fixed === 'r') chord = Math.min(chord, 2 * rNow * 0.999);
-          lab.state.chord = Math.max(0.35 * rNow, chord);
+          lab.state.chord = Math.max(0.08 * 2 * rNow, chord);
         });
       },
 
@@ -1034,15 +1176,18 @@
         name(B, 'B', 8, -8);
         name(O, 'O', 2, 18);
         name(C, 'C', 8, 16);
-        angleArc(O, A, B, 0.34, '∠AOB=' + fmt(th) + '°', COLOR.mark);
-        angleArc(C, A, B, 0.34, '∠ACB=' + fmt(sol.inscribed) + '°', COLOR.angle);
-        bgLabel(6, 18, '同弧所对的圆周角 = 圆心角的一半：' + fmt(th) + '° ÷ 2 = ' + fmt(th / 2) + '°', COLOR.mark);
+        /* 两个角的数值都标（题面给哪个就标哪个，另一个留 '?'），但不写「圆周角=圆心角的一半」 */
+        angleArc(O, A, B, 0.34, '∠AOB = ' + knownText(lab, sol, 'central') + '°', COLOR.mark);
+        angleArc(C, A, B, 0.34, '∠ACB = ' + knownText(lab, sol, 'inscribed') + '°', COLOR.angle);
+        bgLabel(6, 18, '题面已知：' + knownList(lab, sol) + '；两角关系请自己看', COLOR.auxText);
         addHandle(B.x, B.y, function (w) {
-          /* 拖 B：按对称位置反解圆心角（A、B 关于竖轴对称） */
+          /* 拖 B：按对称位置反解圆心角（A、B 关于竖轴对称）。
+           * 上限从 170° 提到 176°：圆周角要能拖到 88° 附近，学生才看得出「圆心角一缩，
+           * 圆周角同步缩」的大幅度变化；下限 6° 让圆周角退到 3° 附近。 */
           let ang = Math.atan2(w.y, w.x) * R2D;
           let delta = Math.abs(norm360(ang) - 90);
           if (delta > 180) delta = 360 - delta;
-          lab.state.central = Math.max(10, Math.min(170, 2 * delta));
+          lab.state.central = Math.max(6, Math.min(176, 2 * delta));
         });
         addHandle(C.x, C.y, function (w) {
           /* 拖 C：只能沿弧滑动 —— ∠ACB 的值不变，这正是「同弧圆周角相等」 */
@@ -1077,10 +1222,15 @@
           name(B, 'B', 8, 20);
           name(P, 'P', 8, -10);
           name(O, 'O', 6, 20);
-          angleArc(P, A, B, 0.42, '∠APB=' + fmt(v.angleP) + '°', COLOR.angle);
-          bgLabel(6, 18, v.scaleFree
-            ? 'PA = PB，∠APO = ∠APB/2 = ' + fmt(v.angleAPO) + '°，∠AOB = 180° − ∠APB = ' + fmt(v.angleAOB) + '°（题面未给尺寸，图上只标角度）'
-            : 'PA=PB=' + fmt(PA) + '，∠APO=' + fmt(v.angleAPO) + '°，∠AOB=' + fmt(v.angleAOB) + '°，S四边形PAOB=' + fmt(v.areaPAOB), COLOR.mark);
+          angleArc(P, A, B, 0.42, '∠APB = ' + knownText(lab, v, 'angleAPB') + '°', COLOR.angle);
+          /* 归一化尺寸的图（只给 ∠APB）不能标长度，否则标出来的是假数 */
+          if (!v.scaleFree) {
+            bgLabel(X((P.x + A.x) / 2) + 6, Y((P.y + A.y) / 2), 'PA = ' + knownText(lab, v, 'PA'));
+            bgLabel(X((P.x + B.x) / 2) + 6, Y((P.y + B.y) / 2) + 14, 'PB = ' + deriveText());
+            bgLabel(X(OP / 2), Y(0) - 8, 'OP = ' + knownText(lab, v, 'OP'), COLOR.text);
+          }
+          bgLabel(6, 18, '题面已知：' + knownList(lab, v) +
+            (v.scaleFree ? '（题面未给尺寸，图上不标长度）' : '；PA 与 PB 的关系请自己看'), COLOR.auxText);
           addHandle(P.x, P.y, function (w) {
             lab.state.OP = Math.max(r * 1.02, Math.min(r * 6, Math.abs(w.x) || OP));
           });
@@ -1100,9 +1250,10 @@
         name(A, 'A', 8, 20);
         name(P, 'P', 8, -10);
         name(O, 'O', -20, 18);
-        angleArc(P, O, A, 0.36, '∠P=' + fmt(v.angleP) + '°', COLOR.angle);
-        bgLabel(6, 18, 'OA⊥PA：OA=' + fmt(r) + '，PA=' + fmt(PA) + '，OP=' + fmt(OP) +
-          ' → ' + fmt(OP) + '² = ' + fmt(r) + '² + ' + fmt(PA) + '²', COLOR.mark);
+        angleArc(P, O, A, 0.36, '∠P = ' + knownText(lab, v, 'angleP') + '°', COLOR.angle);
+        bgLabel(X(-r * 0.62), Y(0) - 8, 'OA = ' + knownText(lab, v, 'r'), COLOR.text);
+        bgLabel(X(r + 6), Y(PA / 2), 'PA = ' + knownText(lab, v, 'PA'));
+        bgLabel(6, 18, '题面已知：' + knownList(lab, v) + '；求 OP 请自己算', COLOR.auxText);
         addHandle(P.x, P.y, function (w) {
           lab.state.PA = Math.max(0.35 * r, Math.min(r * 4, Math.abs(w.y) || PA));
         });
@@ -1134,18 +1285,21 @@
         name(C, 'C', 8, 16);
         name(D, 'D', -24, 2);
         name(E, 'E', 10, 2);
-        bgLabel(X((A.x + D.x) / 2) - 22, Y((A.y + D.y) / 2), 'AD=' + fmt(v.AD));
-        bgLabel(X((D.x + B.x) / 2) - 22, Y((D.y + B.y) / 2) - 8, 'DB=' + fmt(v.DB));
-        bgLabel(X((A.x + E.x) / 2) + 8, Y((A.y + E.y) / 2), 'AE=' + fmt(v.AE));
-        bgLabel(X((E.x + C.x) / 2) + 8, Y((E.y + C.y) / 2) - 8, 'EC=' + fmt(v.EC));
-        bgLabel(6, 18, 'AD/DB = ' + fmt(v.AD) + '/' + fmt(v.DB) + ' = ' + fmt(v.ratio) +
-          '，AE/EC = ' + fmt(v.AE) + '/' + fmt(v.EC) + ' = ' + fmt(v.AEoverEC) + '（DE∥BC）', COLOR.mark);
+        /* 四段长度：题面给了就标数，没给（要学生求的那条）就留 '?' —— 不许标比值 */
+        bgLabel(X((A.x + D.x) / 2) - 22, Y((A.y + D.y) / 2), 'AD = ' + knownText(lab, v, 'AD'));
+        bgLabel(X((D.x + B.x) / 2) - 22, Y((D.y + B.y) / 2) - 8, 'DB = ' + knownText(lab, v, 'DB'));
+        bgLabel(X((A.x + E.x) / 2) + 8, Y((A.y + E.y) / 2), 'AE = ' + knownText(lab, v, 'AE'));
+        bgLabel(X((E.x + C.x) / 2) + 8, Y((E.y + C.y) / 2) - 8, 'EC = ' + knownText(lab, v, 'EC'));
+        bgLabel(X((D.x + E.x) / 2) - 26, Y(D.y) + 18, 'AD/DB = ' + deriveText() + '　AE/EC = ' + deriveText(), COLOR.auxText);
+        bgLabel(6, 18, '题面已知：' + knownList(lab, v) + '；两个比值请自己算后比较', COLOR.auxText);
         addHandle(D.x, D.y, function (w) {
-          /* D 沿 AB 滑动：AD 变，AE/EC 跟着变，但两段之比始终相等 */
+          /* D 沿 AB 滑动：AD 变，AE/EC 跟着变，但两段之比始终相等。
+           * 范围放宽到 8%–92%：AD/DB 能从 ≈0.09 变到 ≈11，两个比值的同步变化才肉眼可辨
+           * （原来 12%–88% 在题面参数附近只从 0.46 变到 1.6，学生看不出规律）。 */
           const dx = B.x - A.x;
           const dy = B.y - A.y;
           const proj = ((w.x - A.x) * dx + (w.y - A.y) * dy) / (dx * dx + dy * dy);
-          lab.state.AD = Math.max(0.12 * AB, Math.min(0.88 * AB, proj * AB));
+          lab.state.AD = Math.max(0.08 * AB, Math.min(0.92 * AB, proj * AB));
         });
       },
 
@@ -1179,10 +1333,9 @@
         name(O, 'O', -18, 16);
         name(A, 'A', -18, 14); name(B, 'B', 6, 14); name(C, 'C', 6, -8);
         name(A2, "A'", -22, 14); name(B2, "B'", 6, 14); name(C2, "C'", 6, -8);
-        bgLabel(X((A.x + B.x) / 2) - 12, Y(0) + 20, 'AB=' + fmt(s), COLOR.text);
-        bgLabel(X((A2.x + B2.x) / 2) - 14, Y(0) + 20, "A'B'=" + fmt(v.big), COLOR.mark);
-        bgLabel(6, 18, '位似比 k=' + fmt(k) + '：A\'B\'/AB = ' + fmt(v.big) + '/' + fmt(s) +
-          ' = ' + fmt(k) + '，面积比 S大:S小 = k² = ' + fmt(v.areaK), COLOR.mark);
+        bgLabel(X((A.x + B.x) / 2) - 12, Y(0) + 20, 'AB = ' + knownText(lab, v, 'side'), COLOR.text);
+        bgLabel(X((A2.x + B2.x) / 2) - 14, Y(0) + 20, "A'B' = " + deriveText());
+        bgLabel(6, 18, '题面已知：' + knownList(lab, v) + '；对应边的比与面积比请自己算', COLOR.auxText);
       },
 
       /* 直角三角形（可带斜边上的高） */
@@ -1202,9 +1355,9 @@
         name(A, 'A', -18, -6);
         name(B, 'B', 8, 18);
         name(C, 'C', -18, 18);
-        bgLabel(X(0) - 52, Y(a / 2), 'AC=' + fmt(a), COLOR.text);
-        bgLabel(X(b / 2) - 14, Y(0) + 20, 'BC=' + fmt(b), COLOR.text);
-        bgLabel(X(b / 2) + 10, Y(a / 2) - 4, 'AB=' + fmt(v.c), COLOR.mark);
+        bgLabel(X(0) - 52, Y(a / 2), 'AC = ' + knownText(lab, v, 'a'), COLOR.text);
+        bgLabel(X(b / 2) - 14, Y(0) + 20, 'BC = ' + knownText(lab, v, 'b'), COLOR.text);
+        bgLabel(X(b / 2) + 10, Y(a / 2) - 4, 'AB = ' + knownText(lab, v, 'c'));
         if (lab.altitude && v.altitude) {
           /* 垂足 D：AD = AC²/AB（射影定理） */
           const t = v.projA / v.c;
@@ -1214,15 +1367,17 @@
           const w = { x: (C.x - D.x) / (v.altitude || 1), y: (C.y - D.y) / (v.altitude || 1) };
           rightAngle(D, u, w);
           name(D, 'D', 8, 18);
-          bgLabel(X((C.x + D.x) / 2) + 6, Y((C.y + D.y) / 2) - 8, 'CD=' + fmt(v.altitude), COLOR.mark);
+          bgLabel(X((C.x + D.x) / 2) + 6, Y((C.y + D.y) / 2) - 8, 'CD = ' + deriveText());
         }
-        bgLabel(6, 18, '勾股：' + fmt(a) + '² + ' + fmt(b) + '² = ' + fmt(v.c) + '²，S = ' + fmt(v.area) +
-          (v.altitude ? '，CD = AC·BC/AB = ' + fmt(v.altitude) : ''), COLOR.mark);
+        bgLabel(6, 18, '题面已知：' + knownList(lab, v) + '；面积 S = ' + deriveText() +
+          (lab.altitude ? '，CD = ' + deriveText() : '') + ' 请自己算', COLOR.auxText);
         addHandle(A.x, A.y, function (w) {
-          lab.state.a = Math.max(0.5, Math.min(a * 3 + 1, Math.abs(w.y) || a));
+          /* 直角边 AC 可拖到 0.35×~2.2×：面积 S = ab/2 随之从 ~0.37S₀ 变到 ~2.2S₀，
+           * 斜边 c 也明显变化（原来的 3a+1 上限太大，拖动会冲出画布）。 */
+          lab.state.a = Math.max(0.35 * a, Math.min(2.2 * a, Math.abs(w.y) || a));
         });
         addHandle(B.x, B.y, function (w) {
-          lab.state.b = Math.max(0.5, Math.min(b * 3 + 1, Math.abs(w.x) || b));
+          lab.state.b = Math.max(0.35 * b, Math.min(2.2 * b, Math.abs(w.x) || b));
         });
       }
     };
@@ -1272,6 +1427,46 @@
       ctrl.appendChild(resetBtn);
     }
 
+    /* ---------------- 自检面板（「我算好了」才显形） ----------------
+     * 静态标注不许写结论，但学生需要一个对答案的地方，否则不知道自己对错。
+     * 折中：默认什么都不显示，学生自己算完点按钮，才把「你算的」和真实值并排列出来。
+     * 抄不到（要先动手），也不用替他算（只是核对）。
+     */
+    function buildCheck() {
+      const box = document.createElement('div');
+      box.className = 'geomlab-check';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'small geomlab-check-btn';
+      btn.textContent = '我算好了';
+      const out = document.createElement('div');
+      out.className = 'geomlab-check-out';
+      out.hidden = true;
+      btn.addEventListener('click', function () {
+        const rows = checkRows(lab, solve(lab));
+        out.textContent = '';
+        rows.forEach(function (r) {
+          const line = document.createElement('div');
+          line.className = 'geomlab-check-row';
+          const you = document.createElement('span');
+          you.className = 'geomlab-check-you';
+          you.textContent = '你算的：' + (r.yours || '____');
+          const real = document.createElement('span');
+          real.className = 'geomlab-check-real';
+          real.textContent = '实际值：' + (r.real == null ? '—' : fmt(r.real) + (r.unit || ''));
+          line.appendChild(you);
+          line.appendChild(real);
+          out.appendChild(line);
+        });
+        if (!rows.length) out.textContent = '这类图没有可核对的计算结果。';
+        out.hidden = false;
+        btn.textContent = '重新核对';
+      });
+      box.appendChild(btn);
+      box.appendChild(out);
+      return box;
+    }
+
     resetBtn.addEventListener('click', function () {
       lab.state = JSON.parse(JSON.stringify(startState));
       sliders.forEach(function (s) {
@@ -1317,6 +1512,8 @@
     canvas.addEventListener('pointerleave', endDrag);
 
     buildControls();
+    ctrl.appendChild(buildCheck());
+    lab._start = JSON.parse(JSON.stringify(startState));
     redraw();
     const ro = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(function () { redraw(); }) : null;
     if (ro) ro.observe(canvas);
@@ -1337,7 +1534,18 @@
         if (ro) ro.disconnect();
         if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
         if (ACTIVE === inst) ACTIVE = null;
-      }
+      },
+      /** 世界坐标 → 画布内像素（验收脚本用它把拖拽事件打在准确的手柄上） */
+      worldToScreen: function (wx, wy) {
+        return { x: X(wx), y: Y(wy) };
+      },
+      /** 第 idx 个拖拽手柄当前的画布内像素位置 */
+      handleScreen: function (idx) {
+        const h = handles[idx];
+        return h ? { x: X(h.x), y: Y(h.y) } : null;
+      },
+      /** 当前溶液（验收读取不变量用，不参与渲染） */
+      values: function () { return solve(lab); }
     };
     wrap._geomlab = inst;
     ACTIVE = inst;
@@ -1352,6 +1560,13 @@
     destroy: destroy,
     solve: solve,
     fmt: fmt,
+    /* 渲染层「已知量 / 派生量」判据（单测用：保证图上不会出现推导结论） */
+    checkRows: checkRows,
+    knownText: knownText,
+    deriveText: deriveText,
+    knownList: knownList,
+    givenValues: givenValues,
+    GIVEN_KEYS: GIVEN_KEYS,
     /* 单测/排查用 */
     gate: gate,
     answerEchoesGiven: answerEchoesGiven,

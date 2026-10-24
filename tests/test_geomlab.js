@@ -567,7 +567,141 @@ test('弧内取值不被改动（优弧 270° 原样保留）', function () {
   near(G.clampArc(270, 100, false), 270);
 });
 
+/* ================================================================
+ * 9. 渲染层硬规则：图上只许出现「题面已知量」
+ *
+ * 用户判据：图的目的是让学生看懂问题怎么解决，所以画板不得静态标注推导结论
+ * （比值 / 面积 / 第三边 / 定理等式）。这一组锁死渲染层的取值口径：
+ *   knownText() 题面给了才出数，没给必须是 '?'
+ *   deriveText() 永远是 '?'
+ *   checkRows() 才是真实值的唯一出口，且只列「图上留了问号 / 题面要问」的量
+ * ================================================================ */
+
+console.log('\n--- 9. 渲染层：只标已知量，派生量必须留 ? ---');
+
+/* 每个骨架挑一道典型题：known 是题面公开可见的量，hidden 是绝不能出现在图上的推导量 */
+const RENDER_CASES = [
+  { id: 'cnm_251_q1', skel: 'circle-chord', known: ['r', 'chord'], hidden: ['d'] },       // 半径 5、弦 8 → 弦心距 3 是答案
+  { id: 'cnm_251_q3', skel: 'circle-chord', known: ['chord', 'd'], hidden: ['r'] },       // 弦 24、弦心距 5 → 半径 13 是答案
+  { id: 'cnm_253_q1', skel: 'circle-inscribed', known: ['central'], hidden: ['inscribed'] }, // 圆心角 100 → 圆周角 50 是答案
+  { id: 'cnm_253_q2', skel: 'circle-inscribed', known: ['inscribed'], hidden: ['central'] },
+  { id: 'cnm_262_q2', skel: 'circle-tangent', known: ['r', 'PA'], hidden: ['OP'] },      // OA=3 PA=4 → OP=5 是答案
+  { id: 'cnm_269_q1', skel: 'similar-parallel', known: ['AD', 'DB', 'AE'], hidden: ['EC', 'ratio', 'AEoverEC'] },
+  { id: 'cnm_174_q3', skel: 'triangle-right', known: ['a', 'c'], hidden: ['b', 'area'] }, // AB=17 AC=8 → 面积 60 是答案
+  { id: 'cnm_112_q4', skel: 'triangle-right', known: ['a', 'b', 'c'], hidden: ['area', 'altitude'] }
+];
+
+RENDER_CASES.forEach(function (c) {
+  test('knownText：' + c.id + '（' + c.skel + '）只有题面给的量出数', function () {
+    const l = lab(c.id);
+    assert.ok(l, c.id + ' 应挂图');
+    assert.strictEqual(l.skel, c.skel, c.id + ' 骨架不符');
+    const v = G.solve(l);
+    c.known.forEach(function (k) {
+      assert.notStrictEqual(G.knownText(l, v, k), '?', c.id + ' 的 ' + k + ' 是题面已知量，应标出数值');
+    });
+    c.hidden.forEach(function (k) {
+      assert.strictEqual(G.knownText(l, v, k), '?', c.id + ' 的 ' + k + ' 是推导结论，图上必须是 ?');
+    });
+  });
+});
+
+test('deriveText 恒为 ?（派生量没有任何出数口径）', function () {
+  assert.strictEqual(G.deriveText(), '?');
+});
+
+test('相似图：题面要问的 EC 在图上必须是 ?，比值也不得标数', function () {
+  const l = lab('cnm_269_q1');
+  const v = G.solve(l);
+  near(v.EC, 6, 1e-9, '内部计算仍须正确（EC=6）：');
+  assert.strictEqual(G.knownText(l, v, 'EC'), '?');
+  /* knownList 只列已知量，不能把 EC 也列进去 */
+  const listed = G.knownList(l, v);
+  assert.ok(!/EC/.test(listed), '已知量行不该出现 EC，实际：' + listed);
+  assert.ok(/AD/.test(listed) && /DB/.test(listed) && /AE/.test(listed), '已知量行应含 AD/DB/AE：' + listed);
+});
+
+test('area 永远进不了 knownText：没有任何骨架把面积当已知量', function () {
+  Object.keys(G.GIVEN_KEYS).forEach(function (skel) {
+    assert.ok(G.GIVEN_KEYS[skel].indexOf('area') < 0, skel + ' 不该把 area 列为可给定');
+    assert.ok(G.GIVEN_KEYS[skel].indexOf('ratio') < 0, skel + ' 不该把 ratio 列为可给定');
+  });
+});
+
+test('checkRows：真实值只出现在自检面板里，且覆盖图上留 ? 的量', function () {
+  RENDER_CASES.forEach(function (c) {
+    const l = lab(c.id);
+    const v = G.solve(l);
+    const rows = G.checkRows(l, v);
+    assert.ok(rows.length > 0, c.id + ' 的自检面板应有可核对的行');
+    const names = rows.map(function (r) { return r.name; }).join('|');
+    /* 图上留了 ? 的关键量，必须在自检行里能找到对应条目 */
+    if (c.id === 'cnm_251_q1') assert.ok(/弦心距/.test(names), '自检应含弦心距：' + names);
+    if (c.id === 'cnm_253_q1') assert.ok(/圆周角/.test(names), '自检应含圆周角：' + names);
+    if (c.id === 'cnm_262_q2') assert.ok(/OP/.test(names), '自检应含 OP：' + names);
+    if (c.id === 'cnm_269_q1') {
+      assert.ok(/EC/.test(names), '自检应含 EC：' + names);
+      assert.ok(/AD\/DB/.test(names) && /AE\/EC/.test(names), '自检应含两个比值：' + names);
+    }
+    if (c.id === 'cnm_174_q3') assert.ok(/面积/.test(names), '自检应含面积：' + names);
+    rows.forEach(function (r) {
+      assert.ok(r.real != null && isFinite(r.real), c.id + ' 的自检行 ' + r.name + ' 应有真实数值');
+      assert.strictEqual(r.yours, '', '「你算的」默认必须是空位（不能预先填好答案）');
+    });
+  });
+});
+
+test('自检行不输出「题面已知量」的假结果：cnm_174_q3 不给 AB 再列一遍', function () {
+  const l = lab('cnm_174_q3');
+  const names = G.checkRows(l, G.solve(l)).map(function (r) { return r.name; }).join('|');
+  assert.ok(!/斜边/.test(names), 'AB=17 是题面已知量，自检不该重复列：' + names);
+  assert.ok(!/直角边 AC/.test(names), 'AC=8 是已知量，不该列：' + names);
+  assert.ok(/直角边 BC/.test(names), 'BC 是要求的那条，应列：' + names);
+});
+
+/* ---- 拖动幅度：不变量必须在拖动全程有肉眼可辨的变化 ---- */
+
+console.log('\n--- 10. 拖动幅度（不变量要有明显变化） ---');
+
+test('相似：AD 从 8% 拖到 92%，AD/DB 与 AE/EC 同步且变化幅度 > 10 倍', function () {
+  const l = lab('cnm_269_q1');
+  const AB = l.state.AB;
+  l.state.AD = 0.08 * AB;
+  const lo = G.solve(l);
+  l.state.AD = 0.92 * AB;
+  const hi = G.solve(l);
+  near(lo.ratio, lo.AEoverEC, 1e-9, '起点两比值应相等：');
+  near(hi.ratio, hi.AEoverEC, 1e-9, '终点两比值应相等：');
+  assert.ok(hi.ratio / lo.ratio > 10, 'AD/DB 应从 ' + lo.ratio + ' 变到 ' + hi.ratio + '（>10 倍）');
+  assert.ok(lo.AD > 0 && lo.DB > 0 && hi.AE > 0 && hi.EC > 0, '两端都不能退化');
+});
+
+test('圆·弦：弦长可拖到 8% 半径，弦心距 OH 随之明显改变', function () {
+  const l = lab('cnm_251_q1');
+  l.state.chord = 2 * l.state.r * 0.999;
+  const wide = G.solve(l);
+  l.state.chord = 0.08 * 2 * l.state.r;
+  const narrow = G.solve(l);
+  near(wide.r, 5, 1e-9, '半径锁住：');
+  /* 弦接近直径时 OH → 0（0.999 直径对应 OH ≈ 0.22，几何上就该这么大） */
+  assert.ok(wide.d < 0.3, '弦接近直径时 OH 应接近 0，实际 ' + wide.d);
+  assert.ok(narrow.d > 4.9, '弦缩到 8% 直径时 OH 应接近半径，实际 ' + narrow.d);
+  /* 关键：OH 的全程变化幅度要肉眼可辨（0.22 → 4.98，二十倍以上） */
+  assert.ok(narrow.d / wide.d > 10, 'OH 应至少变 10 倍：' + wide.d + ' → ' + narrow.d);
+});
+
+test('三角形：直角边缩到 0.35×，面积与斜边都明显变小', function () {
+  const l = lab('cnm_174_q3');
+  const base = G.solve(l);
+  l.state.a = 0.35 * base.a;
+  l.state.b = 0.35 * base.b;
+  const small = G.solve(l);
+  assert.ok(small.area / base.area < 0.15, '面积应缩到 ' + (small.area / base.area).toFixed(3) + ' 倍');
+  assert.ok(base.c - small.c > 5, '斜边应明显变短：' + base.c + ' → ' + small.c);
+});
+
 /* ================================================================ */
+
 
 console.log('\n' + (failed === 0 ? '全部通过' : '存在失败') + '：' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

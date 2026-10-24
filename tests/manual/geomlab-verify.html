@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>geomlab 返修验收</title>
+<link rel="stylesheet" href="/diagnose/style.css">
+<style>
+  body { margin: 0; padding: 18px; background: #f5f7fa; font-family: -apple-system, "PingFang SC", sans-serif; }
+  #host { width: 640px; background: #fff; border-radius: 10px; padding: 12px 14px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  #ctx { width: 640px; margin-bottom: 10px; font-size: 13px; color: #4a5568; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div id="ctx"></div>
+<div id="host"></div>
+<script src="/diagnose/geomlab.js"></script>
+<script>
+  var QMAP = {}, TMAP = {}, LAST = null, LASTLAB = null;
+  function idPrefix(id) { return id.replace(/_q\d+$/, ''); }
+
+  function load() {
+    return Promise.all([
+      fetch('/data/questions.json').then(function (r) { return r.json(); }),
+      fetch('/data/topics.json').then(function (r) { return r.json(); })
+    ]).then(function (res) {
+      res[0].forEach(function (q) { QMAP[q.id] = q; });
+      res[1].forEach(function (t) { TMAP[t.id] = t; });
+      return true;
+    });
+  }
+
+  window.boot = function (qid) {
+    var item = QMAP[qid];
+    if (!item) throw new Error('no question ' + qid);
+    var tp = idPrefix(qid);
+    var lab = window.Geomlab.labFor(item.topicId || tp, item.prompt, {
+      itemId: item.id, topic: TMAP[tp], answer: item.answer, choices: item.choices
+    });
+    document.getElementById('ctx').textContent = '题目：' + item.prompt + '（题库答案 ' + item.answer + '，仅验收记录用，不上画板）';
+    var host = document.getElementById('host');
+    host.innerHTML = '';
+    if (!lab) return { qid: qid, mounted: false };
+    var inst = window.Geomlab.mount(lab);
+    host.appendChild(inst.el);
+    LAST = inst; LASTLAB = lab;
+    var st = inst.state();
+    return {
+      qid: qid, skel: st.skel, title: st.title, note: lab.note,
+      params: st.params, values: st.values, handles: st.handles,
+      checkRows: window.Geomlab.checkRows(lab, window.Geomlab.solve(lab)),
+      checkVisible: document.querySelector('.geomlab-check-out').hidden
+    };
+  };
+
+  /* 用真实 PointerEvent 把第 idx 个手柄拖到世界坐标 (wx,wy) */
+  window.dragTo = function (idx, wx, wy) {
+    var c = document.querySelector('.geomlab-canvas');
+    var r = c.getBoundingClientRect();
+    var from = LAST.handleScreen(idx);
+    var to = LAST.worldToScreen(wx, wy);
+    function fire(type, p) {
+      c.dispatchEvent(new PointerEvent(type, {
+        clientX: r.left + p.x, clientY: r.top + p.y,
+        pointerId: 1, bubbles: true, isPrimary: true, pointerType: 'mouse'
+      }));
+    }
+    fire('pointerdown', from);
+    fire('pointermove', to);
+    fire('pointerup', to);
+    var v = LAST.values();
+    return { from: from, to: to, values: v, checkHidden: document.querySelector('.geomlab-check-out').hidden };
+  };
+
+  /* 沿手柄可动方向拖到画布内的极值位置（用世界坐标算，越界会被 clamp 吃掉，正合需要） */
+  window.dragExtreme = function (idx, wx, wy) {
+    return window.dragTo(idx, wx, wy);
+  };
+
+  window.clickCheck = function () {
+    var b = document.querySelector('.geomlab-check-btn');
+    if (!b) return 'no button';
+    b.click();
+    var out = document.querySelector('.geomlab-check-out');
+    return {
+      hidden: out.hidden,
+      btn: b.textContent,
+      rows: Array.prototype.map.call(out.querySelectorAll('.geomlab-check-row'), function (r) {
+        return r.querySelector('.geomlab-check-you').textContent + '  |  ' + r.querySelector('.geomlab-check-real').textContent;
+      }),
+      text: out.textContent
+    };
+  };
+
+  window.clickReset = function () {
+    var btns = document.querySelectorAll('.funclab-sliders button');
+    for (var i = 0; i < btns.length; i++) if (btns[i].textContent === '回到题目参数') { btns[i].click(); return true; }
+    return false;
+  };
+
+  window.canvasText = function () { return document.querySelector('.geomlab-canvas') ? 'ok' : 'none'; };
+</script>
+</body>
+</html>
