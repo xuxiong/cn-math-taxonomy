@@ -687,6 +687,65 @@
       q.explanation ? h('div', { class: 'explain', id: 'explain' }, h('b', null, '解析：'), q.explanation) : null);
   }
 
+  /* 正确答案的 key。题库统计（全量 3854 道选择题）：answer 100% 是单字母且必在 choices[].key 内，
+   * 所以平常原样返回；只有 answer 不是字符串（历史脏数据 / 别的题型混进来）才做首字母兜底，
+   * 兜底也落不到任何选项时返回 null —— 调用方据此不做高亮，绝不猜。 */
+  function answerKeys(q) {
+    const raw = q && q.answer;
+    if (typeof raw === 'string') return raw;
+    if (raw == null) return null;
+    const m = String(raw).trim().toUpperCase().match(/^[A-Z]/);
+    return m ? m[0] : null;
+  }
+
+  /* 选项块。ask 态可点（button + onclick）；其余 phase 一律只读：
+   *   - 用 div 而不是 disabled button —— 键盘 Tab 不会停在讲解态的选项上，读屏仍能读到文字
+   *   - 正确项加 .choice-correct（绿），学生选错的项加 .choice-picked-wrong（红）
+   *   - 学生答对时只标 .choice-picked（与 ask 态同一个 picked 蓝框，配上绿底＝「选对了」）
+   * opts: { item, readonly, correctKey, pickedKey } */
+  function choicesBlock(q, opts) {
+    const o = opts || {};
+    const ro = !!o.readonly;
+    const correctKey = o.correctKey == null ? null : o.correctKey;
+    const pickedKey = o.pickedKey == null ? null : o.pickedKey;
+    return h('div', { class: 'choices' + (q.hideChoiceText ? ' fig-icons' : ''), id: 'choices' }, (q.choices || []).map(function (c) {
+      const hideName = !!(q.hideChoiceText && c.figure);
+      const kids = [h('b', { class: 'choice-key', text: hideName ? c.key : (c.key + '.') })];
+      if (!hideName) kids.push(document.createTextNode(' ' + c.text));
+      const fig = c.figure ? figureEl(c.figure) : null;
+      if (fig) kids.push(fig);
+      const isPicked = pickedKey != null && c.key === pickedKey;
+      const isCorrect = correctKey != null && c.key === correctKey;
+      const figCls = c.figure ? ' fig-choice' : '';
+      const aria = hideName ? ('选项 ' + c.key) : null;
+      if (!ro) {
+        return h('button', {
+          class: 'choice' + figCls + (isPicked ? ' picked' : ''),
+          id: 'choice-' + c.key, 'data-key': c.key,
+          'aria-label': aria,
+          onclick: function () { ui.picked = c.key; ui.answer = c.key; renderQuestion(o.item); }
+        }, kids);
+      }
+      return h('div', {
+        class: 'choice choice-ro' + figCls + (isCorrect ? ' choice-correct' : '') +
+          (isPicked ? (isCorrect ? ' choice-picked' : ' choice-picked-wrong') : ''),
+        id: 'choice-' + c.key, 'data-key': c.key, role: 'text',
+        'aria-label': aria,
+        'aria-disabled': 'true'
+      }, kids);
+    }));
+  }
+
+  /* 非选择题在讲解/判定后的答案回显：一行文字，不重建输入框。
+   * 学生没答过（「不会」跳过）时不显示「你的答案」那半句。 */
+  function answerEcho(q, pickedKey) {
+    const mine = pickedKey == null ? '' : String(pickedKey);
+    const kids = [];
+    if (mine.trim()) kids.push(h('span', { class: 'echo-mine' }, h('b', null, '你的答案：'), mine));
+    kids.push(h('span', { class: 'echo-ref' }, h('b', null, '正确答案：'), answerText(q)));
+    return h('div', { class: 'answer-echo', id: 'answer-echo' }, kids);
+  }
+
   function renderQuestion(item) {
     /* 面板每次重建都会重新挂画板：先销毁上一块几何画板（断开 ResizeObserver + 摘掉画布），
      * 否则来回翻步骤会累积画布与观察者（funclab 靠 DOM 替换回收，geomlab 显式销毁更稳）。 */
@@ -721,19 +780,7 @@
 
     if (ui.phase === 'ask') {
       if (q.type === 'choice') {
-        card.append(h('div', { class: 'choices' + (q.hideChoiceText ? ' fig-icons' : ''), id: 'choices' }, (q.choices || []).map(function (c) {
-          const hideName = !!(q.hideChoiceText && c.figure);
-          const kids = [h('b', { class: 'choice-key', text: hideName ? c.key : (c.key + '.') })];
-          if (!hideName) kids.push(document.createTextNode(' ' + c.text));
-          const fig = c.figure ? figureEl(c.figure) : null;
-          if (fig) kids.push(fig);
-          return h('button', {
-            class: 'choice' + (c.figure ? ' fig-choice' : '') + (ui.picked === c.key ? ' picked' : ''),
-            id: 'choice-' + c.key, 'data-key': c.key,
-            'aria-label': hideName ? ('选项 ' + c.key) : null,
-            onclick: function () { ui.picked = c.key; ui.answer = c.key; renderQuestion(item); }
-          }, kids);
-        })));
+        card.append(choicesBlock(q, { item: item, readonly: false, pickedKey: ui.picked }));
       } else if (q.type === 'self') {
         card.append(h('textarea', {
           class: 'ans-input', id: 'ans', rows: 3, placeholder: '开放题：可以写下自己的思路（不会自动判分），再点「看参考答案并自评」', value: ui.answer,
@@ -753,7 +800,9 @@
     } else if (ui.phase === 'auto') {
       const ok = ui.verdict.verdict === 'correct';
       card.append(
-        h('div', { class: 'muted' }, '你的答案：' + (q.type === 'choice' ? answerOfKey(q, ui.answer) : ui.answer)),
+        q.type === 'choice'
+          ? choicesBlock(q, { item: item, readonly: true, correctKey: answerKeys(q), pickedKey: ui.answer })
+          : answerEcho(q, ui.answer),
         h('div', { class: 'verdict ' + (ok ? 'ok' : 'no') }, ok ? '自动判定：正确' : '自动判定：不正确'),
         feedbackBlock(q),
         h('div', { class: 'row' },
@@ -762,15 +811,28 @@
           h('button', { id: 'btn-flip', onclick: function () { finishAnswer(ok ? 'wrong' : 'correct'); } }, ok ? '判错了，我其实没做对' : '判错了，我其实做对了'),
           h('button', { onclick: function () { ui.phase = 'ask'; renderQuestion(item); } }, '重新作答')));
     } else if (ui.phase === 'explain') {
+      /* 讲解三步（第 1/2/3 步）都保留原题选项/答案，但只读：
+       * 学生能对照解析看题，却不能边看答案边改答案。选项块挂在 explainPanel 之前，
+       * 折叠块与画板都在 explainPanel 内部，不受影响。 */
+      if (q.type === 'choice') {
+        card.append(choicesBlock(q, { item: item, readonly: true, correctKey: answerKeys(q), pickedKey: ui.answer }));
+      } else {
+        card.append(answerEcho(q, ui.answer));
+      }
       card.append(explainPanel(item));
     } else if (ui.phase === 'skip') {
       card.append(
         h('div', { class: 'muted' }, '你选择了「不会」。看一下答案和解析再继续：'),
+        q.type === 'choice'
+          ? choicesBlock(q, { item: item, readonly: true, correctKey: answerKeys(q), pickedKey: null })
+          : answerEcho(q, null),
         feedbackBlock(q),
         h('div', { class: 'row' }, h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer('skip'); } }, '下一题')));
     } else {
       card.append(
-        ui.answer ? h('div', { class: 'muted' }, '你的答案：' + ui.answer) : null,
+        q.type === 'choice'
+          ? choicesBlock(q, { item: item, readonly: true, correctKey: answerKeys(q), pickedKey: ui.answer })
+          : answerEcho(q, ui.answer),
         q.type === 'self' ? h('div', { class: 'muted' }, '开放题：请对照参考答案自己判断。')
           : (ui.verdict ? h('div', { class: 'muted' }, '这道题的答案无法被自动可靠地判定，请对照参考答案自己判断。') : null),
         feedbackBlock(q),
@@ -791,11 +853,6 @@
     const inp = document.getElementById('ans');
     if (inp && inp.setSelectionRange && inp.tagName === 'INPUT') { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
     else if (inp) inp.focus();
-  }
-
-  function answerOfKey(q, key) {
-    const c = (q.choices || []).find(function (x) { return x.key === key; });
-    return c ? c.key + '. ' + c.text : key;
   }
 
   /* ------------------------------------------------------------ 苏格拉底讲解面板（T2：静态即时 + LLM 渐进增强） */
