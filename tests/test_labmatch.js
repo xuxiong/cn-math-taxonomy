@@ -275,11 +275,15 @@ test('capabilitiesFor(type) 只给该类型的画板', function () {
 
 console.log('\n--- 4. intent 驱动文案分支（卡面 bug 的回归锁） ---');
 
-test('cnm_235_q2（求最小值）：文案讲顶点/最小值，不出现「就是方程的两个根」', function () {
+test('cnm_235_q2（求最小值）：文案讲顶点/最小值，不出现「就是方程的两个根」，也不报出答案 -4', function () {
   const s = F.noteText('quadratic-vertex', '最小值', { a: 2, h: -1, k: -4 });
   assert.ok(/最小值/.test(s), s);
   assert.ok(s.indexOf('两个根') < 0, '问最值的题不能讲根：' + s);
-  assert.ok(s.indexOf('-4') >= 0, '要点出最小值 -4：' + s);
+  /* P 卡：画板只标题面已知量（a = 2），派生量（最小值 -4 / 顶点 (-1,-4)）留问号 */
+  assert.ok(s.indexOf('-4') < 0, 'P 卡：文案不得报出最小值 -4：' + s);
+  assert.ok(s.indexOf('-1') < 0, 'P 卡：文案不得报出顶点横坐标 -1：' + s);
+  assert.ok(s.indexOf('a = 2') >= 0, '题面已知量 a = 2 可以显示：' + s);
+  assert.ok(/纵坐标是多少/.test(s), '文案要改成引导提问：' + s);
 });
 
 test('求根的题仍讲「交点横坐标即根」（cnm_224_q1 解方程 x²-5x+6=0）', function () {

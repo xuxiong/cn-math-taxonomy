@@ -322,6 +322,20 @@ table.log select { min-height: 44px; }
 .geomlab-check-res.is-no { color: #c0392b; }     /* COLOR.mark */
 .geomlab-check-res.is-empty { color: #6b7c93; font-weight: 400; }
 .geomlab-check-real { color: #c0392b; font-weight: 600; }
+/* 函数画板的自检面板（P 卡）：与几何画板同一套视觉，只换前缀，避免两个画板长得不一样 */
+.funclab-check { margin-top: 6px; }
+.funclab-check-out { margin-top: 6px; font-size: 0.92rem; line-height: 1.6; color: #1f2933; }
+.funclab-check-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 1px 0; }
+.funclab-check-name { white-space: nowrap; color: #6b7c93; }
+.funclab-check-ans {
+  width: 6.5em; padding: 2px 6px; font: inherit; font-weight: 600; color: #1f2933;
+  border: 1px solid var(--line, #ccc); border-radius: 6px; background: #fff;
+}
+.funclab-check-ans:focus { outline: 2px solid var(--brand, #2a7de1); outline-offset: 1px; }
+.funclab-check-res { font-weight: 700; }
+.funclab-check-res.is-ok { color: #2ecc71; }
+.funclab-check-res.is-no { color: #c0392b; }
+.funclab-check-res.is-empty { color: #6b7c93; font-weight: 400; }
 .ai-tag { font-size: 0.8rem; color: var(--brand); border: 1px solid var(--brand); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
 .ai-tag.static { color: var(--muted, #888); border-color: var(--muted, #888); }
 /* T3.5 追问区 */

@@ -737,12 +737,15 @@
   }
 
   /* 非选择题在讲解/判定后的答案回显：一行文字，不重建输入框。
-   * 学生没答过（「不会」跳过）时不显示「你的答案」那半句。 */
-  function answerEcho(q, pickedKey) {
+   * 学生没答过（「不会」跳过）时不显示「你的答案」那半句。
+   * showRef=false 用于讲解阶段（explain）：那时答案还在折叠块里，这里印出来
+   * 等于把 G 卡的折叠意义整个架空（学生不用点开就知道答案）。 */
+  function answerEcho(q, pickedKey, showRef) {
     const mine = pickedKey == null ? '' : String(pickedKey);
     const kids = [];
     if (mine.trim()) kids.push(h('span', { class: 'echo-mine' }, h('b', null, '你的答案：'), mine));
-    kids.push(h('span', { class: 'echo-ref' }, h('b', null, '正确答案：'), answerText(q)));
+    if (showRef !== false) kids.push(h('span', { class: 'echo-ref' }, h('b', null, '正确答案：'), answerText(q)));
+    if (!kids.length) return null;
     return h('div', { class: 'answer-echo', id: 'answer-echo' }, kids);
   }
 
@@ -815,9 +818,9 @@
        * 学生能对照解析看题，却不能边看答案边改答案。选项块挂在 explainPanel 之前，
        * 折叠块与画板都在 explainPanel 内部，不受影响。 */
       if (q.type === 'choice') {
-        card.append(choicesBlock(q, { item: item, readonly: true, correctKey: answerKeys(q), pickedKey: ui.answer }));
+        card.append(choicesBlock(q, { item: item, readonly: true, correctKey: null, pickedKey: ui.answer }));
       } else {
-        card.append(answerEcho(q, ui.answer));
+        card.append(answerEcho(q, ui.answer, false));
       }
       card.append(explainPanel(item));
     } else if (ui.phase === 'skip') {

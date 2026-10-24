@@ -17,6 +17,15 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
+  /* engine.js 的数值等价（numericEqual）是判定学生填数的唯一归一化出处（与 geomlab 同源）。
+   * node 下 require 注入，浏览器由 index.html 的 <script> 顺序保证（engine.js 在 funclab.js 之前）。 */
+  let _engine = null;
+  try {
+    if (typeof module !== 'undefined' && module.exports && typeof require === 'function') {
+      _engine = require('./engine.js');
+    }
+  } catch (e) { _engine = null; }
+
   /* ------------------------------------------------------------ 纯解析（可单测） */
 
   /** 把一次项系数 b 提取成数字。s 形如 "+6" / "-4" / "" / "2" / "-"，null/undefined 视为省略（=1） */
@@ -449,36 +458,40 @@
   };
 
   /**
-   * intent → 文案模板。按 4 个画板分档，同一 intent 在多个画板里出现时取先声明的那条。
+   * intent → 文案模板。按画板分档，同一 intent 在多个画板里出现时取先声明的那条。
+   *
+   * ★ P 卡规则 ★ 文案只许出现**题面已知量**（a、区间端点 {xMin}/{xMax}、原函数 {y}、直线的 k/b），
+   * 派生量（顶点坐标、最值、对称轴位置、截距数值 {xInt}、根）一律以 ? 或引导提问出现。
+   * 站位符里的 {h}/{k}/{xInt}/{absK} 在 P 卡之后**不再进任何模板** —— 它们就是答案。
    * 硬约束（验收标准 1）：讲顶点/最值的文案里绝不出现「根」字 —— 由 tests 断言锁死。
    */
   const NOTE_INTENT = {
     'quadratic-vertex': {
-      '顶点坐标': '红点是抛物线的顶点 ({h}, {k})：{dir}是对称轴，顶点是整条曲线转折的地方。拖动 h、k 看顶点怎么跟着走。',
-      '最小值': 'a = {a} > 0，抛物线开口向上，顶点就是最低点，所以最小值是顶点的纵坐标 {k}。拖动 k 看最小值跟着变。',
-      '最大值': 'a = {a} < 0，抛物线开口向下，顶点就是最高点，所以最大值是顶点的纵坐标 {k}。拖动 k 看最大值跟着变。',
-      '对称轴': '抛物线（{y}）关于直线 {axis} 左右对称：{axis} 过顶点，垂直于 x 轴。拖动 h 看整条曲线怎么左右平移。',
+      '顶点坐标': '红色是抛物线的顶点，但横、纵坐标都没标：顶点是整条曲线从「往下」转为「往上」（或反过来）的那个转折点。**你能读出它的横、纵坐标是多少吗？** 图上顶点位置已标红，坐标留给你读。',
+      '最小值': 'a = {a} > 0，抛物线开口向上，顶点就是整条曲线的最低点——**顶点的纵坐标是多少？** 最低点的 y 就是这个函数的最小值。图上顶点位置已标红，坐标留给你读。',
+      '最大值': 'a = {a} < 0，抛物线开口向下，顶点就是整条曲线最高的那一点——**它的纵坐标是多少？** 最高点的 y 就是这个函数的最大值。图上顶点位置已标红，坐标留给你读。',
+      '对称轴': '抛物线（{y2}）左右对称，对称轴穿过顶点且垂直于 x 轴。**这条直线是 x = ?** 图上把这条竖线画出来了，它落在 x 轴上的哪个数，要你自己读。',
       '开口方向': 'a = {a}：a > 0 开口向上且 a 越大开口越窄（a < 0 时开口向下，a 的绝对值越大越窄）。拖动 a 看开口怎么变。',
       '平移方向': '灰色虚线是原函数的曲线，蓝色实线是题目要的函数：橙色箭头标出平移的方向和距离。'
     },
     'quadratic-range-on-interval': {
-      '在给定区间上的最大值': '在 {xMin} ≤ x ≤ {xMax} 这一段里：先看顶点 {h} 落没落在区间内，再把顶点值和两个端点值比一比，最大的那个就是最大值（阴影部分是这段区间）。',
-      '在给定区间上的最小值': '在 {xMin} ≤ x ≤ {xMax} 这一段里：先看顶点 {h} 落没落在区间内，再把顶点值和两个端点值比一比，最小的那个就是最小值（阴影部分是这段区间）。'
+      '在给定区间上的最大值': '{xMin} ≤ x ≤ {xMax} 这一段（阴影部分）：先看顶点的横坐标落没落在区间内，再算顶点值和两个端点值比一比，最大的那个就是最大值——**三个数分别是多少？最大的那个是多少？** 图上端点与顶点位置都已标出，数值留给你算。',
+      '在给定区间上的最小值': '{xMin} ≤ x ≤ {xMax} 这一段（阴影部分）：先看顶点的横坐标落没落在区间内，再算顶点值和两个端点值比一比，最小的那个就是最小值——**三个数分别是多少？最小的那个是多少？** 图上端点与顶点位置都已标出，数值留给你算。'
     },
     'quadratic-roots': {
-      '方程的根': '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。拖动 h、k 看交点怎么移动。',
-      '与x轴交点的横坐标': '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。拖动 h、k 看交点怎么移动。',
-      '零点': '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。拖动 h、k 看交点怎么移动。'
+      '方程的根': '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。**这两个横坐标分别是多少？** 图上只标了点，数值留给你读。拖动 h、k 看交点怎么移动。',
+      '与x轴交点的横坐标': '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。**这两个横坐标分别是多少？** 图上只标了点，数值留给你读。拖动 h、k 看交点怎么移动。',
+      '零点': '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。**这两个横坐标分别是多少？** 图上只标了点，数值留给你读。拖动 h、k 看交点怎么移动。'
     },
     'quadratic-inequality': {
-      'y>0 或 y<0 的 x 范围': '看曲线在 x 轴上方/下方的部分：绿点是分界点，曲线在上方的那一段，对应的 x 就是 y>0 的范围。',
-      'x 取何值时函数值为正/负': '看曲线在 x 轴上方/下方的部分：绿点是分界点，曲线在上方的那一段，对应的 x 就是函数值为正的范围。'
+      'y>0 或 y<0 的 x 范围': '看曲线在 x 轴上方/下方的部分：绿点是分界点，曲线在上方的那一段，对应的 x 就是 y>0 的范围。**两个分界点的横坐标是多少？** 图上只标了点，数值留给你读。',
+      'x 取何值时函数值为正/负': '看曲线在 x 轴上方/下方的部分：绿点是分界点，曲线在上方的那一段，对应的 x 就是函数值为正的范围。**两个分界点的横坐标是多少？** 图上只标了点，数值留给你读。'
     },
     'linear-intercepts': {
-      '与 y 轴交点的纵坐标': '红点是直线与 y 轴的交点 (0, {b})：纵坐标就是 b = {b}。拖动 b 看它上下移动。',
-      '与 x 轴交点的横坐标': '绿点是直线与 x 轴的交点 ({xInt}, 0)：横坐标由 kx+b=0 解得 -b/k = {xInt}。拖动 k、b 看交点怎么移动。',
-      '与两坐标轴交点的坐标': '红点 (0, {b}) 是直线与 y 轴的交点，绿点 ({xInt}, 0) 是直线与 x 轴的交点：两个点合起来就是题目要的两组坐标。',
-      '直线与两坐标轴围成的三角形面积': '红点 (0, {b})、绿点 ({xInt}, 0) 和原点围成直角三角形：面积 = |{b}| × |{xInt}| ÷ 2（两条直角边就是两个截距的绝对值）。'
+      '与 y 轴交点的纵坐标': '红点是直线与 y 轴的交点 (0, ?)：它就在 y 轴上。**这个点的纵坐标是多少？** 拖动 b 看它上下移动，读数自己从坐标轴上看。',
+      '与 x 轴交点的横坐标': '绿点是直线与 x 轴的交点 (?, 0)：令 y = 0 解 kx+b = 0 就得到它的横坐标——**把这个方程解出来是多少？** 图上只标了点，数值留给你算。拖动 k、b 看交点怎么移动。',
+      '与两坐标轴交点的坐标': '红点是直线与 y 轴的交点（0, ?），绿点是直线与 x 轴的交点（?, 0）：**两组坐标各是多少？** 图上只标了点的位置，坐标留给你读。',
+      '直线与两坐标轴围成的三角形面积': '红点（y 轴交点）、绿点（x 轴交点）和原点围成直角三角形：两条直角边就是两个截距的绝对值。**两个截距各是多少？面积是多少？** 数值留给你算。'
     },
     'linear-trend': {
       'y 随 x 的增大而增大还是减小': 'k = {k}：k>0 时直线从左下往右上，y 随 x 的增大而增大；k<0 时从左上往右下，y 随 x 的增大而减小。拖动 k 看方向怎么翻。',
@@ -486,8 +499,8 @@
       '直线上几个点的函数值大小比较': '在同一坐标系里比高低：直线上升（k>0）时 x 越大点越高，下降（k<0）时 x 越大点越低；离对称位置越远，差距越大。'
     },
     'linear-equation': {
-      '一次函数与一元一次方程的关系': '绿点是直线与 x 轴的交点：它的横坐标 {xInt} 就是方程 kx+b=0 的解 —— 方程的根就是函数图象与 x 轴交点的横坐标。',
-      '不等式 kx+b>0 或 kx+b<0 的解集': '看直线在 x 轴上方/下方的部分：绿点横坐标 {xInt} 是分界点，直线在上方的那一段对应的 x 就是 kx+b>0 的解集。'
+      '一次函数与一元一次方程的关系': '绿点是直线与 x 轴的交点：方程 kx+b=0 的解，就是函数图象与 x 轴交点的横坐标。**这个横坐标是多少？** 把 kx+b=0 解出来，再和图上绿点的位置对一对。',
+      '不等式 kx+b>0 或 kx+b<0 的解集': '看直线在 x 轴上方/下方的部分：绿点的横坐标是分界点，直线在上方的那一段对应的 x 就是 kx+b>0 的解集。**这个分界点是多少？解集怎么表示？** 数值留给你算。'
     },
     'inverse-quadrants': {
       '图象所在的象限': 'k = {k}：k>0 时两支曲线在第一、三象限，k<0 时在第二、四象限，且关于原点对称。拖动 k 看它怎么翻。',
@@ -495,8 +508,8 @@
       '同一象限内几个点的函数值大小比较': '先确认几个点是否在同一支上：同一支上按单调性比大小，跨支时先比正负（k>0 时第一象限的点都为正、第三象限的点都为负）。'
     },
     'inverse-area': {
-      '点与坐标轴围成的矩形或三角形面积': '点 P 在 y = k/x 上，k = {k}：过 P 向两条坐标轴作垂线，矩形面积 = |k| = {absK}，三角形（原点、P、一个垂足）面积 = |k| ÷ 2 = {halfAbsK}。',
-      '由面积反求 |k|': '面积只由 |k| 决定：|k| = {absK}。由面积反推 k 时，再结合图象落在哪几个象限定符号。'
+      '点与坐标轴围成的矩形或三角形面积': '点 P 在 y = k/x 上，k = {k}：过 P 向两条坐标轴作垂线，就围出矩形和三角形。**矩形的面积是多少？三角形（原点、P、一个垂足）的面积是多少？** 用 |k| 的关系自己算，图上不标数值。',
+      '由面积反求 |k|': '面积只由 |k| 决定：矩形的面积就等于 |k|，三角形（原点、P、一个垂足）的面积是矩形的一半。**反过来，由题面给的面积求出 |k| 是多少？** 再结合图象落在哪几个象限定符号。'
     }
   };
 
@@ -554,25 +567,30 @@
   /**
    * 由 (画板, intent, 参数) 生成画板下的教学文案 —— **纯函数**，可单测。
    * 返回 null 表示该组合不该挂图（intent 缺失/编造 → 调用方不挂）。
-   * 注意：文案里讲什么由 intent 决定，与「有没有零点」无关 —— 这正是本卡修的 bug。
+   * 注意：文案里讲什么由 intent 决定，与「有没有零点」无关 —— 这正是 M 卡修的 bug。
+   * P 卡：只填**已知量**（a、b、k(一次)/k(反比例)、区间端点、原函数式、直线系数），
+   * 派生量（顶点横纵坐标/对称轴位置/截距位置/根的数值）一律不填 —— 模板里根本不用它们。
    */
   function noteText(lab, intent, params) {
     if (!intentSupported(lab, intent)) return null;
     const p = params || {};
     const it = intentKey(intent);
     const type = CAP_TYPE[String(lab || '')] || 'quadratic';
-    const axis = 'x = ' + fmtQuad(p.h);
     const xMin = p.xMin != null ? p.xMin : '-∞';
     const xMax = p.xMax != null ? p.xMax : '+∞';
-    const xInt = (p.k == null || p.b == null || p.k === 0) ? null : -p.b / p.k;
-    const absK = p.k == null ? null : Math.abs(p.k);
     return fill(NOTE_BY_INTENT[it], {
-      a: fmtQuad(p.a), h: fmtQuad(p.h), k: fmtQuad(p.k),
-      b: fmtQuad(p.b), xInt: fmtQuad(xInt),
-      absK: fmtQuad(absK), halfAbsK: fmtQuad(absK == null ? null : absK / 2),
+      /* 已知量：a（二次系数）、b（一次截距）、k（一次斜率/反比例系数）—— 题面原样给出 */
+      a: fmtQuad(p.a), k: fmtQuad(p.k), b: fmtQuad(p.b),
       y: formatFormula({ type: type, a: p.a, h: p.h, k: p.k, b: p.b }),
-      dir: '竖直虚线',
-      axis: axis, xMin: xMin, xMax: xMax
+      /* 对称轴题专用：抛物线式里不能带顶点的横坐标（(x - {h})² 的 h 就是对称轴 = 答案），
+       * 所以只印「开口与宽窄」（y = a·x² + …），曲线的形状照画，位置留问号。 */
+      y2: type === 'quadratic'
+        ? ('y = ' + (p.a === 1 ? '' : p.a === -1 ? '-' : fmtQuad(p.a)) + 'x² + …')
+        : formatFormula({ type: type, a: p.a, h: p.h, k: p.k, b: p.b }),
+      xMin: xMin, xMax: xMax,
+      /* 以下占位符自 P 卡起禁止在模板里使用（它们是派生量 = 答案）；保留键只为兼容旧测试 */
+      h: '?', xInt: '?', absK: '?', halfAbsK: '?', dir: '竖直虚线',
+      axis: 'x = ?'
     });
   }
 
@@ -582,14 +600,196 @@
     return fmt(n);
   }
 
+  /* ============================================================ 已知量 vs 派生量（P 卡）
+   *
+   * ★ 教学硬规则（与 geomlab D 卡同一条，用户判据）★
+   * 画板的目的是让学生看懂**问题怎么解决**，不是看到答案。
+   * 题面给出的量（a、区间端点 xMin/xMax、原函数表达式）照常显示真值；
+   * 由它推出来的量（顶点坐标、最小值/最大值、对称轴位置、根的数值、截距坐标）
+   * 一律不得静态标注 —— 那等于图替学生把题算完了。派生量只能以 '?' 占位，
+   * 学生自己算完点「我算好了」填数，才逐行显示对比结果。
+   *
+   * 所以 annotate()/drawShift() 里读派生量必须走 deriveText()，
+   * 真实数值只活在 answerRows() 的 real 字段与自检面板里，不许进画布静态标注。
+   *
+   * 判定（numEqual / checkAnswerRow）照搬 diagnose/geomlab.js 的 numEqual + judgeRow 口径：
+   *   · 空白 → blank：只说「未作答」，既不出真值也不出 ✓/✗（不能空着就让答案露出来）
+   *   · 数值等价 → right：3 / 3.0 / 3/1 都算对，等价交给 engine.js 的 numericEqual（唯一归一化出处）
+   *   · 其余 → wrong：回显学生原样输入（**不回显实际值** —— 回显等于把答案送到学生的错误答案旁边）
+   */
+
+  /** 数值等价判定依赖 engine.js（node 下 require，浏览器由 index.html 的 <script> 顺序注入） */
+  function numEqual(a, b) {
+    const E = _engine || (typeof DiagEngine !== 'undefined' ? DiagEngine : null); // eslint-disable-line no-undef
+    if (!E || typeof E.numericEqual !== 'function') return null;
+    return E.numericEqual(a, b);
+  }
+
+  /** 派生量的占位符：图上只许出现这个，不许出现真值 */
+  function deriveText() {
+    return '?';
+  }
+
+  /** 一对派生数值 → 「(?, ?)」；pad 由调用方控制（顶点要带括号） */
+  function derivePair() {
+    return '(' + deriveText() + ', ' + deriveText() + ')';
+  }
+
+  /** 数值对 → 文案里的短句：3、-4 → 「3、-4」（学生按题目要求依次写横坐标、纵坐标） */
+  function fmtPair(pair) {
+    const arr = (pair && pair.length) ? pair : [];
+    if (!arr.length) return '?';
+    return arr.map(fmtQuad).join('、');
+  }
+
+  /** 参数里的区间端点（没有就 null） */
+  function intervalOf(p) {
+    if (!p) return null;
+    if (p.xMin == null || p.xMax == null) return null;
+    if (!isFinite(p.xMin) || !isFinite(p.xMax) || !(p.xMax > p.xMin)) return null;
+    return { xMin: p.xMin, xMax: p.xMax };
+  }
+
+  /** 二次函数在闭区间上的最值（供自检面板核对；图上不显示） */
+  function quadRangeExtrema(a, h, k, xMin, xMax) {
+    const f = function (x) { return a * (x - h) * (x - h) + k; };
+    const ys = [f(xMin), f(xMax)];
+    if (h > xMin && h < xMax) ys.push(k);
+    return { max: Math.max.apply(null, ys), min: Math.min.apply(null, ys) };
+  }
+
+  /**
+   * 由 (画板, intent, 参数) 推出「这道题的答案」是什么，拆成若干数值项 —— **纯函数**，可单测。
+   * 这是「图上问号 ↔ 学生答案」的对应表：图上留了几个 ? ，这里就有几项。
+   *
+   * 返回 [{ label, kind, values, axis? }]
+   *   kind: 'scalar'（一个数）| 'pair'（两个数，按题目要求依次写）| 'interval'（两个数：先大后小）
+   *   axis: 'x' 表示这组数在 x 轴上（对称轴/根），自检面板据此按 x 轴真值判定
+   *
+   * 参数不全（或在区间最值缺区间）→ 返回 []，调用方据此不显示输入框（绝不猜）。
+   */
+  function labAnswerParts(lab, intent, params) {
+    const p = params || {};
+    const type = CAP_TYPE[String(lab || '')];
+    const it = intentKey(intent);
+    if (!type) return [];
+    const res = function (label, kind, values, axis) {
+      const vals = (values || []).filter(function (v) { return v != null && isFinite(v); });
+      if (!vals.length || vals.length !== (values || []).length) return null;
+      return { label: label, kind: kind, values: vals, axis: axis || null };
+    };
+    if (type === 'quadratic') {
+      if (!isFinite(p.a) || !isFinite(p.h) || !isFinite(p.k) || p.a === 0) return [];
+      switch (it) {
+        case '顶点坐标': return [res('顶点坐标（横、纵坐标）', 'pair', [p.h, p.k])];
+        case '最小值': return [res('最小值', 'scalar', [p.k])];
+        case '最大值': return [res('最大值', 'scalar', [p.k])];
+        case '对称轴': return [res('对称轴 x =', 'scalar', [p.h], 'x')];
+        case '方程的根':
+        case '与x轴交点的横坐标':
+        case '零点': {
+          const disc = -p.k / p.a;
+          if (!(disc >= 0) || disc === 0) return [];          // 无实根/重根：不是「两个根」的题
+          const rt = Math.sqrt(disc);
+          return [res('两个根（用、隔开）', 'pair', [p.h - rt, p.h + rt].sort(function (x, y) { return x - y; }), 'x')];
+        }
+        case '在给定区间上的最大值': {
+          const iv = intervalOf(p);
+          if (!iv) return [];
+          const e = quadRangeExtrema(p.a, p.h, p.k, iv.xMin, iv.xMax);
+          return [res('区间上的最大值', 'scalar', [e.max])];
+        }
+        case '在给定区间上的最小值': {
+          const iv = intervalOf(p);
+          if (!iv) return [];
+          const e = quadRangeExtrema(p.a, p.h, p.k, iv.xMin, iv.xMax);
+          return [res('区间上的最小值', 'scalar', [e.min])];
+        }
+        default: return [];                                    // 开口方向 / 不等式范围：不是数值
+      }
+    }
+    if (type === 'linear') {
+      if (!isFinite(p.k) || !isFinite(p.b)) return [];
+      const xInt = p.k === 0 ? null : -p.b / p.k;
+      switch (it) {
+        case '与 y 轴交点的纵坐标': return [res('与 y 轴交点的纵坐标', 'scalar', [p.b])];
+        case '与 x 轴交点的横坐标': return xInt == null ? [] : [res('与 x 轴交点的横坐标', 'scalar', [xInt], 'x')];
+        case '与两坐标轴交点的坐标': return xInt == null ? []
+          : [res('两组交点坐标（依次写 0、纵坐标、横坐标、0）', 'pair', [p.b, xInt])];
+        case '直线与两坐标轴围成的三角形面积': return xInt == null ? []
+          : [res('三角形面积', 'scalar', [Math.abs(p.b) * Math.abs(xInt) / 2])];
+        default: return [];
+      }
+    }
+    if (!isFinite(p.k) || p.k === 0) return [];
+    const absK = Math.abs(p.k);
+    switch (it) {
+      case '点与坐标轴围成的矩形或三角形面积':
+        return [res('矩形面积', 'scalar', [absK]), res('三角形面积', 'scalar', [absK / 2])];
+      case '由面积反求 |k|': return [res('|k|', 'scalar', [absK])];
+      default: return [];
+    }
+  }
+
+  /**
+   * 自检面板要核对的结果行 —— 学生点「我算好了」之后才显示。
+   * 每行：{ label, kind, yours(恒空串，绝不预填), real(只给判定用，未作答时渲染层不得显示) }
+   * 区间最值按题目要求「先最大值后最小值」合并成一行两空。
+   */
+  function answerRows(lab, intent, params) {
+    const parts = labAnswerParts(lab, intent, params);
+    const it = intentKey(intent);
+    const rows = [];
+    parts.forEach(function (part) {
+      if (part.kind === 'pair') {
+        /* 区间最值题：两个数同属「答案」，合成一行（与题库答案格式一致） */
+        part.values.forEach(function (v, i) {
+          rows.push({
+            label: (part.label.replace(/（.*$/, '') + (part.values.length > 1 ? (i === 0 ? '（第 1 个）' : '（第 2 个）') : '')),
+            kind: 'scalar', yours: '', real: v, axis: part.axis
+          });
+        });
+      } else {
+        rows.push({ label: part.label, kind: part.kind, yours: '', real: part.values[0], axis: part.axis });
+      }
+    });
+    /* 区间最值：题目要求「先最大值后最小值」，labAnswerParts 已经是这个顺序；别处两个根也保持从小到大 */
+    return rows;
+  }
+
+  /**
+   * 逐行判定的对外出口（纯函数，渲染层只负责显示）。
+   * 返回 { verdict: 'right'|'wrong'|'blank', shown: 面板文案, real: 是否可显示真值 }
+   * 与 geomlab 的 checkOne 同口径，唯一差别：填错时不回显实际值（回显 = 把答案塞给做错的学生）。
+   */
+  function checkAnswerRow(row, raw) {
+    if (!row || !isFinite(row.real)) return { verdict: 'wrong', shown: '✗', real: false };
+    const text = String(raw == null ? '' : raw);
+    const trimmed = text.trim();
+    if (!trimmed) return { verdict: 'blank', shown: '未作答', real: false };
+    /* 一对数值：允许「3、-4」「3,-4」「3 -4」这类写法，逐个数按同一口径比对 */
+    const mine = trimmed.split(/[、,，\s]+/).filter(function (s) { return s !== ''; });
+    const one = function (tok) {
+      const eq = numEqual(tok, row.real);
+      return eq === true || tok === fmt(row.real);
+    };
+    if (one(trimmed)) return { verdict: 'right', shown: '✓', real: false };
+    if (mine.length === 2 && (one(mine[0]) || one(mine[1]))) {
+      /* 学生把一个数写成了两个数（或多写），不判对也不替他算：按填错处理 */
+      return { verdict: 'wrong', shown: '✗ 你的答案：' + trimmed, real: false };
+    }
+    /* eq === null 说明解析不出数值 —— 学生写的不是数，按填错处理；不回显实际值 */
+    return { verdict: 'wrong', shown: '✗ 你的答案：' + trimmed, real: false };
+  }
+
   /* ------------------------------------------------------------ 渲染（需要 DOM） */
 
   const TYPE_DEF = {
     quadratic: {
       sliders: [
         { key: 'a', label: 'a(开口方向和宽窄)', min: -4, max: 4, step: 0.05 },
-        { key: 'h', label: 'h(左右平移,顶点x)', min: -8, max: 8, step: 0.05 },
-        { key: 'k', label: 'k(上下平移,顶点y)', min: -8, max: 8, step: 0.05 }
+        { key: 'h', label: 'h(左右平移)', min: -8, max: 8, step: 0.05 },
+        { key: 'k', label: 'k(上下平移)', min: -8, max: 8, step: 0.05 }
       ],
       defaults: { a: 1, h: 0, k: 0 }
     },
@@ -687,7 +887,26 @@
     canvas.className = 'funclab-canvas';
     const info = document.createElement('div');
     info.className = 'funclab-formula';
-    info.textContent = formatFormula(p);
+    /* P 卡：**没拖动前**公式行不能印顶点式 —— 二次函数的顶点式 a(x - h)² + k 里，h 就是对称轴/顶点横坐标、
+     * k 就是最值/顶点纵坐标，学生不点「我算好了」就能直接读到答案。初始只印题面已知的「开口与宽窄」
+     * （y = 2x² + …，a 是题面给的），拖动后画布才与顶点式对应，那时学生已在主动探索，再显示实时式。
+     * 一次/反比例的 k、b 是题面原样给出的，本来就该印，不受影响。 */
+    /* ---- P 卡：派生量的显示开关（声明必须在 formulaText 首次调用之前，否则 TDZ） ----
+     * shown = false（默认）：画布上的派生量（顶点坐标/最值/对称轴位置/交点坐标/端点函数值）
+     *                       一律画成 ?，学生点「我算好了」并填对那一行后，才把真值画上去。
+     * moved = true（拖过滑块）：画布的 p 已经不是题面那条曲线，静态真值会与曲线对不上，
+     *                       所以文案追加一句提醒，让学生按当前曲线重新量。
+     * 真实的派生数值只活在 answerRows() 与自检面板的闭包 rows 里，从不进 note 文案。 */
+    let shown = false;
+    let moved = false;
+
+    function formulaText() {
+      if (type === 'quadratic' && !moved) {
+        return 'y = ' + (p.a === 1 ? '' : p.a === -1 ? '-' : fmtQuad(p.a)) + 'x² + …（拖动滑块看它变成哪条抛物线）';
+      }
+      return formatFormula(p);
+    }
+    info.textContent = formulaText();
     const note = document.createElement('div');
     note.className = 'funclab-note';
     if (note0) note.textContent = note0;      // 二次函数：intent 驱动的文案（见 noteText）
@@ -695,13 +914,18 @@
     const ctrl = document.createElement('div');
     ctrl.className = 'funclab-sliders';
     const sliders = {};
+    const sliderVals = {};      // P 卡：滑块读数 span（没拖动时显示 ?）
     def.sliders.forEach(function (sd) {
       start[sd.key] = p[sd.key];
       const row = document.createElement('label');
       row.className = 'funclab-slider';
       row.appendChild(document.createTextNode(sd.label + ' = '));
       const val = document.createElement('span');
-      val.textContent = fmt(p[sd.key]);
+      /* P 卡：滑块读数在「没动过」时不显示真值 —— h 的读数就是顶点横坐标、k 的读数就是顶点纵坐标，
+       * 一上来就印出来等于把顶点坐标放在画板下面（学生不用读图）。
+       * 学生主动拖动时才是探索（待定细节的 B 方案）：拖动后实时显示，边上文案同时提醒
+       * 「曲线已不是题面那条」，两者对得上。 */
+      val.textContent = '?';
       const input = document.createElement('input');
       input.type = 'range';
       input.min = sd.min; input.max = sd.max; input.step = sd.step;
@@ -710,11 +934,15 @@
         p[sd.key] = parseFloat(input.value);
         val.textContent = fmt(p[sd.key]);
         info.textContent = formatFormula(p);
+        moved = true;                 // 曲线已不是题面那条：文案要提醒，图上真值不再适用
+        note.textContent = noteTextOf();
+        syncCheck();                  // 参数变了 → 清掉旧作答，避免拿旧答案判新曲线
         draw();
       });
       row.appendChild(val);
       row.appendChild(input);
       sliders[sd.key] = input;
+      sliderVals[sd.key] = val;
       ctrl.appendChild(row);
     });
     const resetBtn = document.createElement('button');
@@ -727,6 +955,12 @@
         sliders[k].value = start[k];
         sliders[k].dispatchEvent(new Event('input'));
       });
+      /* 回到题目参数 → 读数重新变回 ?（又是「题面那条曲线」，值要学生自己算） */
+      Object.keys(sliderVals).forEach(function (k) { sliderVals[k].textContent = '?'; });
+      moved = false;
+      note.textContent = noteTextOf();
+      syncCheck();
+      draw();
     });
     ctrl.appendChild(resetBtn);
 
@@ -738,6 +972,9 @@
     const dpr = (typeof devicePixelRatio !== 'undefined' ? devicePixelRatio : 1) || 1;
     const ctx = canvas.getContext('2d');
     let lastRoots = -1;   // 拖动滑块后交点个数的变化只在讲根的题上体现在文案里
+
+    /* shown / moved 已在 formulaText 之前声明（P 卡：避免 TDZ） */
+    let syncCheck = function () {};
 
     /** 世界坐标 → 屏幕坐标。二次以顶点为中心；一次/反比例固定窗口含坐标轴。 */
     function view() {
@@ -868,7 +1105,7 @@
       [XA, XB].forEach(function (X) { if (X >= 0 && X <= w.w) { ctx.moveTo(X, 0); ctx.lineTo(X, w.hp); } });
       ctx.stroke();
       ctx.setLineDash([]);
-      // 端点值与顶点值（哪个最大/最小，学生自己比）
+      // 端点：x 坐标是题面给的区间端点（已知量，照常显示），函数值要自己代入算（派生量 → ?）
       ctx.font = 'bold 11px sans-serif';
       [[xa, 'x=' + fmt(xa)], [xb, 'x=' + fmt(xb)]].forEach(function (pair) {
         const x = pair[0];
@@ -877,7 +1114,8 @@
         ctx.fillStyle = '#e67e22';
         ctx.beginPath(); ctx.arc(X, Y, 3.5, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = '#b35c00';
-        ctx.fillText(pair[1] + ' → ' + fmt(fAt(p, x)), Math.min(Math.max(X + 6, 2), w.w - 60), Math.max(Y - 7, 12));
+        ctx.fillText(pair[1] + ' → ' + (shown ? fmt(fAt(p, x)) : deriveText()),
+          Math.min(Math.max(X + 6, 2), w.w - 60), Math.max(Y - 7, 12));
       });
       ctx.restore();
     }
@@ -924,17 +1162,30 @@
         }
         ctx.fillStyle = '#c0392b';
         ctx.beginPath(); ctx.arc(VX, VY, vertIntent ? 6 : 4.5, 0, Math.PI * 2); ctx.fill();
-        ctx.fillText('(' + fmt(p.h) + ', ' + fmt(p.k) + ')', VX + 8, VY - 8);
-        // 顶点必标；最值题再加一行「最小值/最大值 = k」的提示（数字就是答案，学生自己核对）
+        /* 顶点坐标是派生量（答案）：位置照画，数值留问号；学生点「我算好了」答对后才画真值 */
+        ctx.fillText(shown ? '(' + fmt(p.h) + ', ' + fmt(p.k) + ')' : derivePair(), VX + 8, VY - 8);
+        // 对称轴位置同样是派生量：讲对称轴的题把线画粗强调，但轴上不写 x = h
+        if (intent === '对称轴') {
+          ctx.save();
+          ctx.font = 'bold 11px sans-serif';
+          ctx.fillStyle = '#34495e';
+          const HX0 = sx({ x: p.h }, w);
+          ctx.fillText('对称轴 ' + (shown ? 'x = ' + fmt(p.h) : 'x = ' + deriveText()),
+            Math.min(Math.max(HX0 + 6, 4), w.w - 80), 14);
+          ctx.restore();
+        }
+        // 最值题再加一行「最小值/最大值 = ?」的提示（数值是答案，学生自己算）
         if (intent === '最小值' || intent === '最大值') {
           ctx.save();
           ctx.font = 'bold 12px sans-serif';
           ctx.fillStyle = '#b03a2e';
-          const label = (intent === '最小值' ? '最小值' : '最大值') + ' = ' + fmt(p.k);
+          const label = (intent === '最小值' ? '最小值' : '最大值') + ' = '
+            + (shown ? fmt(p.k) : deriveText());
           ctx.fillText(label, Math.min(Math.max(VX + 8, 4), w.w - 90), Math.max(VY + 16, 14));
           ctx.restore();
         }
         // 零点（绿点）：只画点，**文案不在这里决定** —— 问顶点的题上不能出现「就是方程的两个根」
+        // P 卡：交点坐标是派生量，标位置 + (?, 0)；学生答对后再画真值
         const disc = -p.k / p.a;
         if (p.a !== 0 && disc >= 0) {
           const r = Math.sqrt(disc);
@@ -943,6 +1194,10 @@
             if (X < 0 || X > w.w) return;
             ctx.fillStyle = '#2ecc71';
             ctx.beginPath(); ctx.arc(X, Y, 4, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#1e8449';
+            ctx.font = 'bold 11px sans-serif';
+            ctx.fillText(shown ? '(' + fmt(x) + ', 0)' : '(?, 0)',
+              Math.min(Math.max(X + 6, 2), w.w - 46), Math.min(Math.max(Y + 16, 12), w.hp - 4));
           });
         }
         if (intervalIntent()) drawInterval(w);
@@ -964,16 +1219,18 @@
       } else if (type === 'linear') {
         // 与 y 轴交点 (0,b) 红点；与 x 轴交点 (-b/k, 0) 绿点
         // 文案不在这里写 —— 由 mount 时按 intent 生成（讲截距/面积/解集的题不能都被写成「方程的解」）
+        // P 卡：两点的坐标都是派生量（答案），位置照画、数值留问号。只有「一次函数与一元一次方程的关系」
+        // 里 b、k 是题面已知量，仍不直接写坐标 —— 让学生自己从 kx+b=0 读出来。
         const BY = sy({ y: p.b }, w), BX = sx({ x: 0 }, w);
         ctx.fillStyle = '#c0392b';
         ctx.beginPath(); ctx.arc(BX, BY, 4.5, 0, Math.PI * 2); ctx.fill();
-        ctx.fillText('(0, ' + fmt(p.b) + ')', BX + 8, BY - 8);
+        ctx.fillText(shown ? '(0, ' + fmt(p.b) + ')' : '(0, ?)', BX + 8, BY - 8);
         if (p.k !== 0) {
           const xInt = -p.b / p.k;
           const IX = sx({ x: xInt }, w), IY = sy({ y: 0 }, w);
           ctx.fillStyle = '#2ecc71';
           ctx.beginPath(); ctx.arc(IX, IY, 4.5, 0, Math.PI * 2); ctx.fill();
-          ctx.fillText('(' + fmt(xInt) + ', 0)', IX + 8, IY + 14);
+          ctx.fillText(shown ? '(' + fmt(xInt) + ', 0)' : '(?, 0)', IX + 8, IY + 14);
         }
       } else {
         // inverse：双曲线两支 + 渐近线虚线（文案同样由 intent 生成）
@@ -1010,9 +1267,11 @@
       ctx.closePath();
       ctx.fill();
       // 位移量标注：x 方向 "←2 / →2"，y 方向 "↓3 / ↑3"（屏幕 y 向下为正，所以 y 减用 ↓）
+      // P 卡：平移量是从题面「向左/向下平移几格」读出的已知量（题型由措辞识别，不是算出来的），
+      // 学生对过箭头方向后仍按原值显示 —— 拖动滑块改变位移时才改成 ?（那时已是学生在自己试）
       const parts = [];
-      if (Math.abs(dx) >= 1e-9) parts.push((dx < 0 ? '←' : '→') + fmt(Math.abs(dx)));
-      if (Math.abs(dy) >= 1e-9) parts.push((dy < 0 ? '↓' : '↑') + fmt(Math.abs(dy)));
+      if (Math.abs(dx) >= 1e-9) parts.push((dx < 0 ? '←' : '→') + (shown ? fmt(Math.abs(dx)) : deriveText()));
+      if (Math.abs(dy) >= 1e-9) parts.push((dy < 0 ? '↓' : '↑') + (shown ? fmt(Math.abs(dy)) : deriveText()));
       const label = parts.join(', ');
       const mx = (X1 + X2) / 2, my = (Y1 + Y2) / 2;
       ctx.font = 'bold 12px sans-serif';
@@ -1049,6 +1308,125 @@
       if (base) drawShift(w, anchorOf(base), anchorOf(p));
     }
 
+    /* ---------------- 自检面板（「我算好了」才显形） ----------------
+     * 静态标注全留 ?，学生需要一个对答案的地方，否则不知道自己对错。折中：
+     * 默认只有按钮；点它才给每项一个输入框让他填自己算的数，边填边逐行判定 ——
+     * 没填的行永远只说「未作答」，不出真值（空着就能看到答案 = 又变成给答案）。
+     * 填对的那一行才把真值画到图上（那已经是他自己算出来的）。
+     * 判定口径与 geomlab D2 卡一致（checkAnswerRow → engine.numericEqual）。
+     */
+    function noteTextOf() {
+      const baseNote = note0 || '';
+      const tail = '（参数已改动：图上曲线已经不是题面那条，问号请按当前曲线重新量。）';
+      return moved ? baseNote + tail : baseNote;
+    }
+
+    function buildCheck() {
+      const box = document.createElement('div');
+      box.className = 'funclab-check';
+      box.hidden = true;                       // 没有可核对的数值（如开口方向/选项题）就整块不显示
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'small funclab-check-btn';
+      btn.textContent = '我算好了，对答案';
+      const out = document.createElement('div');
+      out.className = 'funclab-check-out';
+      out.hidden = true;
+      /* 本次展开对应的结果行；真实值只活在这里与 answerRows()，不进 DOM 文本 */
+      let rows = [];
+      const inputsOf = function () { return Array.prototype.slice.call(out.querySelectorAll('input.funclab-check-ans')); };
+      function judgeLine(row, input, res) {
+        const v = checkAnswerRow(row, input.value);
+        res.className = 'funclab-check-res ' + (
+          v.verdict === 'right' ? 'is-ok' : v.verdict === 'wrong' ? 'is-no' : 'is-empty'
+        );
+        res.textContent = v.shown;
+      }
+      function judgeAll() {
+        const ins = inputsOf();
+        rows.forEach(function (r, i) { if (ins[i]) judgeLine(r, ins[i], out.querySelectorAll('.funclab-check-res')[i]); });
+        syncShown();
+        draw();
+      }
+      /* 只有「这份答案里没有任何一个未作答」时才把真值画到图上 —— 否则等于在学生还没算的时候先给一半答案 */
+      function syncShown() {
+        const ins = inputsOf();
+        if (!ins.length || !rows.length) { shown = false; return; }
+        const allDone = ins.every(function (input) {
+          return String(input.value || '').trim() !== '';
+        });
+        shown = allDone && ins.every(function (input, i) {
+          return checkAnswerRow(rows[i], input.value).verdict === 'right';
+        });
+      }
+      syncCheck = function () {
+        /* 参数变了（拖动滑块）→ 清空面板，避免拿旧答案判新曲线 */
+        if (out.hidden) return;
+        out.textContent = '';
+        out.hidden = true;
+        btn.textContent = '我算好了，对答案';
+        shown = false;
+      };
+      btn.addEventListener('click', function () {
+        const list = answerRows(noteLab, intent, p);
+        rows = list;
+        /* 面板已经展开时，点按钮是「用我填的数重新核对」，不能清空重建 ——
+         * 那样学生刚填的答案会被冲掉，判定永远读到空值（表现为一直「未作答」）。
+         * 只有首次展开（或答案行数量变了）才重建输入框。 */
+        const existing = inputsOf();
+        if (!out.hidden && existing.length && existing.length === list.length) {
+          judgeAll();
+          return;
+        }
+        out.textContent = '';
+        if (!list.length) {
+          out.textContent = '这类图没有可核对的数值答案。';
+          out.hidden = false;
+          return;
+        }
+        list.forEach(function (r, i) {
+          const line = document.createElement('div');
+          line.className = 'funclab-check-row';
+          const name = document.createElement('span');
+          name.className = 'funclab-check-name';
+          name.textContent = r.label + (/[=：]$/.test(r.label) ? ' ' : '：');
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.inputMode = 'decimal';
+          input.autocomplete = 'off';
+          input.className = 'funclab-check-ans';
+          input.value = '';                    // 绝不预填真值
+          input.setAttribute('aria-label', '我算的 ' + r.label);
+          input.dataset.idx = String(i);
+          const res = document.createElement('span');
+          res.className = 'funclab-check-res is-empty';
+          res.textContent = '未作答';
+          line.appendChild(name);
+          line.appendChild(input);
+          line.appendChild(res);
+          out.appendChild(line);
+          input.addEventListener('input', function () { judgeLine(r, input, res); syncShown(); draw(); });
+          input.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter') { ev.preventDefault(); judgeAll(); }
+          });
+        });
+        out.hidden = false;
+        btn.textContent = '重新核对';
+        const first = out.querySelector('input.funclab-check-ans');
+        if (first) first.focus();
+      });
+      box.appendChild(btn);
+      box.appendChild(out);
+      return box;
+    }
+
+    /* 自检面板里「这道题要核对什么」先按初始参数算一遍 —— 没有数值答案就整块不显示 */
+    if (answerRows(noteLab, intent, p).length) {
+      const chk = buildCheck();
+      chk.hidden = false;
+      wrap.appendChild(chk);
+    }
+
     // 首次绘制（canvas 可能尚未布局,ResizeObserver 会补一次）
     draw();
     if (typeof ResizeObserver !== 'undefined') {
@@ -1067,6 +1445,10 @@
           intent: intent,
           note: note.textContent,
           params: Object.assign({}, p),
+          /* P 卡：派生量是否已显示真值（只有学生点「我算好了」且全部答对才为 true）。
+           * 这里刻意不暴露真实答案 —— 画板实例挂在 dom 上（wrap._funclab），学生 F12 就能读到，
+           * 答案必须在答题前不进 DOM/实例状态。 */
+          shown: shown,
           base: base ? Object.assign({}, base) : null,
           curves: base ? 2 : 1,
           shift: type === 'quadratic' ? (base ? { dx: p.h - base.h, dy: p.k - base.k } : null)
@@ -1100,6 +1482,10 @@
     intentKey: intentKey, intentSupported: intentSupported, intentUsesRoots: intentUsesRoots,
     capabilityIntents: capabilityIntents,
     noteText: noteText, ROOT_INTENTS: ROOT_INTENTS.slice(),
+    /* P 卡：已知量/派生量分层 + 自检判定（纯函数，供测试与审计脚本复用） */
+    labAnswerParts: labAnswerParts, answerRows: answerRows, checkAnswerRow: checkAnswerRow,
+    numEqual: numEqual, deriveText: deriveText, derivePair: derivePair,
+    quadRangeExtrema: quadRangeExtrema, fmtPair: fmtPair, fmtQuad: fmtQuad,
     /** 某类画板（quadratic/linear/inverse）的能力清单子集（匹配层只喂相关画板，减少 LLM 误选） */
     capabilitiesFor: function (type) {
       const out = {};
