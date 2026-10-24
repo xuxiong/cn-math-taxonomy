@@ -94,3 +94,12 @@ ul.plain li { margin: 3px 0; }
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
 .conf { font-variant-numeric: tabular-nums; font-weight: 800; }
 footer.site-footer { text-align: center; margin: 24px 0; color: var(--muted); font-size: .88rem; }
+
+/* 「从这儿开始诊断」：只在 ④ 校验通过时出现，学生必须自己点 */
+a.start-diag {
+  display: inline-block; margin-top: 6px; padding: 5px 12px;
+  border-radius: var(--radius-sm); background: var(--brand); color: #fff;
+  font-weight: 700; font-size: .9rem; text-decoration: none;
+}
+a.start-diag:hover, a.start-diag:focus { background: #0b554c; color: #fff; }
+a.start-diag + a.start-diag { margin-left: 8px; }

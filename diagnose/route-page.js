@@ -3,7 +3,9 @@
  * 分工（对应验收标准 7）：
  *   ①② 解析字段 / 候选池 —— 纯确定性，点「定位」后**立刻**渲染，不依赖网关；
  *   ③④ LLM 选择 / 校验 —— 需要网关，网关不可用时给明确提示，不白屏；
- *   ⑤⑥ 前置链 / 路径 —— 只在 ④ 通过后才算，本身就是确定性计算。
+ *   ⑤ 前置链 —— 只在 ④ 通过后才算，本身就是确定性计算；
+ *   ⑥ 接下来需要确认的知识点 —— 依赖图上的前置节点，不是诊断结论；
+ *     「从这儿开始诊断」入口也只挂在这里，且只在 ④ 校验通过时出现。
  *
  * 算法都在 route.js（纯函数，Node 可直测），本文件只碰 DOM。
  */
@@ -117,6 +119,14 @@
 
   /* ------------------------------------------------------------- ④ 校验 */
 
+  /* 「从这儿开始诊断」入口：只有 ④ 校验通过的候选才有。
+   * 只有 1 个候选也要学生点，不自动跳转——起点错了，engine 会认真地把错的知识点测一遍。
+   * 地址一律由 route.js 的 diagnosisUrl() 生成（跳转参数的唯一来源，Node 侧可直测）。 */
+  function startButton(topicId) {
+    return '<a class="start-diag" id="start-diag-' + esc(topicId) + '" href="' + esc(R.diagnosisUrl(topicId)) + '"' +
+      ' data-topic="' + esc(topicId) + '">从这儿开始诊断</a>';
+  }
+
   function renderVerify(v) {
     var html = '';
     if (v.ok) {
@@ -128,12 +138,14 @@
           '<br><span class="small muted">考点覆盖 <strong>' +
           (k.coverage == null ? '无法核对' : Math.round(k.coverage * 100) + '%') + '</strong>' +
           '（LLM 原始置信度 ' + k.llmConfidence + '）' +
-          (k.notes && k.notes.length ? '　' + esc(k.notes.join('；')) : '') + '</span></li>';
+          (k.notes && k.notes.length ? '　' + esc(k.notes.join('；')) : '') + '</span>' +
+          '<br>' + startButton(k.id) + '</li>';
       }).join('') + '</ul>';
-      if (v.kept.length > 1) {
-        html += '<p class="small muted">给了 ' + v.kept.length + ' 个候选，请让学生点自己认的那一个——' +
-          '不自作聪明只给一个。</p>';
-      }
+      html += '<div class="okbox"><strong>上面还是候选，不是诊断结论。</strong>' +
+        '<p class="small" style="margin:6px 0 0">点某个候选旁的「从这儿开始诊断」，' +
+        '到诊断页做几道题，才能确定你实际卡在哪个知识点。' +
+        (v.kept.length > 1 ? '这次有 ' + v.kept.length + ' 个候选，请点你认为对的那一个——系统不替你选。' : '') +
+        '</p></div>';
     } else {
       html += '<div class="badbox"><strong>分析结果无法定位到知识点</strong>' +
         '<p class="small" style="margin:6px 0 0">按「定位错比不定位更糟」处理：不返回任何知识点。</p></div>';
@@ -189,7 +201,7 @@
     show('sec-prereq', true);
   }
 
-  /* ----------------------------------------------------------- ⑥ 学习路径 */
+  /* ------------------------------------------ ⑥ 接下来需要确认的知识点 */
 
   function renderPath(path, targetName) {
     if (!path || !path.nodes.length) {
@@ -197,17 +209,17 @@
       show('sec-path', true);
       return;
     }
-    var html = '<div class="warnbox"><strong>路径不是诊断结论。</strong>' +
-      '<p class="small" style="margin:6px 0 0">' + esc(path.note) + '</p></div>';
+    var note = R.structureNote();
+    var html = '<div class="warnbox"><strong>' + esc(note.title) + '</strong>' +
+      '<p class="small" style="margin:6px 0 0">' + esc(note.text) + '</p></div>';
     html += path.nodes.map(function (n) {
       return '<div class="node' + (n.isTarget ? ' target' : '') + '">' +
         '<span class="g">' + esc(R.gradeLabel(n.grade)) + '</span>' +
         '<span class="n">' + esc(n.name) + (n.isTarget ? ' <span class="small muted">（目标知识点）</span>' : '') + '</span>' +
         '<span class="pill pending">候选，待测确认</span></div>';
     }).join('');
-    html += '<p class="small muted">从低年级往上走：前面的节点是' +
-      esc(targetName || '目标') + '的 hard 前置。每个节点都是<strong>候选薄弱点</strong>，' +
-      '要学生做一道题确认，确认之前不要当成已诊断。</p>';
+    html += '<p class="small muted">' + esc(R.STRUCTURE_FOOTNOTE || '') +
+      '（这些节点是「' + esc(targetName || '目标') + '」在图上的前置，不是学生实际断了的地方）。</p>';
     $('path-body').innerHTML = html;
     show('sec-path', true);
   }
