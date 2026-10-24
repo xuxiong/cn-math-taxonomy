@@ -226,7 +226,8 @@ function main(argv) {
 
   server.listen(port, host, function () {
     const actual = server.address().port;
-    console.log('静态服务已启动：http://localhost:' + actual + '/diagnose/');
+    console.log('静态服务已启动：http://' + host + ':' + actual + '/diagnose/');
+    console.log('（只监听 IPv4：浏览器若把 localhost 解析成 ::1 会连不上，用 127.0.0.1 访问）');
     console.log('已禁缓存：.js/.css/.html/.json 等返回 Cache-Control: no-store（改完代码刷新即生效）');
     console.log('根目录：' + dir + '（监听 ' + host + ':' + actual + '）');
   });
