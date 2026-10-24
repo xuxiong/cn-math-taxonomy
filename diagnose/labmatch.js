@@ -33,6 +33,11 @@
   const PROXY = 'http://127.0.0.1:3000/v1/chat/completions';
   const MODEL = 'DeepSeek-V4-Flash-0731-TokenPlan';
   const CACHE_KEY = 'cnmLabMatch.v1';
+  /* lenient（学生主动点「画图给我看」）用**独立**缓存表，理由见 resolve() 的注释：
+   * lenient 会挂上「题目没直接问、但能帮助学生理解」的图，如果把这种宽松判定写进正常缓存，
+   * 下次自动挂图就会跟着挂（污染自动路径）；反过来，正常缓存里的条目是「严格判定通过」的强结果，
+   * lenient 复用它一定安全。因此两张表单向流动：strict → lenient（可复用），lenient -/-> strict。 */
+  const LENIENT_CACHE_KEY = 'cnmLabMatchLenient.v1';
   /* 验证时用 500 会把 JSON 截断（reason 字段被切掉一半 → 解析失败）。
    * 注意网关把 reasoning_content 也算进预算：1200 在长推理题上仍会截断（实测 cnm_202_q1 同题重试就顶到上限），
    * 因此给 2000 —— 卡面「给足 1200」是最低要求，不是上限。 */
@@ -92,33 +97,35 @@
     return true;
   }
 
-  function cacheGet(itemId) {
+  function cacheGet(itemId, key) {
     if (!itemId) return null;
-    const all = defaultStore().get(CACHE_KEY);
+    const all = defaultStore().get(key || CACHE_KEY);
     if (!all || typeof all !== 'object') return null;
     const e = all[String(itemId)];
     return validEntry(e) ? e : null;
   }
 
-  function cachePut(itemId, choice) {
+  function cachePut(itemId, choice, key) {
     if (!itemId) return;
-    const all = defaultStore().get(CACHE_KEY);
+    const k = key || CACHE_KEY;
+    const all = defaultStore().get(k);
     const table = (all && typeof all === 'object' && !Array.isArray(all)) ? all : {};
     table[String(itemId)] = {
       match: choice.match, params: choice.params, intent: choice.intent,
       reason: choice.reason || '', at: Date.now()
     };
-    defaultStore().set(CACHE_KEY, table);
+    defaultStore().set(k, table);
   }
 
   /** 丢掉一条缓存（结构损坏 / 重新校验不过） */
-  function cacheDrop(itemId) {
+  function cacheDrop(itemId, key) {
     if (!itemId) return;
-    const all = defaultStore().get(CACHE_KEY);
+    const k = key || CACHE_KEY;
+    const all = defaultStore().get(k);
     if (!all || typeof all !== 'object' || Array.isArray(all)) return;
     if (!Object.prototype.hasOwnProperty.call(all, String(itemId))) return;
     delete all[String(itemId)];
-    defaultStore().set(CACHE_KEY, all);
+    defaultStore().set(k, all);
   }
 
   /* ============================================================ 题面 → 规范参数（校验基准，与 LLM 无关） */
@@ -223,7 +230,9 @@
 
   /* ============================================================ LLM 调用 */
 
-  function systemPrompt() {
+  function systemPrompt(opts) {
+    const o = opts || {};
+    if (o.lenient) return lenientSystemPrompt();
     return '你是数学教学系统的画板匹配器：给一道题和一份画板能力清单，判断该不该挂画板、挂哪个、画板要讲清单里的哪一条。'
       + '\n只输出 JSON，不要任何解释文字、不要 Markdown 代码块。格式严格为：'
       + '\n{"match":"画板名或null","params":{},"intent":"","reason":"一句话理由"}'
@@ -236,6 +245,30 @@
       + '\n4. 画板只负责"看见关系"，不负责写解题步骤：如果题目问的是化简结果、求参数取值、求面积/长度的具体数值计算、'
       + '两图象交点坐标等 canAnswer 未列出的东西，一律 match=null。'
       + '\n5. match 为 null 时 params 给 {}，intent 给 ""，reason 写明"清单里没有能回答这个问题的画板"。';
+  }
+
+  /**
+   * lenient 的 system 规则（学生主动要求看图：diagnose/app.js 的「画图给我看」按钮）。
+   *
+   * 与默认规则的唯一差别：第 1 条从「题目所问必须在 canAnswer 里」放宽为
+   * 「能不能画出一张对学生理解这道题有帮助的图」。其余（intent 逐字取自 canAnswer、
+   * params 只来自题面、不许编造）**一个字都不放宽** —— 参数最终还要过 verifyParams 代回校验。
+   * 规则 4、5 故意保留：宁可诚实说画不了，也不许硬凑一张误导的图。
+   */
+  function lenientSystemPrompt() {
+    return '你是数学教学系统的画板匹配器。这次的场景不同：学生做完题、看完解析后，**自己要求看一眼图**。'
+      + '\n只输出 JSON，不要任何解释文字、不要 Markdown 代码块。格式严格为：'
+      + '\n{"match":"画板名或null","params":{},"intent":"","reason":"一句话理由"}'
+      + '\n规则：'
+      + '\n1. 判断标准放宽为：**能不能画出一张对学生理解这道题有帮助的图**（哪怕题目本身问的不是图形）。'
+      + '例如题目「把 y=x²-4x+3 化为顶点式」：配方是代数操作、画板不教配方，但学生想看顶点在哪、开口朝哪，'
+      + 'quadratic-vertex 是能帮上忙的，此时应给 match（intent 选「顶点坐标」）。'
+      + '\n2. intent 仍然必须是所选画板 canAnswer 数组里的**某一整项**，逐字照抄、一个字都不能改，也不能把两项拼起来。'
+      + '\n3. params 仍然必须能从题面原样读出、或由题面表达式直接换算（如 y=x²-4x+3 配方得 a=1,h=2,k=-1）。'
+      + '**不许编造题面没有的数**；题面给了几个函数时，只用与题目直接相关的那个。'
+      + '\n4. 即使放宽，画板也只负责"看见关系"：如果题面里根本没有能画出图的表达式，或者画出来的图与题目完全无关、'
+      + '只会误导学生，才给 match=null，不要硬凑一张图。'
+      + '\n5. match 为 null 时 params 给 {}，intent 给 ""，reason 写明"画不出对理解这道题有帮助的图"。';
   }
 
   function userPrompt(prompt, capabilities) {
@@ -268,7 +301,7 @@
       max_tokens: o.maxTokens || MAX_TOKENS,
       temperature: 0,
       messages: [
-        { role: 'system', content: systemPrompt() },
+        { role: 'system', content: systemPrompt({ lenient: !!o.lenient }) },
         { role: 'user', content: userPrompt(prompt, capabilities) }
       ]
     };
@@ -311,6 +344,13 @@
   let lastError = null;
   function getLastError() { return lastError; }
 
+  /* 最近一次 resolve 的「为什么没挂上」——给 UI 分文案用（卡 t_f80f900e 三条文案）。
+   * 不改 resolve 的返回契约（仍返回 null），只额外旁路记录：
+   *   kind = 'rejected'（LLM 明确拒绝 / 参数校验不过）| 'offline'（网关失败、非 200、坏 JSON、超时）
+   * 每次 resolve 进入时清空，避免下一题读到上一题的残留状态。 */
+  let lastFailure = null;
+  function getLastFailure() { return lastFailure; }
+
   /** 单次调用；失败重试（只重试传输/解析失败，LLM 明确拒绝不重试） */
   function callWithRetry(prompt, caps, o, attempt) {
     const n = o.retries == null ? 1 : Math.max(0, Number(o.retries) || 0);
@@ -335,20 +375,23 @@
     const o = opts || {};
     const caps = capabilities || (Funclab && Funclab.CAPABILITIES) || {};
     const itemId = o.itemId ? String(o.itemId) : '';
+    const cacheKey = o.lenient ? LENIENT_CACHE_KEY : CACHE_KEY;
     if (!Funclab || !Funclab.CAPABILITIES) return Promise.resolve(null);
 
     // 缓存优先（只可能是校验通过的结果）—— 但**必须重新校验**：
     // 能力清单会在代码里演进（画板改名/下线，如 linear-shift），旧缓存里可能留着已下线的画板名。
     // 校验不过就丢掉这条缓存，走真实请求。
     if (itemId && !o.noCache) {
-      const hit = cacheGet(itemId);
+      const hit = cacheGet(itemId, cacheKey);
       if (hit) {
         const v = verifyParams(prompt, hit);
         if (v.ok) return Promise.resolve(Object.assign({ verified: true, from: 'cache' }, hit));
-        cacheDrop(itemId);
+        cacheDrop(itemId, cacheKey);
       }
     }
-    const key = itemId || String(prompt || '');
+    // 去重 key 必须区分 lenient：同一题正常/宽松两种请求同时飞，结果完全不同（一个是 null 一个能挂），
+    // 共用 key 会让后到的调用方拿到别人的结果。
+    const key = (o.lenient ? 'L|' : '') + (itemId || String(prompt || ''));
     if (inflight[key]) return inflight[key];
 
     const p = callWithRetry(prompt, caps, o).then(function (obj) {
@@ -370,7 +413,7 @@
       const v = verifyParams(prompt, choice);
       choice.verified = v.ok;
       choice.why = v.why;
-      if (v.ok && !o.noCache && itemId) cachePut(itemId, choice);   // 只缓存成功
+      if (v.ok && !o.noCache && itemId) cachePut(itemId, choice, cacheKey);   // 只缓存成功
       return choice;
     }).catch(function (e) { lastError = e; return null; });
 
@@ -385,36 +428,92 @@
    *   lab 是 labForScene 给出的候选（没有候选就不用问了：题库里根本没有可画的函数）。
    *   降级：LLM 失败 / 拒绝 / 参数校验不过 → null（不挂图，不回退旧逻辑）。
    */
+  /**
+   * resolve({prompt, lab, itemId, lenient?}, opts) → Promise<挂载配置|null>
+   *   挂载配置 = {type, lab, intent, ...参数, base, xMin?, xMax?}，可直接喂 Funclab.mount()。
+   *   lab 是 labForScene 给出的候选（没有候选就不用问了：题库里根本没有可画的函数）。
+   *   降级：LLM 失败 / 拒绝 / 参数校验不过 → null（不挂图，不回退旧逻辑）。
+   *
+   *   lenient（卡 t_f80f900e）：学生自己点「画图给我看」时才传 true。
+   *     放宽的**只有** system prompt 里「题目所问必须在 canAnswer 里」→「能不能画出一张有帮助的图」；
+   *     画板白名单 / intent 白名单 / verifyParams 代回校验 / 网关失败即不挂，全部与默认路径一致。
+   *     缓存与去重都走独立命名空间，见 CACHE_KEY 注释。
+   *
+   *   为什么「没挂上」要旁路记录：调用方要分三种文案（挂上了 / 图帮不上忙 / 画图功能暂时用不了），
+   *   而最后一个状态只差在「LLM 拒绝」与「网关失败」上。改返回契约会波及现有调用方与测试，
+   *   所以 resolve 仍返回 null，另用 lastFailure() 记录 kind。注意这是模块级状态：
+   *   并发调用不同题时以最后一次完成为准（UI 侧用 explainTick 竞态令牌兜住）。
+   */
   function resolve(input, opts) {
     const inp = input || {};
     const prompt = inp.prompt;
     const cand = inp.lab;
-    if (!Funclab || !Funclab.CAPABILITIES || !cand || !cand.type) return Promise.resolve(null);
+    const lenient = !!inp.lenient;
+    lastFailure = null;   // 每次进入清空，避免调用方读到上一题的残留
+    if (!Funclab || !Funclab.CAPABILITIES || !cand || !cand.type) {
+      lastFailure = { kind: 'rejected', lenient: lenient, reason: 'no-candidate' };
+      return Promise.resolve(null);
+    }
     const type = cand.type;
     const caps = Funclab.capabilitiesFor(type);
-    if (!Object.keys(caps).length) return Promise.resolve(null);
-    const o = Object.assign({}, opts, { itemId: inp.itemId });
+    if (!Object.keys(caps).length) {
+      lastFailure = { kind: 'rejected', lenient: lenient, reason: 'no-capability' };
+      return Promise.resolve(null);
+    }
+    const o = Object.assign({}, opts, { itemId: inp.itemId, lenient: lenient });
+    // lenient 先复用正常缓存里的强结果（严格通过 = 在宽松标准下也成立），省一次调用；
+    // 但**不写回**正常缓存，也不把 lenient 表喂给正常路径（单向流动，见 CACHE_KEY 注释）。
+    if (lenient && inp.itemId && !o.noCache) {
+      const hit = cacheGet(inp.itemId, CACHE_KEY);
+      if (hit && verifyParams(prompt, hit).ok) {
+        const strictCfg = buildCfg(type, cand, hit);
+        if (strictCfg) return Promise.resolve(strictCfg);
+      }
+    }
     return matchLab(prompt, caps, o).then(function (choice) {
-      if (!choice || !choice.match) return null;
-      if (!choice.verified) return null;
-      const params = {};
-      (Funclab.CAPABILITIES[choice.match].params || []).forEach(function (k) {
-        params[k] = Number(choice.params[k]);
-      });
-      const cfg = Object.assign({ type: type, lab: choice.match, intent: choice.intent }, params);
-      // base（原曲线）继续由 funclab 的 baseOf 决定；候选里带了就带上，不带就是单曲线
-      if (cand.base) cfg.base = cand.base;
-      // mount 会再校验一遍 lab/intent/params；这里提前挡掉，避免调用方拿到 null 还去 append
-      if (!Funclab.intentSupported(cfg.lab, cfg.intent)) return null;
-      if (!Funclab.noteText(cfg.lab, cfg.intent, cfg)) return null;
+      if (!choice) {
+        lastFailure = { kind: 'offline', lenient: lenient, reason: lastError ? (lastError.message || String(lastError)) : 'gateway' };
+        return null;
+      }
+      if (!choice.match) {
+        lastFailure = { kind: 'rejected', lenient: lenient, reason: choice.reason || '' };
+        return null;
+      }
+      if (!choice.verified) {
+        lastFailure = { kind: 'rejected', lenient: lenient, reason: (choice.why || []).join('; ') || 'verify-failed' };
+        return null;
+      }
+      const cfg = buildCfg(type, cand, choice);
+      if (!cfg) {
+        lastFailure = { kind: 'rejected', lenient: lenient, reason: 'intent-not-supported' };
+        return null;
+      }
+      lastFailure = null;
       return cfg;
     }).catch(function () { return null; });
   }
 
+  /** choice → mount 配置（两条入口共用，避免 lenient 复制一份组装逻辑） */
+  function buildCfg(type, cand, choice) {
+    if (!choice || !choice.match || !Funclab.CAPABILITIES[choice.match]) return null;
+    const params = {};
+    (Funclab.CAPABILITIES[choice.match].params || []).forEach(function (k) {
+      params[k] = Number(choice.params[k]);
+    });
+    const cfg = Object.assign({ type: type, lab: choice.match, intent: choice.intent }, params);
+    // base（原曲线）继续由 funclab 的 baseOf 决定；候选里带了就带上，不带就是单曲线
+    if (cand.base) cfg.base = cand.base;
+    // mount 会再校验一遍 lab/intent/params；这里提前挡掉，避免调用方拿到 null 还去 append
+    if (!Funclab.intentSupported(cfg.lab, cfg.intent)) return null;
+    if (!Funclab.noteText(cfg.lab, cfg.intent, cfg)) return null;
+    return cfg;
+  }
+
   return {
-    PROXY: PROXY, MODEL: MODEL, CACHE_KEY: CACHE_KEY, MAX_TOKENS: MAX_TOKENS, EPS: EPS,
+    PROXY: PROXY, MODEL: MODEL, CACHE_KEY: CACHE_KEY, LENIENT_CACHE_KEY: LENIENT_CACHE_KEY,
+    MAX_TOKENS: MAX_TOKENS, EPS: EPS,
     matchLab: matchLab, resolve: resolve, verifyParams: verifyParams,
-    getLastError: getLastError,
+    getLastError: getLastError, lastFailure: getLastFailure,
     promptInterval: promptInterval, expandVertex: expandVertex,
     systemPrompt: systemPrompt, userPrompt: userPrompt, extractJson: extractJson,
     setStore: setStore, defaultStore: defaultStore, validEntry: validEntry
