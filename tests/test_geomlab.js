@@ -646,7 +646,10 @@ test('checkRows：真实值只出现在自检面板里，且覆盖图上留 ? �
     if (c.id === 'cnm_174_q3') assert.ok(/面积/.test(names), '自检应含面积：' + names);
     rows.forEach(function (r) {
       assert.ok(r.real != null && isFinite(r.real), c.id + ' 的自检行 ' + r.name + ' 应有真实数值');
-      assert.strictEqual(r.yours, '', '「你算的」默认必须是空位（不能预先填好答案）');
+      /* 旧断言这里写的是 r.yours === ''，把「面板根本没有输入框」固化成契约：
+       * 意图（不能预填答案）正确，实现方式错误 —— 学生唯一的作答入口被写成了空字符串。
+       * 现在改为「每行必须有输入位，且初值为空」，见下面第 11 节。 */
+      assert.ok(Object.prototype.hasOwnProperty.call(r, 'yours'), c.id + ' 的自检行 ' + r.name + ' 必须带学生作答位 yours（不能没有作答入口）');
     });
   });
 });
@@ -698,6 +701,157 @@ test('三角形：直角边缩到 0.35×，面积与斜边都明显变小', func
   const small = G.solve(l);
   assert.ok(small.area / base.area < 0.15, '面积应缩到 ' + (small.area / base.area).toFixed(3) + ' 倍');
   assert.ok(base.c - small.c > 5, '斜边应明显变短：' + base.c + ' → ' + small.c);
+});
+
+/* ================================================================
+ * 11. 自检面板的作答契约（每行一个输入框：填对 ✓ / 填错 ✗+实际值 / 未填「未作答」）
+ *
+ * 这一节锁的是「学生能自己填、自己判」这件事本身。旧测试用
+ * assert.strictEqual(r.yours, '') 把「面板没有输入框」当契约 —— 意图（不许预填答案）
+ * 对，做法错：学生唯一的作答入口变成了一段永远为空的字符串。
+ *
+ * 接口面：判分必须是纯函数，才能在 Node 里零 DOM 锁定。
+ *   归一化复用：plain()（全角/横线/撇号）+ fmt() 的显示口径（两位小数）+ parseFloat，
+ *   不另写一套数字解析。
+ *   判分结果必须给 verdict ∈ {'right','wrong','blank'}；显示文案由判分函数一并给出
+ *   （shown/have/you/text 任一字段即可，这几个写法都认），✗ 时既要回显学生输入也要给实际值。
+ * 唯一允许的表示差异：前后空格、分数写法（23/50、2/5）、显示口径的两位小数（16.0/16.00）。
+ * 不验的项（都算另造归一化，不算复用 plain/fmt）：
+ *   单位与角度符号（° cm）、全角数字（plain() 只管标点不管数字，1６ 原样透传）、
+ *   0.667 这类把无限小数四舍五入后当独立答案 —— 这条只要求「填面板显示值必须判对」。
+ * ================================================================ */
+
+console.log('\n--- 11. 自检面板作答契约（输入框 + 判分） ---');
+
+/** 判分入口：优先纯函数 checkOne(row|real, raw)；没有就报清楚，不静默跳过 */
+function judge(row, raw) {
+  if (typeof G.checkOne === 'function') return G.checkOne(row, raw);
+  if (typeof G.gradeRow === 'function') return G.gradeRow(row, raw);
+  assert.fail('缺少判分出口：请在 geomlab.js 暴露 checkOne(row, input)（或 gradeRow），' +
+    '返回 {verdict:"right"|"wrong"|"blank", shown:..., realText:...}');
+}
+
+/** 判分结果里的显示文案：学生实际输入 / 应当显示的文本 */
+function shownOf(res) {
+  return String(
+    res && (res.shown != null ? res.shown
+      : res.have != null ? res.have
+        : res.you != null ? res.you
+          : res.text != null ? res.text : '')
+  );
+}
+
+test('自检面板每行都有作答位，且初值为空（不能预填答案）', function () {
+  RENDER_CASES.forEach(function (c) {
+    const l = lab(c.id);
+    const rows = G.checkRows(l, G.solve(l));
+    assert.ok(rows.length > 0, c.id + ' 的自检面板应有可核对的行');
+    rows.forEach(function (r, i) {
+      assert.ok(r && typeof r === 'object', c.id + ' 第 ' + i + ' 行必须是对象（学生要往里填）');
+      assert.ok(Object.prototype.hasOwnProperty.call(r, 'yours'), c.id + ' 自检行 ' + r.name + ' 缺 yours 作答位');
+      assert.strictEqual(r.yours, '', c.id + ' 自检行 ' + r.name + ' 的 yours 初值必须为空（不许预填答案）');
+      assert.ok(r.real != null && isFinite(r.real), c.id + ' 自检行 ' + r.name + ' 的真实值仍在（判分要用）');
+    });
+  });
+});
+
+test('填对判 ✓：直接抄真实值（fmt 口径）必须判对', function () {
+  RENDER_CASES.forEach(function (c) {
+    const l = lab(c.id);
+    G.checkRows(l, G.solve(l)).forEach(function (r) {
+      const res = judge(r, G.fmt(r.real));
+      assert.strictEqual(res.verdict, 'right', c.id + ' 的 ' + r.name + '：填 ' + G.fmt(r.real) + ' 应判对，实际 ' + JSON.stringify(res));
+      const shown = shownOf(res);
+      assert.ok(/✓/.test(shown), c.id + ' 的 ' + r.name + ' 判对时应显示 ✓，实际：' + shown);
+    });
+  });
+});
+
+test('填错判 ✗ 并显示实际值（不吞掉学生的答案）', function () {
+  RENDER_CASES.forEach(function (c) {
+    const l = lab(c.id);
+    G.checkRows(l, G.solve(l)).forEach(function (r) {
+      /* 故意写一个离真值很远的数，并且与原值字形无任何关系 */
+      const bogus = '99999';
+      assert.notStrictEqual(G.fmt(r.real), bogus, '测试用例本身不能撞上真值：' + r.name);
+      const res = judge(r, bogus);
+      assert.strictEqual(res.verdict, 'wrong', c.id + ' 的 ' + r.name + '：填 ' + bogus + ' 应判错，实际 ' + JSON.stringify(res));
+      const shown = shownOf(res);
+      assert.ok(/✗/.test(shown), c.id + ' 的 ' + r.name + ' 判错时应显示 ✗，实际：' + shown);
+      assert.ok(shown.indexOf(bogus) >= 0, c.id + ' 的 ' + r.name + ' 判错时回显应含学生填的 ' + bogus + '，实际：' + shown);
+      assert.ok(shown.indexOf(G.fmt(r.real)) >= 0, c.id + ' 的 ' + r.name + ' 判错时应显示实际值 ' + G.fmt(r.real) + '，实际：' + shown);
+    });
+  });
+});
+
+test('未填显示「未作答」且不泄露实际值', function () {
+  RENDER_CASES.forEach(function (c) {
+    const l = lab(c.id);
+    G.checkRows(l, G.solve(l)).forEach(function (r) {
+      const realText = G.fmt(r.real);
+      ['', '   ', '\t\n'].forEach(function (empty) {
+        const res = judge(r, empty);
+        assert.strictEqual(res.verdict, 'blank', c.id + ' 的 ' + r.name + ' 未填（' + JSON.stringify(empty) + '）应判 blank，实际 ' + JSON.stringify(res));
+        const shown = shownOf(res);
+        assert.ok(/未作答/.test(shown), c.id + ' 的 ' + r.name + ' 未填时应显示「未作答」，实际：' + shown);
+      });
+      /* 泄露检查独立成断言：空输入下的任何回显都不许出现真实值、也不许判对/判错 */
+      const res2 = judge(r, '');
+      const shown2 = shownOf(res2);
+      assert.ok(shown2.indexOf(realText) < 0, c.id + ' 的 ' + r.name + ' 未填时不得泄露实际值 ' + realText + '，实际：' + shown2);
+      assert.ok(!/✓/.test(shown2), c.id + ' 的 ' + r.name + ' 未填时不得判 ✓，实际：' + shown2);
+      assert.ok(!/✗/.test(shown2), c.id + ' 的 ' + r.name + ' 未填时不得判 ✗（还没作答），实际：' + shown2);
+    });
+  });
+});
+
+test('数值等价写法 16 / 16.0 / 0.46 / 23/50 / 2/5 均判对（复用已有归一化，不新造）', function () {
+  /* 一条真实自检行，只改 real：等价写法是数学事实，与是哪道题无关 */
+  const base = { name: '合成行', yours: '', real: 16, unit: '' };
+  [16, 16.0, '16.0', ' 16 ', '16.00', '0016'].forEach(function (w) {
+    assert.strictEqual(judge(base, String(w)).verdict, 'right', '16 的等价写法 ' + JSON.stringify(w) + ' 应判对');
+  });
+  const frac = { name: '合成行', yours: '', real: 0.46, unit: '' };
+  ['0.46', '23/50', '.46', '46/100', '0.460'].forEach(function (w) {
+    assert.strictEqual(judge(frac, w).verdict, 'right', '0.46 的等价写法 ' + JSON.stringify(w) + ' 应判对');
+  });
+  const two5 = { name: '合成行', yours: '', real: 0.4, unit: '' };
+  ['0.4', '2/5', '4/10', '.4'].forEach(function (w) {
+    assert.strictEqual(judge(two5, w).verdict, 'right', '0.4 的等价写法 ' + JSON.stringify(w) + ' 应判对');
+  });
+  /* 反例：不能因为「宽松」把错答案也放过 */
+  assert.strictEqual(judge(base, '17').verdict, 'wrong', '16 填 17 必须判错');
+  assert.strictEqual(judge(frac, '23/51').verdict, 'wrong', '0.46 填 23/51 必须判错');
+  assert.strictEqual(judge(two5, '2/3').verdict, 'wrong', '0.4 填 2/3 必须判错');
+  /* 非数值输入绝不能判对（判 wrong 或 blank 都可以，那是实现的宽松度选择） */
+  assert.notStrictEqual(judge(base, '16abc').verdict, 'right', '混入非数值字符不许判对');
+});
+
+test('真实题目的答案用等价写法也要判对（cnm_269_q1 的 AD/DB≈0.667、cnm_174_q3 面积 60）', function () {
+  const l = lab('cnm_269_q1');
+  const ratioRow = G.checkRows(l, G.solve(l)).filter(function (r) { return /AD\/DB/.test(r.name); })[0];
+  assert.ok(ratioRow, 'cnm_269_q1 应有 AD/DB 自检行');
+  const rv = ratioRow.real;
+  assert.strictEqual(judge(ratioRow, G.fmt(rv)).verdict, 'right', '填显示口径 ' + G.fmt(rv) + ' 应判对');
+  /* cnm_269_q1 的 AD/DB 真值是 AB:DB = 2:1 的比，学生算出的 2/3 与真值差 3e-4，属于同一数学值 */
+  assert.strictEqual(judge(ratioRow, '2/3').verdict, 'right', 'AD:DB=2:3 的学生会填 2/3，应与真值同判对');
+  /* 显示口径就是判分口径：面板上写 0.67 就必须能被 0.67 判对，否则学生抄面板的答案会被判错 */
+  const shownText = G.fmt(rv);
+  assert.strictEqual(judge(ratioRow, shownText).verdict, 'right', '面板显示 ' + shownText + ' 却在学生填 ' + shownText + ' 时判错 = 自相矛盾');
+
+  const triLab = lab('cnm_174_q3');
+  const tri = G.checkRows(triLab, G.solve(triLab));
+  const areaRow = tri.filter(function (r) { return /面积/.test(r.name); })[0];
+  assert.ok(areaRow, 'cnm_174_q3 应有面积自检行');
+  /* pre-commit 会去掉行尾空白，所以用反引号折行，别在模板里留续行空格 */
+  ['60', '60.0', '60.00', `60.
+`].forEach(function (w) {
+    assert.strictEqual(judge(areaRow, w).verdict, 'right', '面积 60 的等价写法 ' + w + ' 应判对');
+  });
+  /* 真值恰好是两位小数以内时，不能出现「填显示值判错」的分裂 */
+  tri.forEach(function (r) {
+    assert.strictEqual(judge(r, G.fmt(r.real)).verdict, 'right', 'cnm_174_q3 的 ' + r.name + ' 填显示值 ' + G.fmt(r.real) + ' 必须判对');
+  });
 });
 
 /* ================================================================ */
