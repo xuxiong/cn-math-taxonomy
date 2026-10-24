@@ -1024,6 +1024,35 @@ test('describe：DRAW 标注字符串字面量全被 describe 覆盖（防漂移
   });
 });
 
+test('describe：条件绘制的元素必须与 DRAW 同条件（直角符号 / 高线）', function () {
+  /* 回归锁（t_85395e07 实测）：describe 是手写文案，容易把「条件画」的元素写成「一定有」。
+   * 两处已修的漂移，各锁一条：
+   *   ① DRAW['circle-chord'] 里 rightAngle 只在 |d| > 1e-6 时画（弦过圆心时垂足 H 与 O 重合，不画直角符号）；
+   *   ② DRAW['triangle-right'] 里垂足 D、橙虚线 CD、D 处直角都在 if (lab.altitude && v.altitude) 之内。 */
+  const chord = G.labFor('cnm_251', '⊙O 的半径为 10，圆心到弦 AB 的距离为 6，求弦 AB 的长。', { answer: '16' });
+  assert.ok(chord && chord.skel === 'circle-chord', '弦心距题应解析成 circle-chord');
+  const withD = G.describe(chord, chord.state);
+  assert.ok(withD.indexOf('直角符号：在垂足 H 处') >= 0, 'd>0 时应有 H 处直角符号：\n' + withD);
+  // 构造 d = 0（弦过圆心）的状态：same skel，直接给 state
+  const flat = { skel: 'circle-chord', title: '垂径定理', state: { r: 5, chord: 10 }, fixed: 'r' };
+  const flatSol = G.solve(flat);
+  assert.ok(flatSol && Math.abs(flatSol.d) < 1e-9, '构造状态应满足 d≈0，实际 d=' + (flatSol && flatSol.d));
+  const noD = G.describe(flat, flat.state);
+  assert.ok(noD.indexOf('图上不画直角符号') >= 0, 'd≈0 时应说明不画直角符号：\n' + noD);
+  assert.ok(noD.indexOf('直角符号：在垂足 H 处') < 0, 'd≈0 时不得声称有 H 处直角符号');
+
+  // ② 高线：带 altitude 的题必须列出橙色虚线 CD；不带的不许提到 CD
+  const withAlt = { skel: 'triangle-right', title: '直角三角形', state: { a: 3, b: 4 }, altitude: true, given: { a: true, b: true, c: false } };
+  const altSol = G.solve(withAlt);
+  if (altSol && altSol.altitude) {
+    const altDesc = G.describe(withAlt, withAlt.state);
+    assert.ok(altDesc.indexOf('橙色虚线 CD') >= 0, '有高线时应描述橙虚线 CD：\n' + altDesc);
+  }
+  const noAlt = { skel: 'triangle-right', title: '直角三角形', state: { a: 3, b: 4 }, altitude: false, given: { a: true, b: true, c: false } };
+  const noAltDesc = G.describe(noAlt, noAlt.state);
+  assert.ok(noAltDesc.indexOf('橙色虚线 CD') < 0, '无高线时不得描述 CD 高线');
+});
+
 test('describe：非法输入 → null（不返回空串）', function () {
   assert.strictEqual(G.describe(null, {}), null);
   assert.strictEqual(G.describe({ skel: 'not-a-skel', state: {} }, {}), null);

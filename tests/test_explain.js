@@ -89,6 +89,17 @@ test('askSystemPrompt：含「以画板描述为准」与「虚线还是实线�
   assert.ok(s.indexOf('虚线还是实线') >= 0, 'askSystemPrompt 应约束虚线/实线照描述说');
 });
 
+test('askSystemPrompt：追问侧也必须有「画板留白量不许说出数值」硬规则', function () {
+  /* 回归锁（t_85395e07 实测）：这条规则原先只加在 systemPrompt()（三步讲解）里，
+   * 追问走的是 askSystemPrompt()，结果学生问「顶点坐标是多少」AI 直接答 (-1,-4)。
+   * 两条链路都必须带这条规则，否则「留白不剧透」在被追问时整个失效。 */
+  const X = loadExplain();
+  const s = X._askSystemPrompt();
+  assert.ok(s.indexOf('画板上刻意留白的量') >= 0, 'askSystemPrompt 应含「画板上刻意留白的量」');
+  assert.ok(s.indexOf('不许你直接说出数值') >= 0, 'askSystemPrompt 应明确不许说出数值');
+  assert.ok(s.indexOf('标准解析') >= 0, 'askSystemPrompt 应说明即使标准解析里有这个数也不许读出');
+});
+
 /* ---- 3 & 5. 缓存隔离 + max_tokens 契约 + ask 透传（异步，mock fetch） ---- */
 function mockLLM(stepsContent, answerText) {
   const calls = [];

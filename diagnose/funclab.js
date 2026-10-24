@@ -703,6 +703,26 @@
     return !!(lab === 'quadratic-range-on-interval' || it === '在给定区间上的最大值' || it === '在给定区间上的最小值');
   }
 
+  /**
+   * 抛物线视野（x 方向世界坐标范围）—— 必须与 mount 内部 view() 的 quadratic 分支逐行同口径。
+   * 绘制路径用 `if (X < 0 || X > w.w) return;` 裁掉视野外的点，describe 要判断「这个点到底画没画」就得有同一份视野。
+   * view() 里 y 范围不影响 x 方向裁剪，故这里只算 xMin/xMax。
+   */
+  function curveWindow(p, base) {
+    const refs = [{ h: p.h, k: p.k }];
+    if (base) refs.push({ h: base.h, k: base.k });
+    let hMin = p.h, hMax = p.h;
+    refs.forEach(function (r) {
+      hMin = Math.min(hMin, r.h); hMax = Math.max(hMax, r.h);
+    });
+    let xMin = hMin - 6, xMax = hMax + 6;
+    if (p.xMin != null && p.xMax != null && isFinite(p.xMin) && isFinite(p.xMax) && p.xMax > p.xMin) {
+      xMin = Math.min(xMin, p.xMin - 1);
+      xMax = Math.max(xMax, p.xMax + 1);
+    }
+    return { xMin: xMin, xMax: xMax };
+  }
+
   /** 画板类型 → 画板标题（describe 首行用） */
   function typeTitle(type) {
     return type === 'linear' ? '一次函数图象（直线）'
@@ -773,14 +793,34 @@
       if (it === '最小值' || it === '最大值') {
         elements.push({ kind: 'extremum-label', text: '红褐色「' + extremeText(it, p, false) + '」：贴在顶点下方，数值留白', style: '红褐色文字' });
       }
+      /* 零点（绿点）—— 必须与绘制路径逐点一致，不许写死「两个」：
+       *   · 视野随参数变（mount.view()）：quadratic 只有 p.xMin/xMax 存在时才扩窗，纯 quadratic 是 [hMin-6, hMax+6]；
+       *   · 绘制路径对每个点都有 `if (X < 0 || X > w.w) return;` 裁剪 —— 根算出来但落在画布外时图上根本没有点，
+       *     此时 describe 若还说「有两个交点」就是「描述与代码不符」（t_85395e07 的 bug 性质）。
+       * disc === 0 时两个根重合：绘制路径两次 fillText 打在同一位置，图上视觉上只有一个点，所以只说一个。 */
       const disc = -p.k / p.a;
-      if (disc >= 0) {
-        const cnt = disc === 0 ? 1 : 2;
-        elements.push({
-          kind: 'root',
-          text: '绿色圆点：抛物线与 x 轴的交点（' + (cnt === 2 ? '两个' : '相切，一个') + '），每个旁边标「' + rootText(0, false) + '」',
-          style: '绿色圆点'
+      if (p.a !== 0 && disc >= 0) {
+        const r = Math.sqrt(disc);
+        const win = curveWindow(p, base);
+        const visible = [p.h - r, p.h + r].filter(function (x) {
+          return x >= win.xMin && x <= win.xMax;   // 与 sx()/`X < 0 || X > w.w` 同口径（w.w 即视野宽度）
         });
+        if (disc === 0) visible.length = Math.min(visible.length, 1);
+        if (visible.length === 1) {
+          elements.push({
+            kind: 'root',
+            text: (disc === 0
+              ? '绿色圆点：抛物线与 x 轴相切于一点，旁边标「' + rootText(0, false) + '」'
+              : '绿色圆点：抛物线与 x 轴的一个交点，旁边标「' + rootText(0, false) + '」'),
+            style: '绿色圆点'
+          });
+        } else if (visible.length >= 2) {
+          elements.push({
+            kind: 'root',
+            text: '绿色圆点：抛物线与 x 轴的两个交点，每个旁边标「' + rootText(0, false) + '」',
+            style: '绿色圆点'
+          });
+        }
       }
       if (intervalIntentOf(lab, it) && p.xMin != null && p.xMax != null && isFinite(p.xMin) && isFinite(p.xMax) && p.xMax > p.xMin) {
         elements.push({ kind: 'interval-band', text: '橙色半透明阴影：' + fmt(p.xMin) + ' ≤ x ≤ ' + fmt(p.xMax) + ' 区间（题面已知端点）', style: '橙色阴影' });

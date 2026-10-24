@@ -1062,7 +1062,10 @@
       '- 蓝色实线圆：以 O 为圆心的圆（半径 OA = ' + knownText(lab, sol, 'r') + '，题面已知则显示值）',
       '- 蓝色实线 AB：弦（AB = ' + knownText(lab, sol, 'chord') + '，题面已知则显示值）',
       '- 灰色虚线 OA、OH：半径与圆心到弦的垂线',
-      '- 红色直角符号：在垂足 H 处，表示 OH ⊥ AB',
+      /* 与 DRAW['circle-chord'] 同条件：弦过圆心（d≈0）时不画直角符号 */
+      (Math.abs(sol.d) > 1e-6
+        ? '- 红色直角符号：在垂足 H 处，表示 OH ⊥ AB'
+        : '- 弦经过圆心（d≈0），垂足 H 与圆心重合，图上不画直角符号'),
       '- 顶点标签：A、B、O、H；绿色圆点手柄在弦端点 B（可拖动，拖动会改变弦长）',
       '- 图上标注：「OH = ' + knownText(lab, sol, 'd') + '」（弦心距，推导量则留 ?）、「AB = ' + knownText(lab, sol, 'chord') + '」「OA = ' + knownText(lab, sol, 'r') + '」',
       '- 图内说明行：「题面已知：' + knownList(lab, sol) + '；其余问号处请自己算」',
@@ -1139,6 +1142,9 @@
       '画板：' + lab.title,
       '- 蓝色实线直角边 AC、BC 与灰色虚线斜边 AB',
       '- 红色直角符号：在直角顶点 C 处，表示 ∠C = 90°',
+      (lab.altitude && sol.altitude
+        ? '- 橙色虚线 CD：斜边 AB 上的高，垂足为 D；D 处另一个红色直角符号表示 CD ⊥ AB'
+        : ''),
       '- 顶点标签：A、B、C' + (lab.altitude ? '、D' : '') + '；绿色圆点手柄在 A、B（改变两条直角边）',
       '- 图上标注：「AC = ' + knownText(lab, sol, 'a') + '」「BC = ' + knownText(lab, sol, 'b') + '」「AB = ' + knownText(lab, sol, 'c') + '」' + (lab.altitude ? '，以及「CD = ' + deriveText() + '」（斜边上的高，留白）' : ''),
       '- 图内说明行：「题面已知：' + knownList(lab, sol) + '；面积 S = ' + deriveText() + (lab.altitude ? '，CD = ' + deriveText() : '') + ' 请自己算」',

@@ -1431,6 +1431,49 @@ test('describe：共享标注 helper 被绘制路径与 paintModel 共用（防�
 });
 
 
+test('describe：交点个数与绘制路径一致（视野裁剪 + 相切只算一个）', function () {
+  /* 回归锁（t_85395e07 实测）：paintModel 原先写死「两个交点」，而绘制路径
+   *   ① 有 `if (X < 0 || X > w.w) return;` 裁剪（视野 [h-6,h+6]，根在 h±√(-k/a)）
+   *   ② disc === 0 时两个根重合，图上只有一个点
+   * 描述说「有两个交点」而图上一个都没画，正是本卡要修的「描述与代码不符」。 */
+  const rootsLine = function (d) {
+    return (d || '').split('\n').filter(function (l) { return l.indexOf('交点') >= 0 || l.indexOf('相切') >= 0; }).join('|');
+  };
+  // 根 h±10，视野 ±6 → 两个都在画布外，图上一个点都没有
+  const far = F.describe('quadratic-vertex', '最大值', { type: 'quadratic', a: 1, h: 0, k: -100 });
+  assert.ok(far, 'far describe 非空');
+  assert.ok(rootsLine(far) === '', '根落在视野外时 describe 不得声称图上有交点，实际：' + rootsLine(far));
+  // 根 h±2，视野 ±6 → 两个都在画布内
+  const near = F.describe('quadratic-vertex', '最大值', { type: 'quadratic', a: 1, h: 0, k: -4 });
+  assert.ok(rootsLine(near).indexOf('两个交点') >= 0, '根在视野内应说「两个交点」，实际：' + rootsLine(near));
+  // 相切：disc = 0，图上只有一个点
+  const tangent = F.describe('quadratic-vertex', '最大值', { type: 'quadratic', a: 1, h: 0, k: 0 });
+  assert.ok(rootsLine(tangent).indexOf('相切于一点') >= 0, '相切应说「相切于一点」，实际：' + rootsLine(tangent));
+  assert.ok(rootsLine(tangent).indexOf('两个') < 0, '相切不得说「两个」');
+  // 区间画板扩窗后根进入视野（视野 = [xMin-1, xMax+1] = [-21,21]）
+  const widened = F.describe('quadratic-range-on-interval', '在给定区间上的最大值',
+    { type: 'quadratic', a: 1, h: 0, k: -100, xMin: -20, xMax: 20 });
+  assert.ok(rootsLine(widened).indexOf('两个交点') >= 0,
+    '区间扩窗后根应可见，不得沿用 [h-6,h+6] 误判不可见，实际：' + rootsLine(widened));
+});
+
+test('describe：curveWindow 与 mount.view() 的 quadratic 视野同口径（防漂移）', function () {
+  const fs = require('fs');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'funclab.js'), 'utf8');
+  const view = src.slice(src.indexOf('function view()'), src.indexOf('function gridAndAxes'));
+  // 视野公式的三处关键常量/分支必须两边都有，否则「点到底画没画」会算错
+  ['hMin - 6', 'hMax + 6', 'p.xMin - 1', 'p.xMax + 1'].forEach(function (frag) {
+    assert.ok(view.indexOf(frag) >= 0, 'view() 应含视野公式片段 ' + frag);
+  });
+  const win = src.slice(src.indexOf('function curveWindow'), src.indexOf('function typeTitle'));
+  ['hMin - 6', 'hMax + 6', 'p.xMin - 1', 'p.xMax + 1'].forEach(function (frag) {
+    assert.ok(win.indexOf(frag) >= 0, 'curveWindow 必须与 view() 同步，缺片段 ' + frag);
+  });
+  // 绘制路径的裁剪判断必须还在（curveWindow 的存在前提）
+  assert.ok(src.indexOf('if (X < 0 || X > w.w) return;') >= 0, '绘制路径应有 X 裁剪判断');
+  assert.ok(src.indexOf('X < 0 || X > w.w') >= 0, '绘制路径应有 X 裁剪判断');
+});
+
 /* ================================================================
  * 汇总
  * ================================================================ */
