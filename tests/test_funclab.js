@@ -1335,6 +1335,103 @@ test('[P-14] 全库审计：所有挂图题 × 全部 intent 的文案与图上�
 
 
 /* ================================================================
+ * 描述（t_85395e07）：Funclab.describe —— AI 讲解看到画板
+ *   9 个 lab × 各自全部 intent 都要能出描述；派生量一律 ?，不许剧透。
+ * ================================================================ */
+
+/* 每个画板一套合法参数（curated，避免派生量数值与已知量 fmt 串撞车干扰断言）。
+ * quadratic-vertex / linear 带 base，才能覆盖「基准曲线 + 平移箭头」这些可见元素。 */
+const DESC_LABS = {
+  'quadratic-vertex': { a: -1, h: 2, k: 5, base: { type: 'quadratic', a: -1, h: 2, k: 0 } },
+  'quadratic-roots': { a: 1, h: 0, k: -4 },
+  'quadratic-inequality': { a: 1, h: 0, k: -4 },
+  'quadratic-range-on-interval': { a: 1, h: 0, k: -4, xMin: -1, xMax: 3 },
+  'linear-intercepts': { k: 2, b: -4, base: { type: 'linear', k: 2, b: 0 } },
+  'linear-trend': { k: 2, b: -4, base: { type: 'linear', k: 2, b: 0 } },
+  'linear-equation': { k: 2, b: -4, base: { type: 'linear', k: 2, b: 0 } },
+  'inverse-quadrants': { k: 3 },
+  'inverse-area': { k: 3 }
+};
+function descParams(lab) {
+  const p = Object.assign({}, DESC_LABS[lab]);
+  p.type = F.CAP_TYPE[lab];
+  return p;
+}
+
+test('describe：9 个 lab × 各自全部 intent 都返回非空字符串，且覆盖关键元素词', function () {
+  Object.keys(F.CAPABILITIES).forEach(function (lab) {
+    F.CAPABILITIES[lab].canAnswer.forEach(function (raw) {
+      const it = F.intentKey(raw);
+      const d = F.describe(lab, it, descParams(lab));
+      assert.ok(d && d.length > 0, lab + '/' + it + ' describe 应为非空字符串');
+      assert.ok(d.indexOf('坐标') >= 0, lab + '/' + it + ' 应含坐标平面');
+      assert.ok(d.indexOf('实线') >= 0, lab + '/' + it + ' 应含实线描述');
+      assert.ok(d.indexOf('?') >= 0, lab + '/' + it + ' 应含留白问号');
+    });
+  });
+});
+
+test('describe：cnm_235 最大值题（顶点 (2,5)）不含任何派生量数值', function () {
+  const params = F.labForScene('cnm_235', q('cnm_235_q1'), { itemId: 'cnm_235_q1' });
+  assert.ok(params, 'cnm_235_q1 应能解析出画板参数');
+  assert.deepStrictEqual({ a: params.a, h: params.h, k: params.k }, { a: -1, h: 2, k: 5 }, 'cnm_235 顶点应为 (2,5)');
+  const d = F.describe('quadratic-vertex', '最大值', params);
+  assert.ok(d, 'cnm_235 describe 非空');
+  ['5', '(2, 5)', 'x = 2', '(2,', '坐标 (2'].forEach(function (leak) {
+    assert.ok(d.indexOf(leak) < 0, 'describe 不应包含派生量数值片段 ' + JSON.stringify(leak) + '\n' + d);
+  });
+});
+
+test('describe：逐 lab 通用断言 —— labAnswerParts 算出的派生量值都不出现在 describe（排除已知量重名）', function () {
+  Object.keys(F.CAPABILITIES).forEach(function (lab) {
+    F.CAPABILITIES[lab].canAnswer.forEach(function (raw) {
+      const it = F.intentKey(raw);
+      const p = descParams(lab);
+      const d = F.describe(lab, it, p);
+      if (!d) return;
+      const knownNum = [p.a, p.b, p.xMin, p.xMax].filter(function (v) { return v != null && isFinite(v); });
+      if (p.type === 'linear' || p.type === 'inverse') knownNum.push(p.k);
+      const knownStrs = knownNum.map(function (v) { return F.fmtQuad(v); });
+      F.labAnswerParts(lab, it, p).forEach(function (part) {
+        part.values.forEach(function (v) {
+          if (knownNum.some(function (k) { return Math.abs(k - v) < 1e-9; })) return;   // 与已知量数值重名
+          const s = F.fmtQuad(v);
+          if (knownStrs.some(function (k) { return k.indexOf(s) >= 0; })) return;       // 是已知量 fmt 串的子串（如面积 4 ⊂ b=-4）
+          assert.ok(d.indexOf(s) < 0, lab + '/' + it + ' describe 泄露派生量 ' + s + '\n' + d);
+        });
+      });
+    });
+  });
+});
+
+test('describe：非法输入 → null（不返回空串）', function () {
+  assert.strictEqual(F.describe(null, '最大值', {}), null);
+  assert.strictEqual(F.describe('nope', '最大值', {}), null);
+  assert.strictEqual(F.describe('quadratic-vertex', '不存在的intent', { a: -1, h: 2, k: 5 }), null);
+  assert.strictEqual(F.describe('linear-intercepts', '顶点坐标', { k: 2, b: -4 }), null);   // intent 不属于该画板
+});
+
+test('describe：共享标注 helper 被绘制路径与 paintModel 共用（防漂移：新标注漏更新 describe 就红）', function () {
+  const fs = require('fs');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'funclab.js'), 'utf8');
+  // 抽取绘制路径（annotate/drawShift/drawInterval）里 fillText / const label 调用的共享 helper 名
+  const used = new Set();
+  const re = /(?:ctx\.fillText|const label =)\s*\(\s*(\w+Text)\(/g;
+  let m;
+  while ((m = re.exec(src))) used.add(m[1]);
+  assert.ok(used.size > 0, '应能从绘制路径抽出共享标注 helper');
+  // paintModel 函数体必须引用每个 helper（否则 describe 与绘制漂移）
+  const pm = src.slice(src.indexOf('function paintModel'), src.indexOf('function blankNote'));
+  used.forEach(function (h) {
+    assert.ok(pm.indexOf(h + '(') >= 0, 'paintModel 必须引用绘制路径用到的 helper ' + h);
+  });
+  // describe 必须通过 paintModel 生成
+  const dsc = src.slice(src.indexOf('function describe'), src.indexOf('  /** 数值对'));
+  assert.ok(dsc.indexOf('paintModel(') >= 0, 'describe 必须调用 paintModel');
+});
+
+
+/* ================================================================
  * 汇总
  * ================================================================ */
 

@@ -894,6 +894,141 @@ test('真实题目的答案用等价写法也要判对（cnm_269_q1 的 AD/DB≈
   });
 });
 
+/* ================================================================
+ * 8. 描述（t_85395e07）：Geomlab.describe —— AI 讲解看到画板
+ * ================================================================ */
+
+console.log('\n--- 8. describe（画板结构化描述） ---');
+
+/* 每个骨架各取一个真实代表题：描述非空 + 元素齐全 + 防漂移 */
+const DESC_CASES = [
+  { id: 'cnm_251_q1', skel: 'circle-chord', words: ['实线圆', '弦', '弦心距', '半径 OA', 'A、B、O、H', '直角', '请自己算'] },
+  { id: 'cnm_253_q1', skel: 'circle-inscribed', words: ['实线圆', '圆周角', '∠AOB', '∠ACB', '两角关系请自己看'] },
+  { id: 'cnm_263_q5', skel: 'circle-tangent', words: ['切线', '切点', '∠APB', 'PA', 'OP', '半径 ⊥ 切线'] },
+  { id: 'cnm_269_q1', skel: 'similar-parallel', words: ['三角形 ABC', 'DE∥BC', 'AD', 'DB', 'AE', 'EC', 'AD/DB', 'AE/EC', '比较'] },
+  { id: 'cnm_270_q2', skel: 'similar-pair', words: ['三角形 ABC', 'A\'B\'', '位似', '相似比', '面积比'] },
+  { id: 'cnm_174_q3', skel: 'triangle-right', words: ['直角', 'AC', 'BC', 'AB', '面积'] }
+];
+test('describe：每个骨架的代表题返回非空描述，且含该骨架的关键元素词', function () {
+  DESC_CASES.forEach(function (c) {
+    const l = lab(c.id);
+    const d = G.describe(l, l.state);
+    assert.ok(d && d.length > 0, c.id + ' describe 应为非空字符串');
+    assert.ok(d.indexOf('画板：') >= 0, c.id + ' describe 应以「画板：」开头');
+    c.words.forEach(function (w) {
+      assert.ok(d.indexOf(w) >= 0, c.id + ' describe 应包含「' + w + '」\n' + d);
+    });
+  });
+});
+
+test('describe：checkRows 里非已知量的值不得出现在 describe（已知量的值允许）', function () {
+  DESC_CASES.forEach(function (c) {
+    const l = lab(c.id);
+    const sol = G.solve(l);
+    const d = G.describe(l, l.state);
+    /* 已知量值（题面给的）会合法显示在图上，是 describe 里允许出现的 */
+    const givenVals = [];
+    Object.keys(sol.given || {}).forEach(function (k) {
+      const v = sol[k];
+      if (v != null && isFinite(v)) givenVals.push(G.fmt(v));
+    });
+    G.checkRows(l, sol).forEach(function (r) {
+      const s = G.fmt(r.real);
+      assert.ok(givenVals.indexOf(s) >= 0 || d.indexOf(s) < 0,
+        c.id + ' describe 泄露派生量 ' + r.name + ' = ' + s + '\n' + d);
+    });
+  });
+});
+
+test('describe：DRAW 标注字符串字面量全被 describe 覆盖（防漂移：改了图没改描述就红）', function () {
+  const fs = require('fs');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'geomlab.js'), 'utf8');
+  /* 骨架 → 触发它全部分支的代表题（circle-tangent 有 both/单/scaleFree 三分支，triangle-right 有有/无高两分支） */
+  const SKEL_IDS = {
+    'circle-chord': ['cnm_251_q1'],
+    'circle-inscribed': ['cnm_253_q1'],
+    'circle-tangent': ['cnm_263_q5', 'cnm_262_q2', 'cnm_263_q2'],
+    'similar-parallel': ['cnm_269_q1'],
+    'similar-pair': ['cnm_270_q2'],
+    'triangle-right': ['cnm_174_q3', 'cnm_112_q4']
+  };
+  /* 从源码抽 DRAW['<skel>'] 函数体里 bgLabel/name/angleArc/fillText 调用参数中的字符串字面量（遮蔽 known* helper 的参数） */
+  function braceBlock(code, openIdx) {
+    let depth = 0, q = null, i = openIdx;
+    for (; i < code.length; i++) {
+      const c = code[i];
+      if (q) { if (c === q && code[i - 1] !== '\\') q = null; }
+      else if (c === "'" || c === '"' || c === '`') q = c;
+      else if (c === '{') depth++;
+      else if (c === '}') { depth--; if (depth === 0) return i; }
+    }
+    return i;
+  }
+  function stripHelperArgs(arg) {
+    const re = /(?:knownText|deriveText|knownList|knownListVerb)\(/g;
+    let m;
+    const hide = Array(arg.length).fill(false);
+    while ((m = re.exec(arg))) {
+      const open = m.index + m[0].length - 1;
+      let depth = 1, j = open + 1;
+      while (j < arg.length && depth > 0) { if (arg[j] === '(') depth++; else if (arg[j] === ')') depth--; j++; }
+      for (let k = m.index; k < j; k++) hide[k] = true;
+    }
+    let out = '';
+    for (let k = 0; k < arg.length; k++) out += hide[k] ? ' ' : arg[k];
+    return out;
+  }
+  function scanStrings(s, out) {
+    let q = null, cur = '';
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (q) { if (c === q) { out.push(cur); q = null; cur = ''; } else cur += c; }
+      else if (c === "'" || c === '"' || c === '`') { q = c; cur = ''; }
+    }
+  }
+  function extract(code) {
+    const out = new Set();
+    const re = /(?:bgLabel|name|angleArc|fillText)\(/g;
+    let m;
+    while ((m = re.exec(code))) {
+      const i = m.index + m[0].length - 1;
+      let depth = 1, j = i + 1, arg = '', q = null;
+      while (j < code.length && depth > 0) {
+        const c = code[j];
+        if (q) { if (c === q && code[j - 1] !== '\\') q = null; arg += c; }
+        else if (c === "'" || c === '"' || c === '`') { q = c; arg += c; }
+        else if (c === '(') { depth++; arg += c; }
+        else if (c === ')') { depth--; if (depth > 0) arg += c; }
+        else arg += c;
+        j++;
+      }
+      const got = [];
+      scanStrings(stripHelperArgs(arg), got);
+      got.forEach(function (s) { const t = s.trim(); if (t) out.add(t); });
+    }
+    return out;
+  }
+  Object.keys(SKEL_IDS).forEach(function (skel) {
+    const needle = "'" + skel + "': function () {";
+    const ks = src.indexOf(needle);
+    assert.ok(ks >= 0, '源码里应能找到 DRAW 骨架 ' + skel);
+    const open = ks + needle.length - 1;
+    const close = braceBlock(src, open);
+    const code = src.slice(open, close + 1);
+    const lits = extract(code);
+    assert.ok(lits.size > 0, skel + ' 应能抽出标注字面量');
+    const allDesc = SKEL_IDS[skel].map(function (id) { return G.describe(lab(id), lab(id).state); }).join('\n');
+    lits.forEach(function (lit) {
+      assert.ok(allDesc.indexOf(lit) >= 0, skel + ' describe 漏掉了图上标注「' + lit + '」（改了图没更新描述）');
+    });
+  });
+});
+
+test('describe：非法输入 → null（不返回空串）', function () {
+  assert.strictEqual(G.describe(null, {}), null);
+  assert.strictEqual(G.describe({ skel: 'not-a-skel', state: {} }, {}), null);
+});
+
 /* ================================================================ */
 
 

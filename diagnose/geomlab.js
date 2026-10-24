@@ -1043,6 +1043,132 @@
     return parts.length ? parts.join('、') : '（题面未给数值）';
   }
 
+  /* ============================================================ 5c. 画板描述（AI 讲解看到画板，t_85395e07）
+   *
+   * 纯函数、无 DOM。lab 是 labFor() 的返回值（有 skel/state/given），params 可选（默认 lab.state）。
+   * 内部用 solve(lab) 拿数值、knownText() 拿「已知量 or ?」、deriveText() 拿留白、knownList() 拿题面已知清单，
+   * 不自己另算数值。输出逐条列可见元素 —— 与 DRAW[skel] 里实际画出来的内容一一对应。
+   *
+   * 防漂移：tests 里从源码抽出 DRAW['<skel>'] 代码块的所有字符串字面量（bgLabel/name/angleArc/fillText），
+   * 断言 describe 输出里每个字面量都出现。新增标注漏更新 describe → 测试立刻红。
+   */
+
+  /** 六个骨架名（describe 只认这些） */
+  const SKELETS = ['circle-chord', 'circle-inscribed', 'circle-tangent', 'similar-parallel', 'similar-pair', 'triangle-right'];
+
+  function describeCircleChord(lab, sol) {
+    return [
+      '画板：' + lab.title,
+      '- 蓝色实线圆：以 O 为圆心的圆（半径 OA = ' + knownText(lab, sol, 'r') + '，题面已知则显示值）',
+      '- 蓝色实线 AB：弦（AB = ' + knownText(lab, sol, 'chord') + '，题面已知则显示值）',
+      '- 灰色虚线 OA、OH：半径与圆心到弦的垂线',
+      '- 红色直角符号：在垂足 H 处，表示 OH ⊥ AB',
+      '- 顶点标签：A、B、O、H；绿色圆点手柄在弦端点 B（可拖动，拖动会改变弦长）',
+      '- 图上标注：「OH = ' + knownText(lab, sol, 'd') + '」（弦心距，推导量则留 ?）、「AB = ' + knownText(lab, sol, 'chord') + '」「OA = ' + knownText(lab, sol, 'r') + '」',
+      '- 图内说明行：「题面已知：' + knownList(lab, sol) + '；其余问号处请自己算」',
+      '- 留白说明：弦心距 OH 等推导量在图上以 ? 表示'
+    ].join('\n');
+  }
+
+  function describeCircleInscribed(lab, sol) {
+    const onMinor = sol.onMinor;
+    return [
+      '画板：' + lab.title,
+      '- 蓝色实线圆：以 O 为圆心的圆',
+      '- 灰色虚线 OA、OB、AB：半径与弦',
+      '- 蓝色实线 CA、CB：圆周角的两条边',
+      '- 顶点标签：A、B、O、C；绿色圆点手柄在 C（沿弧滑动，角度不变）与 B（改变圆心角）',
+      '- 图上标注：「∠AOB = ' + knownText(lab, sol, 'central') + '°」（圆心角，题面已知则显示值，否则 ?）、「∠ACB = ' + knownText(lab, sol, 'inscribed') + '°」（圆周角' + (onMinor ? '，劣弧侧' : '') + '，题面已知则显示值，否则 ?）',
+      '- 图内说明行：「题面已知：' + knownList(lab, sol) + '；两角关系请自己看」',
+      '- 留白说明：圆心角或圆周角中未给出的那个在图上以 ? 表示'
+    ].join('\n');
+  }
+
+  function describeCircleTangent(lab, sol) {
+    if (sol.both) {
+      return [
+        '画板：' + lab.title,
+        '- 蓝色实线圆：以 O 为圆心的圆（半径 OA = ' + knownText(lab, sol, 'r') + '）',
+        '- 蓝色实线 PA、PB：两条切线，切点 A、B',
+        '- 灰色虚线 OA、OB、OP：半径与圆心到 P 的连线',
+        '- 红色直角符号：在切点 A、B 处，表示半径 ⊥ 切线',
+        '- 顶点标签：A、B、P、O；绿色圆点手柄在 P（沿轴移动）',
+        '- 图上标注：「∠APB = ' + knownText(lab, sol, 'angleAPB') + '°」、「PA = ' + knownText(lab, sol, 'PA') + '」、「PB = ' + deriveText() + '」、「OP = ' + knownText(lab, sol, 'OP') + '」',
+        '- 图内说明行：「题面已知：' + knownList(lab, sol) + (sol.scaleFree ? '（题面未给尺寸，图上不标长度）' : '；PA 与 PB 的关系请自己看') + '」',
+        '- 留白说明：PB 等推导量在图上以 ? 表示'
+      ].join('\n');
+    }
+    return [
+      '画板：' + lab.title,
+      '- 蓝色实线圆：以 O 为圆心的圆（半径 OA = ' + knownText(lab, sol, 'r') + '）',
+      '- 蓝色实线 PA：切线，切点 A；灰色虚线 OA、OP：半径与圆心到 P 的连线',
+      '- 红色直角符号：在切点 A 处，表示 OA ⊥ PA',
+      '- 顶点标签：A、P、O；绿色圆点手柄在 P（沿切线移动）',
+      '- 图上标注：「∠P = ' + knownText(lab, sol, 'angleP') + '°」、「OA = ' + knownText(lab, sol, 'r') + '」、「PA = ' + knownText(lab, sol, 'PA') + '」',
+      '- 图内说明行：「题面已知：' + knownList(lab, sol) + '；求 OP 请自己算」',
+      '- 留白说明：OP 等推导量在图上以 ? 表示'
+    ].join('\n');
+  }
+
+  function describeSimilarParallel(lab, sol) {
+    return [
+      '画板：' + lab.title,
+      '- 蓝色实线三角形 ABC：边 AB、AC、BC',
+      '- 红色实线 DE：平行于 BC 的截线（DE∥BC）',
+      '- 顶点标签：A、B、C、D、E；绿色圆点手柄在 D（沿 AB 滑动）',
+      '- 图上标注：「AD = ' + knownText(lab, sol, 'AD') + '」「DB = ' + knownText(lab, sol, 'DB') + '」「AE = ' + knownText(lab, sol, 'AE') + '」「EC = ' + knownText(lab, sol, 'EC') + '」，以及「AD/DB = ' + deriveText() + '　AE/EC = ' + deriveText() + '」（两个比值留白）',
+      '- 图内说明行：「题面已知：' + knownList(lab, sol) + '；两个比值请自己算后比较」',
+      '- 留白说明：AD/DB、AE/EC 等推导量在图上以 ? 表示'
+    ].join('\n');
+  }
+
+  function describeSimilarPair(lab, sol) {
+    return [
+      '画板：' + lab.title,
+      '- 蓝色实线三角形 ABC（较小）；红褐色实线三角形 A\'B\'C\'（较大，位似）',
+      '- 灰色虚线：从位似中心 O 连向各对应点',
+      '- 顶点标签：O、A、B、C、A\'、B\'、C\'',
+      '- 图上标注：「AB = ' + knownText(lab, sol, 'side') + '」（题面已知）、「A\'B\' = ' + deriveText() + '」（对应边，留白）',
+      '- 图内说明行：「题面已知：' + knownList(lab, sol) + '；对应边的比与面积比请自己算」',
+      '- 留白说明：对应边 A\'B\' 等推导量在图上以 ? 表示'
+    ].join('\n');
+  }
+
+  function describeTriangleRight(lab, sol) {
+    return [
+      '画板：' + lab.title,
+      '- 蓝色实线直角边 AC、BC 与灰色虚线斜边 AB',
+      '- 红色直角符号：在直角顶点 C 处，表示 ∠C = 90°',
+      '- 顶点标签：A、B、C' + (lab.altitude ? '、D' : '') + '；绿色圆点手柄在 A、B（改变两条直角边）',
+      '- 图上标注：「AC = ' + knownText(lab, sol, 'a') + '」「BC = ' + knownText(lab, sol, 'b') + '」「AB = ' + knownText(lab, sol, 'c') + '」' + (lab.altitude ? '，以及「CD = ' + deriveText() + '」（斜边上的高，留白）' : ''),
+      '- 图内说明行：「题面已知：' + knownList(lab, sol) + '；面积 S = ' + deriveText() + (lab.altitude ? '，CD = ' + deriveText() : '') + ' 请自己算」',
+      '- 留白说明：面积、斜边（若题面未给）等推导量在图上以 ? 表示'
+    ].join('\n');
+  }
+
+  /**
+   * 画板描述（面向 LLM 阅读的结构化中文）：逐条列可见元素。
+   * @param {object} lab    labFor() 的返回值（有 skel/state/given）
+   * @param {object} [params] 可选；不给就用 lab.state
+   * @returns {string | null} lab 缺失 / skel 不认识 / solve 失败 → null（不返回空串）
+   */
+  function describe(lab, params) {
+    if (!lab || !lab.skel || SKELETS.indexOf(lab.skel) < 0) return null;
+    const st = (params && params.skel) ? params : (params || lab.state);
+    const eff = Object.assign({}, lab, { state: st });
+    const sol = solve(eff);
+    if (!sol) return null;
+    switch (lab.skel) {
+      case 'circle-chord': return describeCircleChord(eff, sol);
+      case 'circle-inscribed': return describeCircleInscribed(eff, sol);
+      case 'circle-tangent': return describeCircleTangent(eff, sol);
+      case 'similar-parallel': return describeSimilarParallel(eff, sol);
+      case 'similar-pair': return describeSimilarPair(eff, sol);
+      case 'triangle-right': return describeTriangleRight(eff, sol);
+      default: return null;
+    }
+  }
+
   /* ============================================================ 6. 渲染
    *
    * 画布一律按「数学比例」等比映射（不许拉伸），否则图形会失真、标注会误导。
@@ -1767,6 +1893,8 @@
     knownList: knownList,
     givenValues: givenValues,
     GIVEN_KEYS: GIVEN_KEYS,
+    /* t_85395e07：画板描述（AI 讲解看到画板） */
+    describe: describe, SKELETS: SKELETS.slice(),
     /* 单测/排查用 */
     gate: gate,
     gateStats: gateStats,

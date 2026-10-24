@@ -38,7 +38,7 @@
   let prac = null;         // T3 练习模式：{topicId, list:[q], idx, pact:[]} 非 null 时渲染练习
   let pracResult = null;   // 练习结束返回结果页带上 {topicId, ok, n}
   let pracLoading = null;  // O3 LLM 变式异步加载：{topicId} 非 null 时渲染 loading
-  let ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false };
+  let ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, labCfg: null, labDesc: null };
   let subject = 'math';
   let startQuery = '';
   let startStage = '';
@@ -146,7 +146,7 @@
     if (v.indexOf(qid) < 0) { v.push(qid); lsSet(LS_SEEN, v); }
   }
   function newSeed() { return seedParam != null ? seedParam : Math.random().toString(36).slice(2, 10); }
-  function resetUi() { ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false }; }
+  function resetUi() { ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, labCfg: null, labDesc: null }; }
   function clearRoot() { while (root.firstChild) root.removeChild(root.firstChild); }
   function teardownPath() {
     pathToken++;
@@ -758,7 +758,7 @@
     const t = D.graph.byId[id];
     const pr = !!prac;   // T3 练习模式
     const key = id + '#' + item.attempt;
-    if (ui.key !== key) ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false };
+    if (ui.key !== key) ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, labCfg: null, labDesc: null };
     const n = pr ? prac.idx : session.answers.length;
     const card = h('div', { class: 'card' });
     card.append(
@@ -870,7 +870,7 @@
       ui.aiRequested = true;
       ui.aiState = 'loading';
       const tick = ++explainTick;
-      window.Explain.generate(t, q, ui.answer).then(function (res) {
+      window.Explain.generate(t, q, ui.answer, ui.labDesc || null).then(function (res) {
         if (tick !== explainTick || !ui || ui.phase !== 'explain') return;
         if (res.from === 'llm') { ui.aiSteps = res.steps; ui.aiState = 'done'; }
         else { ui.aiSteps = null; ui.aiState = 'static'; }   // 网关挂了，保持静态模板
@@ -920,8 +920,13 @@
             .then(function (cfg) {
               if (!cfg) { if (slot.parentNode) slot.remove(); return; }
               const inst = window.Funclab.mount(cfg);
-              if (!inst) { if (slot.parentNode) slot.remove(); return; }
+              if (!inst) { if (slot.parentNode) slot.remove(); return; }   // 挂载失败不写 labCfg（TDZ 教训）
               slot.appendChild(inst.el);
+              /* t_85395e07：AI 讲解看到画板 —— 挂载成功才记录配置与描述；describe 抛错不连累画板 */
+              ui.labCfg = cfg;
+              ui.labDesc = null;
+              try { ui.labDesc = window.Funclab.describe(cfg.lab, cfg.intent, cfg); }
+              catch (err) { ui.labDesc = null; console.warn('[explain] Funclab.describe 失败，画板仍正常显示：', err); }
             })
             .catch(function () { if (slot.parentNode) slot.remove(); });
         } else if (!lab && window.Geomlab) {
@@ -933,7 +938,14 @@
           });
           if (glab) {
             const ginst = window.Geomlab.mount(glab);
-            if (ginst) box.append(ginst.el);
+            if (ginst) {
+              box.append(ginst.el);
+              /* t_85395e07：挂载成功才记录配置与描述；describe 抛错不连累画板 */
+              ui.labCfg = glab;
+              ui.labDesc = null;
+              try { ui.labDesc = window.Geomlab.describe(glab, glab.state); }
+              catch (err) { ui.labDesc = null; console.warn('[explain] Geomlab.describe 失败，画板仍正常显示：', err); }
+            }
           }
         }
       } catch (e) { /* 画板挂了不影响讲解 */ }
@@ -968,7 +980,7 @@
       ui.askPending = true;
       const tick = ++explainTick;   // 复用竞态令牌：回答只属于当前面板
       renderQuestion(item);
-      window.Explain.ask(t, q, ui.answer, steps, text).then(function (res) {
+      window.Explain.ask(t, q, ui.answer, steps, text, ui.labDesc).then(function (res) {
         if (tick !== explainTick || !ui || ui.phase !== 'explain') return;
         const entries = (ui.askHistory || []).slice();
         entries[entries.length - 1] = { q: text, a: res.text, from: res.from };
