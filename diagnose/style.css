@@ -237,11 +237,23 @@ table.log select { min-height: 44px; }
 .geomlab .funclab-formula { font-size: 0.98rem; }
 .geomlab .funclab-note { margin-bottom: 4px; }
 @media (max-width: 520px) { .geomlab-canvas { height: 300px; } }
-/* 自检面板：默认只有一个按钮，学生点「我算好了」才展开对比 */
+/* 自检面板：默认只有一个按钮，学生点「我算好了」才展开逐行填写 + 判定 */
 .geomlab-check { margin-top: 6px; }
 .geomlab-check-out { margin-top: 6px; font-size: 0.92rem; line-height: 1.6; color: #1f2933; }
-.geomlab-check-row { display: flex; gap: 14px; flex-wrap: wrap; }
-.geomlab-check-you { color: #6b7c93; }
+.geomlab-check-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 1px 0; }
+.geomlab-check-you { color: #6b7c93; display: inline-flex; align-items: center; gap: 4px; }
+.geomlab-check-name { white-space: nowrap; }
+/* 每行一个数值输入框（inputmode=decimal 让手机弹数字键盘） */
+.geomlab-check-ans {
+  width: 6.5em; padding: 2px 6px; font: inherit; font-weight: 600; color: #1f2933;
+  border: 1px solid var(--line, #ccc); border-radius: 6px; background: #fff;
+}
+.geomlab-check-ans:focus { outline: 2px solid var(--brand, #2a7de1); outline-offset: 1px; }
+.geomlab-check-unit { color: #6b7c93; }
+.geomlab-check-res { font-weight: 700; }
+.geomlab-check-res.is-ok { color: #2ecc71; }     /* COLOR.handle 正向色 */
+.geomlab-check-res.is-no { color: #c0392b; }     /* COLOR.mark */
+.geomlab-check-res.is-empty { color: #6b7c93; font-weight: 400; }
 .geomlab-check-real { color: #c0392b; font-weight: 600; }
 .ai-tag { font-size: 0.8rem; color: var(--brand); border: 1px solid var(--brand); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
 .ai-tag.static { color: var(--muted, #888); border-color: var(--muted, #888); }
