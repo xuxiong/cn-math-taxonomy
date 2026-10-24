@@ -221,6 +221,9 @@ table.log select { min-height: 44px; }
 .socratic .explain { margin-top: 8px; }
 .socratic .row { margin-top: 10px; }
 .socratic button.small { font-size: 0.9rem; }
+.explain-fold > summary { cursor: pointer; font-weight: 700; color: var(--brand); padding: 6px 0; }
+.explain-fold > summary::marker { color: var(--brand); }
+.explain-fold > .explain { margin-top: 8px; }
 
 /* 二次函数实验室（funclab.js） */
 .funclab { margin: 12px 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-elev); }
