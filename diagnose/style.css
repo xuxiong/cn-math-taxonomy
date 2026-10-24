@@ -355,3 +355,8 @@ table.log select { min-height: 44px; }
 .explain b, .refans b { color: var(--brand, #2a7de1); }
 /* 常见分数/根式写法在纯文本里不截断 */
 .explain, .refans { word-break: keep-all; }
+
+/* 来自 route 的返回入口（?from=route） */
+.route-back { margin-bottom: 10px; }
+.route-back a { color: var(--brand); font-weight: 700; text-decoration: none; }
+.route-back a:hover { text-decoration: underline; }

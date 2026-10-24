@@ -1,9 +1,11 @@
 /* 诊断小工具界面。核心逻辑全部在 engine.js，这里只负责数据加载、渲染与本地存储。 */
 (function () {
   'use strict';
-  const E = window.DiagEngine;
-  const V = window.DiagVariants;
-  const LLMV = window.DiagLLMVariants;  /* O3 LLM 变式出题 */
+  /* Node 直测纯函数时会没有 window（测试只 require 本文件取 routeReturnHref，不跑界面） */
+  const Browser = typeof window !== 'undefined' ? window : {};
+  const E = Browser.DiagEngine;
+  const V = Browser.DiagVariants;
+  const LLMV = Browser.DiagLLMVariants;  /* O3 LLM 变式出题 */
   const LS_SESSION = 'cnmDiagnose.session.v2';
   const LS_SESSION_EN = 'cneDiagnose.session.v2';
   const LS_SETTINGS = 'cnmDiagnose.settings.v2';
@@ -30,7 +32,7 @@
   const TYPE_LABEL = { numeric: '数值题', choice: '选择题', short: '短答题', self: '开放题', legacy: '诊断题' };
   const PRACTICE_N = 3;
 
-  const root = document.getElementById('root');
+  const root = typeof document !== 'undefined' ? document.getElementById('root') : null;
   let D = null;            // 数据：{topics, deps, stdById, graph, tree}
   let session = null;      // 引擎会话
   let sessionMeta = null;  // {label, chapterKey?}
@@ -128,6 +130,24 @@
   }
   function lsGet(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
   function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* 隐私模式等 */ } }
+
+  /* ------------------------------------------------ 来自 route 的归途
+   * route 页的「从这儿开始诊断」跳过来时 URL 带 from=route（拼装见 route.js 的 diagnosisUrl）。
+   * 这里只加一个返回入口，不改 session 启动流程。
+   * routeReturnHref 抽成纯函数：不读 DOM/Location，Node 侧可直接测（模块底部 window 检查后导出）。 */
+  function routeReturnHref(search) {
+    var q = String(search == null ? '' : search);
+    if (q.charAt(0) === '?') q = q.slice(1);
+    var from = null;
+    try { from = new URLSearchParams(q).get('from'); } catch (e) { from = null; }
+    if (from !== 'route') return null;
+    /* route.html 与 index.html 同目录；不带任何 session 参数，回去就是干净的一页 */
+    return 'route.html';
+  }
+  function routeBackBar() {
+    return h('div', { class: 'route-back no-print', id: 'route-back' },
+      h('a', { href: routeReturnHref(location.search), id: 'route-back-link' }, '← 回到作业分析'));
+  }
   function lsDel(k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } }
   function nameOf(id) { const t = D.graph.byId[id]; return t ? t.name : id; }
   function getSettings() {
@@ -316,6 +336,14 @@
     if (!session) return renderStart();
     const item = E.nextItem(D.graph, session);
     if (item) renderQuestion(item); else renderResult();
+  }
+
+  /* 来自 route 的 session：页面顶上加一行「← 回到作业分析」。只动这一行，不动流程。 */
+  function withRouteBack(page) {
+    if (!routeReturnHref(location.search)) return page;
+    const wrap = h('div');
+    wrap.append(routeBackBar(), page);
+    return wrap;
   }
 
   /* ------------------------------------------------------------ T3 练习模式 */
@@ -520,7 +548,7 @@
     page.append(h('div', { class: 'card' }, browser));
     page.append(h('p', { class: 'muted small' },
       '可以诊断的知识点：' + D.topics.length + ' 个。进度和出过的题只保存在这台浏览器里。'));
-    show(page);
+    show(withRouteBack(page));
     fillList(listBox);
     if (startQuery) { const el = document.getElementById('search'); if (el) el.focus(); }
   }
@@ -852,7 +880,7 @@
     const page = h('div');
     if (demo) page.append(demoBanner());
     page.append(card);
-    show(page);
+    show(withRouteBack(page));
     const inp = document.getElementById('ans');
     if (inp && inp.setSelectionRange && inp.tagName === 'INPUT') { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
     else if (inp) inp.focus();
@@ -1387,7 +1415,7 @@
 
     page.append(standardsCard(sum));
     page.append(logCard());
-    show(page);
+    show(withRouteBack(page));
     mountPathGraph(sum);
   }
 
@@ -1767,11 +1795,11 @@
   }
 
   function printPage() { window.print(); }
-  window.addEventListener('beforeprint', function () {
+  if (typeof window !== 'undefined') window.addEventListener('beforeprint', function () {
     document.querySelectorAll('details:not([open])').forEach(function (d) { d.setAttribute('open', ''); d.dataset.autoOpen = '1'; });
     if (pathCy) { pathCy.resize(); pathCy.fit(undefined, 20); }
   });
-  window.addEventListener('afterprint', function () {
+  if (typeof window !== 'undefined') window.addEventListener('afterprint', function () {
     document.querySelectorAll('details[data-auto-open]').forEach(function (d) { d.removeAttribute('open'); delete d.dataset.autoOpen; });
   });
 
@@ -1873,7 +1901,7 @@
     renderStart();
   }
 
-  document.addEventListener('click', function (event) {
+  if (typeof document !== 'undefined') document.addEventListener('click', function (event) {
     const origin = event.target && event.target.closest ? event.target : (event.target && event.target.parentElement);
     if (!origin || !origin.closest) return;
     if (!origin.closest('#btn-path-expand') && !origin.closest('#btn-path-collapse')) return;
@@ -1881,7 +1909,7 @@
     if (session && D) mountPathGraph(E.summarize(D.graph, session));
   });
 
-  if (window.matchMedia) {
+  if (typeof window !== 'undefined' && window.matchMedia) {
     const scheme = window.matchMedia('(prefers-color-scheme: dark)');
     const relayout = function () {
       if (!session || !document.getElementById('path-cy')) return;
@@ -1892,5 +1920,9 @@
     if (narrow.addEventListener) narrow.addEventListener('change', relayout);
   }
 
-  init();
+  /* 纯函数层暴露给 Node 测试（不启动界面）：node -e "require('./diagnose/app.js')" 无 window，直接跳过 */
+  if (typeof window !== 'undefined') init();
+  else if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { routeReturnHref: routeReturnHref };
+  }
 })();

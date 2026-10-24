@@ -621,6 +621,138 @@ test('页面层存在且是独立入口（route.html / route.css / route-page.js
   assert.ok(html.includes('未解析出') === false, '文案在 JS 里拼，html 里不写死');
 });
 
+/* ================================================================
+ * 12. 接线 engine：候选 → 确认 → 出题测（kanban t_40c26d7d）
+ * ================================================================
+ * 只测纯函数：入口有没有资格出现（canStartDiagnosis / diagnosisCandidates）、
+ * 跳转地址怎么拼（diagnosisUrl）、第 ⑥ 段的措辞（structureNote）。
+ * 不测 DOM —— 页面层只是把这些结果贴进 HTML，DOM 行为交给浏览器实测。
+ */
+
+console.log('\n--- 12. 候选 → 确认 → 出题测 ---');
+
+const DIAG_APP = require('../diagnose/app.js');
+
+test('校验通过 → 候选带「开始诊断」入口，地址指向该 topicId', () => {
+  const res = { stage: 'verified', verify: { ok: true, kept: [{ id: idOf('配方法'), name: '配方法', grade: 9, confidence: 0.86 }] } };
+  assert.strictEqual(R.canStartDiagnosis(res), true);
+  const list = R.diagnosisCandidates(res);
+  assert.strictEqual(list.length, 1, '只有一个候选也要给，但不能替学生选');
+  assert.strictEqual(list[0].id, idOf('配方法'));
+  assert.ok(list[0].url.includes('target=' + idOf('配方法')), '入口地址必须带这个 topicId：' + list[0].url);
+});
+
+test('校验没通过（拒绝定位 / 信息不足 / 网关挂）→ 一律没有入口', () => {
+  const keptOne = { ok: true, kept: [{ id: idOf('配方法'), name: '配方法', grade: 9, confidence: 0.9 }] };
+  const cases = [
+    { why: '拒绝定位', res: { stage: 'rejected', verify: { ok: false, kept: [], rejected: [{ rule: '规则3' }] } } },
+    { why: '信息不足', res: { stage: 'insufficient', verify: null } },
+    { why: '网关挂', res: { stage: 'offline', verify: null } },
+    { why: '非数学', res: { stage: 'not-math', verify: null } },
+    { why: 'stage 说 verified 但 verify 不 ok', res: { stage: 'verified', verify: { ok: false, kept: [] } } },
+    { why: 'verify ok 但 kept 为空', res: { stage: 'verified', verify: { ok: true, kept: [] } } },
+    { why: '空结果', res: null }
+  ];
+  cases.forEach((c) => {
+    assert.strictEqual(R.canStartDiagnosis(c.res), false, c.why + ' 不该有资格开始诊断');
+    assert.deepStrictEqual(R.diagnosisCandidates(c.res), [], c.why + ' 不该给出任何入口');
+  });
+  assert.strictEqual(R.canStartDiagnosis({ stage: 'verified', verify: keptOne }), true, '对照：通过的有入口');
+});
+
+test('多候选 → 每个候选都有自己的入口，各指自己的 topicId', () => {
+  const ids = ['配方法', '一元二次方程的概念', '完全平方公式'].map(idOf);
+  const res = {
+    stage: 'verified',
+    verify: {
+      ok: true,
+      kept: ids.map((id, i) => ({ id: id, name: TOPICS.find((t) => t.id === id).name, grade: 9, confidence: 0.9 - i * 0.1 }))
+    }
+  };
+  const list = R.diagnosisCandidates(res);
+  assert.strictEqual(list.length, 3);
+  assert.strictEqual(new Set(ids).size, 3, '对照：三个名字要对应三个不同 id');
+  assert.deepStrictEqual(list.map((c) => c.id), ids, '顺序与学生看到的顺序一致');
+  const urls = new Set(list.map((c) => c.url));
+  assert.strictEqual(urls.size, 3, '3 个候选不能指向同一个地址（不许默认选第一个）');
+  list.forEach((c) => {
+    assert.ok(c.url.includes('target=' + c.id), '入口 ' + c.id + ' 指错了：' + c.url);
+  });
+});
+
+test('跳转地址：diagnose/index.html?target=<id>&from=route（复用现有 ?target=，不新造参数）', () => {
+  const id = idOf('配方法');
+  const url = R.diagnosisUrl(id);
+  assert.ok(url.startsWith('index.html?'), 'redirect 到 diagnose 主页面：' + url);
+  const q = new URLSearchParams(url.slice(url.indexOf('?')));
+  assert.strictEqual(q.get('target'), id, 'target 参数必须是这个 topicId');
+  assert.strictEqual(q.get('from'), 'route', '要带 from=route，diagnose 才能回升');
+  assert.ok(!/chapter=|grade=|volume=/.test(url), '不该混入别的定位参数：' + url);
+  assert.deepStrictEqual(Array.from(q.keys()).sort(), ['from', 'target'], '不许新造参数');
+  assert.throws(() => R.diagnosisUrl(''), /topicId/);
+});
+
+test('diagnose 的 ?target= 确实能开 session：resolveTargets 认得这个参数（读源码断言，不测 DOM）', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8');
+  assert.ok(/params\.get\('target'\)/.test(src), 'app.js 必须读 ?target=');
+  assert.ok(/startSession\(resolved\.ids/.test(src), 'resolved 出来的 ids 要进 startSession');
+  assert.ok(/function startSession\(targets, label, limit, mode\)/.test(src));
+});
+
+test('diagnose 页面：带 from=route 才出现「← 回到作业分析」，链回 route.html', () => {
+  assert.strictEqual(DIAG_APP.routeReturnHref('?target=' + idOf('配方法') + '&from=route'), 'route.html');
+  assert.strictEqual(DIAG_APP.routeReturnHref('target=x&from=route'), 'route.html', '没有前导 ? 也认');
+  assert.strictEqual(DIAG_APP.routeReturnHref('?target=' + idOf('配方法')), null, '不是从 route 来的不出现');
+  assert.strictEqual(DIAG_APP.routeReturnHref('?from=other'), null);
+  assert.strictEqual(DIAG_APP.routeReturnHref(''), null);
+  assert.strictEqual(DIAG_APP.routeReturnHref(null), null);
+  const src = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8');
+  assert.ok(src.includes('← 回到作业分析'), '返回入口的文案');
+  assert.ok(/show\(withRouteBack\(page\)\)/.test(src), '三个主视图都要挂返回入口');
+});
+
+test('第 ⑥ 段：标题是「接下来需要确认的知识点」，说明含「不是诊断结论」', () => {
+  const note = R.structureNote();
+  assert.strictEqual(note.title, '接下来需要确认的知识点');
+  assert.ok(note.text.includes('不是诊断结论'), '说明文字必须写清不是诊断结论');
+  assert.ok(note.text.includes('依赖图'), '要说明这些节点来自依赖图');
+  assert.ok(/开始诊断/.test(note.text), '要指路到诊断入口');
+  const html = fs.readFileSync(path.join(ROOT, 'diagnose', 'route.html'), 'utf8');
+  const m = /<section class="card" id="sec-path"[\s\S]*?<h2[^>]*>([\s\S]*?)<\/h2>/.exec(html);
+  assert.ok(m, 'route.html 里找不到第 ⑥ 段');
+  assert.ok(m[1].includes('接下来需要确认的知识点'), '⑥ 段标题：' + m[1].replace(/<[^>]+>/g, ''));
+  assert.ok(!/学习路径/.test(m[1]), '⑥ 段不许再叫「学习路径」');
+});
+
+test('页面层：入口按钮只在 ④ 校验通过的分支里渲染（拒绝/信息不足/网关挂都不渲染）', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'diagnose', 'route-page.js'), 'utf8');
+  const code = stripComments(src);
+  const startBtn = code.indexOf('从这儿开始诊断');
+  assert.ok(startBtn > 0, '页面层没有「从这儿开始诊断」');
+  /* 按钮只出现在 renderVerify 的 v.ok 分支 */
+  const verify = code.slice(code.indexOf('function renderVerify'), code.indexOf('function nodeHtml'));
+  const okBranch = verify.slice(verify.indexOf('if (v.ok)'), verify.indexOf('} else {'));
+  const badBranch = verify.slice(verify.indexOf('} else {'), verify.indexOf('if (v.rejected'));
+  assert.ok(okBranch.includes('从这儿开始诊断'), '校验通过分支里要有入口');
+  assert.ok(!badBranch.includes('从这儿开始诊断'), '拒绝分支里不许有入口');
+  /* 整段页面层代码里只有 startButton 这一处拼按钮：拒绝 / 信息不足 / 网关挂三条路径都到不了它 */
+  assert.strictEqual((code.match(/<a class="start-diag"/g) || []).length, 1, '按钮只应有一个渲染点');
+  ['stage: \'offline\'', '!v.ok', 'rejected'].forEach((marker) => {
+    assert.ok(code.includes(marker), '这三条失败路径仍要显式渲染提示：' + marker);
+  });
+});
+
+test('route.html 的跳转地址由 route.js 生成（页面层不自己拼 ?target=）', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'diagnose', 'route-page.js'), 'utf8');
+  const code = stripComments(src);
+  assert.ok(/R\.diagnosisUrl\(/.test(code), '页面层必须调 route.js 的 diagnosisUrl()');
+  assert.ok(!/\?target=/.test(code), '页面层不许自己拼 ?target=');
+  /* 回归：renderVerify 拿到的是 verifyPick 的结果，其 kept 里没有 url 字段 */
+  const kept = R.verifyPick([{ id: idOf('配方法'), name: '配方法', confidence: 0.9 }], { pool: exPool.topics, fields: exFields }).kept;
+  assert.ok(!('url' in kept[0]), 'verifyPick 的 kept 本来就不带 url，页面层不能读 k.url');
+  assert.ok(!/esc\(k\.url\)/.test(code), '页面层不许读 k.url（undefined → href 为空）');
+});
+
 /* ================================================================ */
 
 Promise.all(ASYNC).then(() => {

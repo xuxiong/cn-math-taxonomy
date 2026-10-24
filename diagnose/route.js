@@ -727,6 +727,56 @@
   }
 
   /* ================================================================
+   * 4b. 接线 engine（kanban t_40c26d7d）—— 候选 → 确认 → 出题测 → 真路径
+   * ================================================================
+   * route 的产出只是**候选**，不是诊断。要变成真路径必须让 engine 出题测。
+   * 本文件的职责到此为止：**只生成跳转地址**，不启动 session、不读 engine、不碰 DOM。
+   *   - 候选确认不能省、不能默认选第一个：只有 ④ 校验通过（stage==='verified'）
+   *     且学生确实点了某个候选，才有入口。多个候选就每个给一个。
+   *   - 跳转复用 diagnose 现成的 ?target= 参数（app.js resolveTargets 已能开 session），
+   *     不新造参数；额外只带一个 from=route 标记，让 diagnose 能回升到本页。
+   */
+
+  var DIAGNOSE_PAGE = 'index.html';   /* 与 route.html 同目录 */
+
+  /** 这段定位结果够不够格让学生「确认」？只有校验通过才够。 */
+  function canStartDiagnosis(result) {
+    return !!(result && result.stage === 'verified' && result.verify && result.verify.ok &&
+      Array.isArray(result.verify.kept) && result.verify.kept.length > 0);
+  }
+
+  /**
+   * 可确认的候选列表 —— 这是「开始诊断」入口的唯一数据来源，不满足就返回空数组。
+   * @returns {Array} [{id, name, grade, confidence, url}]
+   */
+  function diagnosisCandidates(result) {
+    if (!canStartDiagnosis(result)) return [];
+    return result.verify.kept.map(function (k) {
+      return {
+        id: k.id, name: k.name, grade: k.grade, confidence: k.confidence,
+        url: diagnosisUrl(k.id)
+      };
+    });
+  }
+
+  /** diagnose/index.html?target=<topicId>&from=route */
+  function diagnosisUrl(topicId) {
+    var id = String(topicId == null ? '' : topicId).trim();
+    if (!id) throw new Error('diagnosisUrl 需要 topicId');
+    return DIAGNOSE_PAGE + '?target=' + encodeURIComponent(id) + '&from=route';
+  }
+
+  /** 第 ⑥ 段（依赖图上的前置节点）的标题与说明——不再是「学习路径」 */
+  var STRUCTURE_TITLE = '接下来需要确认的知识点';
+  var STRUCTURE_NOTE = '这些是依赖图上的前置节点，不是诊断结论。点上面的按钮开始诊断，' +
+    '做完几道题才能确定你实际卡在哪。';
+  var STRUCTURE_FOOTNOTE = '从低年级往上走：除最后一个是目标知识点，前面的都是它在图上的 hard 前置。' +
+    '过滤掉的节点在下一段「已过滤（噪音）」里';
+  var FILTERED_TITLE = '已过滤（噪音）';
+
+  function structureNote() { return { title: STRUCTURE_TITLE, text: STRUCTURE_NOTE }; }
+
+  /* ================================================================
    * 5. LLM 选择（唯一需要网关的一步）
    * ================================================================
    * 网关：http://127.0.0.1:3000/v1/chat/completions（max_tokens ≥ 1200，网关把 reasoning 算进预算）。
@@ -908,6 +958,11 @@
     hintCoverage: hintCoverage,
     prerequisites: prerequisites,
     buildPath: buildPath,
+    /* 接线 engine（只生成跳转地址，不动 engine） */
+    canStartDiagnosis: canStartDiagnosis,
+    diagnosisCandidates: diagnosisCandidates,
+    diagnosisUrl: diagnosisUrl,
+    structureNote: structureNote,
     /* 工具 */
     gradeLabel: gradeLabel,
     stageOfGrade: stageOfGrade,
