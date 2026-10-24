@@ -842,7 +842,9 @@
           ui.phase = 'ask'; ui.answer = ''; ui.explainStep = 0; renderQuestion(item);
         } }, '我明白了，重新做一遍')));
     } else {
-      box.append(h('div', { class: 'explain' }, steps[2].text));
+      box.append(h('details', { class: 'explain-fold' },
+        h('summary', null, '看完整解析（自己想清楚再打开）'),
+        h('div', { class: 'explain' }, steps[2].text)));
       /* 函数实验室：配方法/二次函数类题，reveal 时挂可拖拽画板，直观理解几何意义 */
       try {
         const lab = window.Funclab && window.Funclab.labForScene(t && t.id, q && q.prompt, { itemId: q && q.id });
