@@ -1,0 +1,96 @@
+/* 作业分析文字 → 知识点定位 → 学习路径（诊断页的独立入口，不影响 diagnose/index.html） */
+:root {
+  --bg: #f7f8f7;
+  --bg-elev: #ffffff;
+  --bg-muted: #eef1ef;
+  --line: #d8ded9;
+  --text: #17211c;
+  --muted: #5d6b63;
+  --brand: #0f6e62;
+  --brand-soft: #dff3ef;
+  --ok: #1a7f45;
+  --on-ok: #ffffff;
+  --bad: #b3261e;
+  --on-bad: #ffffff;
+  --warn-bg: #fff4d6;
+  --warn-line: #e6c860;
+  --radius: 14px;
+  --radius-sm: 10px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.65 -apple-system, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+main#root { width: min(920px, 100%); margin: 0 auto; padding: 20px 16px 64px; }
+.card {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 12px;
+}
+.card h1 { font-size: 1.32rem; margin: 0 0 6px; }
+.card h2 { font-size: 1.06rem; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+.card h2 .num {
+  display: inline-flex; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--brand); color: #fff; font-size: .82rem;
+  align-items: center; justify-content: center; flex: 0 0 22px;
+}
+.muted { color: var(--muted); }
+.small { font-size: .9rem; }
+.err { color: var(--bad); }
+.warnbox {
+  background: var(--warn-bg); border: 1px solid var(--warn-line);
+  border-radius: var(--radius-sm); padding: 10px 12px; margin: 8px 0;
+}
+.okbox {
+  background: var(--brand-soft); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: 10px 12px; margin: 8px 0;
+}
+.badbox {
+  background: #fdeceb; border: 1px solid #f3c2be;
+  border-radius: var(--radius-sm); padding: 10px 12px; margin: 8px 0;
+}
+textarea {
+  width: 100%; min-height: 96px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  font: inherit; resize: vertical; background: var(--bg-elev); color: var(--text);
+}
+textarea:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+button {
+  font: inherit; font-weight: 700; padding: 9px 18px; min-height: 40px;
+  border-radius: 999px; border: 1px solid var(--line);
+  background: var(--bg-elev); color: var(--text); cursor: pointer;
+}
+button.primary { background: var(--brand); border-color: transparent; color: #fff; }
+button:disabled { opacity: .55; cursor: not-allowed; }
+table.kv { width: 100%; border-collapse: collapse; }
+table.kv th, table.kv td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.kv th { width: 108px; font-weight: 700; color: var(--muted); white-space: nowrap; }
+code { background: var(--bg-muted); padding: 1px 5px; border-radius: 4px; font-size: .9em; }
+ul.plain { margin: 6px 0 0; padding-left: 20px; }
+ul.plain li { margin: 3px 0; }
+.pill {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  font-size: .8rem; font-weight: 700; background: var(--bg-muted); color: var(--muted);
+}
+.pill.pass { background: #dff3e6; color: var(--ok); }
+.pill.fail { background: #fdeceb; color: var(--bad); }
+.pill.pending { background: var(--warn-bg); color: #8a5b00; border: 1px solid var(--warn-line); }
+.node {
+  display: flex; gap: 10px; align-items: baseline;
+  padding: 7px 10px; border: 1px dashed var(--line); border-radius: var(--radius-sm);
+  margin: 6px 0; background: var(--bg-elev);
+}
+.node .g { flex: 0 0 auto; font-weight: 800; color: var(--brand); min-width: 48px; }
+.node .n { flex: 1 1 auto; font-weight: 700; }
+.node.target { border-style: solid; border-color: var(--brand); background: var(--brand-soft); }
+.depth-head { font-weight: 800; margin: 12px 0 4px; font-size: .95rem; }
+.skip { color: var(--muted); font-style: normal; }
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+.conf { font-variant-numeric: tabular-nums; font-weight: 800; }
+footer.site-footer { text-align: center; margin: 24px 0; color: var(--muted); font-size: .88rem; }
