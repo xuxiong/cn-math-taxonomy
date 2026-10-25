@@ -139,6 +139,102 @@
     return (list || []).find(function (q) { return q.id === qid; }) || null;
   }
 
+  /* ------------------------------------------------- 前置选择：年级截断 + 同章优先
+   * 实测问题：route 定位「配方法」(初三) → 诊断一路往早的先修追，16 题里最后几题问到
+   * 三年级「长方形和正方形的面积 / 面积的意义」，答满上限仍给不出结论。
+   * 两条规则只改「测哪些点、先问哪个点」，判定逻辑（applyAnswer / statusOf / summarize）一概不动：
+   *   ① 年级截断（过滤，硬规则）：只测离某个目标不超过 GRADE_GAP 个年级的先修。
+   *      每个目标各算各的基准；共同先修只要对其中一个目标够近就保留。
+   *      被截掉的记在 session.suppressed，界面显示「已略过」，不能静默消失。
+   *   ② 优先级排序（只改顺序，不增删）：同章 > 同领域且年级相邻 > 同领域 > 其他。
+   *      题量够就全测；撞上限时先测高优先级的，中断了结论也更可能是真原因。
+   */
+
+  /**
+   * 只测不低于「目标年级 - GRADE_GAP」的先修。单个常量，改这一个数字就能调阈值。
+   * 取 6 而不是 4（orchestrator 实测后定）：GAP=4 会把「初一的先修里带小学三年级」一刀切掉，
+   * 而引擎的设计意图是「小学先修一路回溯到一年级」（既有测试「小学回溯」就是这条）。
+   * GAP=6 下：初一(7) → 不低于一年级(1)，小学内部不受影响；初三(9) → 不低于三年级(3)，
+   * 三年级「面积的意义」仍在范围内（原诉求是砍掉它，见下方 retainedOnly 的说明）；
+   * 高三(12) → 不低于六年级(6)。
+   */
+  var GRADE_GAP = 6;
+
+  /** 没有 grade / chapter 的图（手造图）不做截断，行为与改造前一致。 */
+  function hasGrade(graph, id) {
+    const t = graph.byId[id];
+    return !!(t && typeof t.grade === 'number' && isFinite(t.grade));
+  }
+
+  /**
+   * 目标集合里有年级可算才算得出截断线；一个都没有就不截断。
+   * 手造图（无 grade）走这条路，既有行为的测试因此不受影响。
+   */
+  function gradeBenchmark(graph, targets) {
+    return targets.some(function (id) { return hasGrade(graph, id); });
+  }
+
+  /**
+   * 年级截断：candidates 里保留「对某个目标而言年级够近」的点，其余进 suppressed。
+   * - 目标本身永远保留；没有年级的节点保留（无法判断就按原样）。
+   * - 每个目标各算各的基准，避免浅目标把深目标的先修全砍掉。
+   * @returns {{kept: string[], suppressed: string[]}}
+   */
+  function cutByGrade(graph, candidates, targets) {
+    if (!gradeBenchmark(graph, targets)) return { kept: candidates.slice(), suppressed: [] };
+    const tset = new Set(targets);
+    const kept = [];
+    const suppressed = [];
+    candidates.forEach(function (id) {
+      const t = graph.byId[id];
+      if (!t) return;
+      const keep = tset.has(id) || !hasGrade(graph, id) ||
+        targets.some(function (tid) {
+          return !hasGrade(graph, tid) || t.grade >= graph.byId[tid].grade - GRADE_GAP;
+        });
+      (keep ? kept : suppressed).push(id);
+    });
+    return { kept: kept, suppressed: suppressed };
+  }
+
+  /**
+   * 候选先修的优先级分（1 最高，6 兜底）：
+   *   1 同 chapter（完整章节名全等，不做前缀匹配——「25.1」和「25.2」是两章）
+   *   2 同 domain 且年级相邻（差 1）/ 3 同 domain 且年级差 2 / 4 同 domain 其他
+   *   5 同学科（数学内部跨领域）/ 6 其他
+   * 没有 chapter/domain 的节点落 6，保持原顺序。
+   */
+  function prereqPriority(topic, target) {
+    if (!topic || !target) return 6;
+    if (topic.chapter && target.chapter && topic.chapter === target.chapter) return 1;
+    const sameDomain = !!(topic.domain && target.domain && topic.domain === target.domain);
+    if (!sameDomain) return topic.subject && target.subject && topic.subject === target.subject ? 5 : 6;
+    if (!hasGrade({ byId: { a: topic } }, 'a') || !hasGrade({ byId: { b: target } }, 'b')) return 4;
+    const diff = Math.abs(target.grade - topic.grade);
+    if (diff <= 1) return 2;
+    if (diff === 2) return 3;
+    return 4;
+  }
+
+  /**
+   * 按优先级稳定排序（同优先级保持入参顺序）。多目标时取「对任一目标最优」的分。
+   * 这是顺序不是过滤：全测时只影响先后，撞上限时高优先级的先被问到。
+   */
+  function orderByPriority(graph, ids, targets) {
+    const rankOf = function (id) {
+      const t = graph.byId[id];
+      let best = 6;
+      targets.forEach(function (tid) {
+        const r = prereqPriority(t, graph.byId[tid]);
+        if (r < best) best = r;
+      });
+      return best;
+    };
+    return ids.map(function (id, i) { return { id: id, i: i, r: rankOf(id) }; })
+      .sort(function (a, b) { return a.r - b.r || a.i - b.i; })
+      .map(function (x) { return x.id; });
+  }
+
   /* ------------------------------------------------------------------ 会话 */
 
   const RESULTS = { correct: 1, wrong: 1, skip: 1 };
@@ -153,15 +249,22 @@
     const screen = opts.mode === 'screen';
     const limit = Math.max(1, Math.floor(opts.limit == null ? (screen ? SCREEN_LIMIT : DEFAULT_LIMIT) : opts.limit));
     // 筛查模式：诊断范围就是目标集合本身（不把先修祖先并进来），回溯只在范围内进行
-    const sub = screen ? { nodes: topoSort(graph, ts) } : subgraph(graph, ts);
+    // 普通模式：先取目标 + 全部祖先的子图，再按年级截断（规则①）——
+    // 截断只发生在会话的候选集里，图本身与数据不动。
+    const cuts = screen
+      ? { kept: topoSort(graph, ts), suppressed: [] }
+      : cutByGrade(graph, subgraph(graph, ts).nodes, ts);
+    const nodes = cuts.kept;
     const pos = Object.create(null);
-    sub.nodes.forEach(function (id, i) { pos[id] = i; });
+    nodes.forEach(function (id, i) { pos[id] = i; });
     // 离目标最近（拓扑序最靠后）的目标先问；其余目标作为后备留在栈里
     const stack = ts.filter(function (id) { return isTestable(graph, id); })
       .sort(function (a, b) { return pos[b] - pos[a]; });
     return {
-      targets: ts, limit: limit, order: sub.nodes, status: {}, stack: stack, answers: [], attempts: {},
+      targets: ts, limit: limit, order: nodes, status: {}, stack: stack, answers: [], attempts: {},
       mode: screen ? 'screen' : 'target', scope: screen ? ts.slice() : null,
+      // 因年级跨度被略过的先修（不测、不在 order 里，但界面要显示「已略过」，不能静默丢弃）
+      suppressed: cuts.suppressed,
       seed: opts.seed == null ? 'default' : String(opts.seed),
       avoid: Array.from(new Set(opts.avoid || []))
     };
@@ -173,6 +276,7 @@
     return {
       targets: s.targets.slice(), limit: s.limit, order: s.order, stack: s.stack.slice(),
       status: Object.assign({}, s.status), answers: s.answers.slice(), attempts: attempts,
+      suppressed: (s.suppressed || []).slice(),
       seed: s.seed, avoid: s.avoid, mode: s.mode, scope: s.scope ? s.scope.slice() : null
     };
   }
@@ -277,9 +381,14 @@
     } else {
       s.status[id] = { s: 'weak', src: 'direct' };
       const scope = s.scope ? new Set(s.scope) : null;
-      const push = graph.prereqs[id]
+      const suppressed = new Set(s.suppressed || []);
+      // 回溯时按同章/同领域优先排序（规则②）；被年级截断的先修（suppressed）不再压栈，
+      // 也不参与下面的「再往下追」判断——它本来就不在本次诊断范围内。
+      const push = orderByPriority(graph, graph.prereqs[id]
         .map(function (p) { return p.id; })
-        .filter(function (p) { return isTestable(graph, p) && !s.status[p] && (!scope || scope.has(p)); });
+        .filter(function (p) {
+          return isTestable(graph, p) && !s.status[p] && !suppressed.has(p) && (!scope || scope.has(p));
+        }), s.targets);
       const pushed = new Set(push);
       s.stack = push.concat(s.stack.filter(function (x) { return !pushed.has(x); }));
     }
@@ -334,7 +443,10 @@
     const unconfirmed = weak.filter(function (id) { return isUnconfirmed(session, id); });
     const untested = nodes.filter(function (id) { return st(id) === 'unknown'; });
     const scope = session.scope ? new Set(session.scope) : null;
-    const inScope = function (id) { return !scope || scope.has(id); };
+    // 被年级截断的先修（session.suppressed）与筛查模式的范围外先修同性质：不在本次诊断范围内。
+    // 它们既不进 untested，也不算「还没测到」，否则根因会被误标为 pending。
+    const suppressed = new Set(session.suppressed || []);
+    const inScope = function (id) { return (!scope || scope.has(id)) && !suppressed.has(id); };
 
     const roots = weak.filter(function (id) {
       return !graph.prereqs[id].some(function (p) { return st(p.id) === 'weak'; });
@@ -1268,6 +1380,11 @@
   return {
     DEFAULT_LIMIT: DEFAULT_LIMIT,
     SCREEN_LIMIT: SCREEN_LIMIT,
+    /* 前置选择的两个新规则（kanban t_be33ff76）：截断阈值、截断、优先级排序 */
+    GRADE_GAP: GRADE_GAP,
+    cutByGrade: cutByGrade,
+    prereqPriority: prereqPriority,
+    orderByPriority: orderByPriority,
     gradeTargets: gradeTargets,
     subjectOf: subjectOf,
     chapterSummary: chapterSummary,

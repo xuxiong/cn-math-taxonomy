@@ -918,6 +918,46 @@
   }
 
   /**
+   * 被年级截断的先修（kanban t_be33ff76）：「已略过更早的前置」一行的数据来源。
+   *
+   * 为什么必须在这里现算：app.js 只把 answers 存进 localStorage，会话靠 replay 重建，
+   * suppressed 不落盘；route/diagnose 读回时只能拿 targets 重新 createSession 再比对。
+   *
+   * 只报「真的因为年级被排除」的点：external（无题的图上节点）本来就不测，
+   * 由 data 的 external 标记决定，不算本次截断，否则这一行会混进一堆本来就测不到的点。
+   *
+   * @param {Array<string>} targets 会话的 targets
+   * @param {Function} createSession E.createSession（注入，保持本文件不依赖 engine）
+   * @returns {Array<{id, name, grade}>} 被截断的可测节点，年级从低到高；空数组 = 没截断
+   */
+  function skippedByGrade(targets, createSession) {
+    if (typeof createSession !== 'function' || !Array.isArray(targets) || !targets.length) return [];
+    var s;
+    try { s = createSession(targets); } catch (e) { return []; }   /* 未知 id / 图不一致：宁可不显示也不炸 */
+    var sup = Array.isArray(s && s.suppressed) ? s.suppressed : [];
+    return sup
+      .filter(function (id) { return !!BY_ID[id] && !BY_ID[id].external; })
+      .map(function (id) {
+        return { id: id, name: BY_ID[id].name, grade: BY_ID[id].grade };
+      })
+      .sort(function (a, b) { return (a.grade - b.grade) || String(a.name).localeCompare(String(b.name), 'zh'); });
+  }
+
+  /**
+   * 「已略过」那句话：名字 + 年级 + 数量。空字符串 = 没有要说的（页面不占位）。
+   * 措辞只说「考虑过、没纳入」，绝不说成诊断结论——它们不是结果，只是被排除的候选。
+   */
+  function skippedNote(items, gap) {
+    var list = Array.isArray(items) ? items : [];
+    if (!list.length) return '';
+    var head = list[0];
+    var g = shortGradeLabel(head.grade);
+    return '已略过更早的前置：' + head.name + (g ? '（' + g + '）' : '') +
+      (list.length > 1 ? '等 ' + list.length + ' 个' : '') +
+      ' —— 跨度超过 ' + (gap == null ? GRADE_GAP_LIMIT : gap) + ' 个年级，不纳入本次诊断';
+  }
+
+  /**
    * buildResultView(session, sum, currentTopicId) —— 第 ⑥ 段「刚才的诊断结果」的唯一数据来源。
    *
    * @param {Object|null} session localStorage 里的诊断 session（可为 null）
@@ -1179,6 +1219,10 @@
     structureNote: structureNote,
     /* 诊断结果写回（kanban t_d623773c）：纯函数，session/sum 由调用方注入 */
     buildResultView: buildResultView,
+    /* 年级截断的「已略过」一行（kanban t_be33ff76）：纯文案 + 现算，页面层直接调 */
+    skippedByGrade: skippedByGrade,
+    skippedNote: skippedNote,
+    shortGradeLabel: shortGradeLabel,
     matchSession: matchSession,
     rootCaveat: rootCaveat,
     suggestedOrder: suggestedOrder,
