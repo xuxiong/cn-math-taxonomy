@@ -175,6 +175,7 @@
     if (!pre) { $('prereq-body').innerHTML = '<p class="skip">没有前置数据</p>'; show('sec-prereq', true); return; }
     var html = '<p class="small muted">目标：<strong>' + esc(pre.target.name) + '</strong> ' +
       esc(R.gradeLabel(pre.target.grade)) + '</p>';
+    html += skippedHtml(pre.target.id);
     pre.levels.forEach(function (lv) {
       html += '<div class="depth-head">第 ' + lv.depth + ' 层 hard 前置（' + lv.items.length + ' 个）</div>';
       if (!lv.items.length) html += '<p class="skip">（这一层没有 hard 前置）</p>';
@@ -202,6 +203,25 @@
   }
 
   /* ------------------------------------------ ⑥ 接下来需要确认的知识点 */
+
+  /* 「已略过更早的前置」（kanban t_be33ff76）。
+   * app.js 存盘时只留 answers（会话靠 replay 重建），suppressed 不落盘，
+   * 所以这里拿 targets 现算一次：E.createSession → suppressed → 纯文案在 route.js。
+   * 只挂在 ⑤⑥ 两段里，**不进「你的薄弱点」结论**——被排除的候选不是诊断结果。
+   *
+   * 何时显示：只在这个会话确实做过诊断时才说。判定复用 matchSession（它与 ⑥ 段写回同一口径：
+   * target 不匹配、或一条答案都没有，就当没有这次诊断）。否则新贴一段文字也会冒出「已略过」，
+   * 学生会以为系统已经替自己筛过题。 */
+  function skippedHtml(currentTopicId) {
+    var session = readSession();
+    if (!R.matchSession(session, currentTopicId).ok) return '';
+    if (!window.DiagEngine || !window.D.engineGraph) return '';
+    var items = R.skippedByGrade(session.targets, function (ts) {
+      return window.DiagEngine.createSession(window.D.engineGraph, ts);
+    });
+    var note = R.skippedNote(items, window.DiagEngine.GRADE_GAP);
+    return note ? '<p class="skip-note small" id="skipped-note">' + esc(note) + '</p>' : '';
+  }
 
   /* 诊断结果写回 route（kanban t_d623773c）。
    * 分工：读 localStorage 和调 E.summarize() 在这里，判断与文案在 route.js 的 buildResultView()。
@@ -256,27 +276,30 @@
 
   function renderPath(path, targetName, view) {
     var hasRoots = !!(view && view.ok && view.stage === 'roots');
+    var skipped = skippedHtml();
 
     /* ⑥ 段的标题与开销：有真结论时整段换成「你的薄弱点」，候选列表不再出现 */
     var h2 = $('sec-path').querySelector('h2');
     h2.innerHTML = '<span class="num">6</span>' + esc(hasRoots ? R.WEAK_TITLE : R.STRUCTURE_TITLE);
 
     if (hasRoots) {
+      /* 「已略过」放在结论之后：它解释的是范围，不是结论，不能挡在根因前面 */
       $('path-body').innerHTML = renderResult(view) +
-        '<p class="small muted">' + esc(view.sectionNote || '') + '</p>';
+        '<p class="small muted">' + esc(view.sectionNote || '') + '</p>' + skipped;
       show('sec-path', true);
       return;
     }
 
     if (!path || !path.nodes.length) {
       $('path-body').innerHTML = '<p class="skip">没有可给的路径</p>' +
-        renderResult(view);
+        renderResult(view) + skipped;
       show('sec-path', true);
       return;
     }
     var note = R.structureNote();
     var html = '<div class="warnbox"><strong>' + esc(note.title) + '</strong>' +
       '<p class="small" style="margin:6px 0 0">' + esc(note.text) + '</p></div>';
+    html += skipped;
     html += path.nodes.map(function (n) {
       return '<div class="node' + (n.isTarget ? ' target' : '') + '">' +
         '<span class="g">' + esc(R.gradeLabel(n.grade)) + '</span>' +
