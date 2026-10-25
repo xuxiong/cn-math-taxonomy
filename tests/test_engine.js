@@ -771,13 +771,14 @@ test('旧 id 别名：cnm_ext_* 已不在图中，resolveTargets 跳到小学正
   assert.deepStrictEqual(E.resolveTargets(['cnm_221'], null), ['cnm_221']);
 });
 
-test('真实数据：cnm_221（配方法）——首问目标；答错后 hard 先修在前', () => {
+test('真实数据：cnm_221（配方法）——首问目标；答错后按优先级出先修（同章节优先）', () => {
   let s = E.createSession(RG, ['cnm_221']);
   assert.strictEqual(E.nextQuestion(RG, s), 'cnm_221');
   s = E.applyAnswer(RG, s, 'cnm_221', 'wrong');
-  const prereqs = RG.prereqs.cnm_221;
-  const firstHard = prereqs.find((p) => p.strength === 'hard').id;
-  assert.strictEqual(E.nextQuestion(RG, s), firstHard);
+  /* 出题顺序由 prereqPriority / orderByPriority 决定，不再是 dependencies.json 的数据顺序：
+   * cnm_221 的两个 hard 先修里，cnm_220（直接开平方法）与目标同章节，排在
+   * cnm_148（完全平方公式，八上跨章节）之前。卡 t_be33ff76 ③。 */
+  assert.strictEqual(E.nextQuestion(RG, s), 'cnm_220');
 });
 
 test('真实数据：答对目标即跳过全部祖先', () => {
@@ -826,7 +827,10 @@ test('真实数据：一致的学生 + 无限题量 => 薄弱集合与根因精�
       assert.ok(asked.every((id) => !RG.byId[id].external));
       const sum = E.summarize(RG, s);
       const sub = E.subgraph(RG, [t.id]);
-      const unknown = sub.nodes.filter((id) => E.isTestable(RG, id) && !known.has(id));
+      /* 年级截断（卡 t_be33ff76 ①）：离目标超过 GRADE_GAP 个年级的先修不纳入本次诊断，
+       * 所以期望集合也要先过同一把尺子，否则「测不到」会被误判成「判错」。 */
+      const inScope = E.cutByGrade(RG, sub.nodes, [t.id]).kept;
+      const unknown = inScope.filter((id) => E.isTestable(RG, id) && !known.has(id));
       assert.deepStrictEqual(sorted(sum.weak), sorted(unknown), '薄弱集合 ' + t.id);
       sum.mastered.forEach((id) => assert.ok(known.has(id), id + ' 被判掌握但学生不会'));
       const expectRoots = unknown.filter((id) => RG.prereqs[id].every((p) => !unknown.includes(p.id)));
@@ -1117,7 +1121,9 @@ test('带题库：一致的学生 + 无限题量 => 薄弱集合与根因精确�
       cases++;
       const sum = E.summarize(RGQ, s);
       const sub = E.subgraph(RGQ, [t.id]);
-      const unknown = sub.nodes.filter((id) => E.isTestable(RGQ, id) && !known.has(id));
+      /* 同上：期望集合先过年级截断这把尺子（卡 t_be33ff76 ①）。 */
+      const inScope = E.cutByGrade(RGQ, sub.nodes, [t.id]).kept;
+      const unknown = inScope.filter((id) => E.isTestable(RGQ, id) && !known.has(id));
       assert.deepStrictEqual(sorted(sum.weak), sorted(unknown), '薄弱集合 ' + t.id);
       assert.deepStrictEqual(sum.shaky, []);
       assert.deepStrictEqual(sum.unconfirmed, []);
