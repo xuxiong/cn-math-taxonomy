@@ -38,6 +38,7 @@
   let sessionMeta = null;  // {label, chapterKey?}
   let demo = null;         // 演示模式：{oracle}
   let prac = null;         // T3 练习模式：{topicId, list:[q], idx, pact:[]} 非 null 时渲染练习
+  let pracPath = null;     // 路径练习（一次只出一关）：{queue:[topicId], idx, results:[{topicId, ok, n}]}，null = 不走路径
   let pracResult = null;   // 练习结束返回结果页带上 {topicId, ok, n}
   let pracLoading = null;  // O3 LLM 变式异步加载：{topicId} 非 null 时渲染 loading
   let ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null };
@@ -353,6 +354,18 @@
   function practicedMap() { const v = lsGet(LS_PRAC); return v && typeof v === 'object' ? v : {}; }
   function markPracticed(topicId) { const o = practicedMap(); o[topicId] = Date.now(); lsSet(LS_PRAC, o); }
   function variantSeqMap() { const v = lsGet(LS_VSEQ); return v && typeof v === 'object' ? v : {}; }
+
+  /* ------------------------------------------------------------ 路径练习：关卡队列
+   * 练习这一层自己筛：引擎的 path 里「未测」也在（学习路径本来就该包含它们），
+   * 但没测过的点不知道会不会，练了是浪费，所以练习队列只取 status==='weak'。
+   * 顺序沿用 path 的既有顺序（年级低→高、同年级先修在前）。纯函数，不读 DOM。 */
+  function pathQueueFrom(sum) {
+    return ((sum && sum.path) || []).filter(function (p) { return p && p.status === 'weak'; }).map(function (p) { return p.id; });
+  }
+  /* 关卡切换时的不变量：pracPath 只在「全部练完」和「学生主动退出」时置空；
+   * 它不能跟着 resetUi() 一起被清（resetUi 只重置单题作答状态）。 */
+  function pathPracticeExists() { return !!(pracPath && pracPath.queue && pracPath.queue.length); }
+
   function startPractice(topicId) {
     var bankPicks = E.pickPracticeQuestions(D.graph, topicId, PRACTICE_N, seenList());
     var seqMap = variantSeqMap();
@@ -402,6 +415,7 @@
   function _startPracticeRender(fp, topicId) {
     prac = { topicId: topicId, list: fp.list, idx: 0, pact: [], usedVariants: fp.usedVariants, nextIndex: fp.nextIndex };
     pracResult = null;
+    pracLoading = null;
     resetUi();
     render();
   }
@@ -410,7 +424,7 @@
     root.textContent = '';
     root.append(h('div', { class: 'card' },
       h('div', { class: 'row' },
-        h('span', { class: 'muted' }, '练习：' + (t ? t.name : '')),
+        h('span', { class: 'muted' }, (pathPracticeExists() ? '路径练习 · ' : '练习：') + (t ? t.name : '')),
         h('span', { class: 'grow' }),
         h('span', { class: 'muted' }, '正在准备题目…')),
       h('div', { class: 'progress' }, h('i', { style: 'width:30%' })),
@@ -433,10 +447,90 @@
       pracResult = { topicId: prac.topicId, ok: ok, n: prac.pact.length, usedVariants: prac.usedVariants || 0, usedLLM: llmCount };
       prac = null;
       resetUi();
+      if (pathPracticeExists()) { finishPathLevel(pracResult); return; }   // 路径练习：不直接回结果页，先给「过关」
       renderResult();   // 回到结果页
     } else {
       renderQuestion(pracItem());
     }
+  }
+
+  /* ------------------------------------------------------------ 路径练习：一关一关
+   * 每关内部完全复用 startPractice（题库新鲜题 → O1 变式 → LLM 变式 → 兜底）。
+   * 一关练完只**显示**「过关」和「下一关」按钮，学生点了才进下一关——不自动跳。
+   * 练习不改变诊断结论（status 不动），markPracticed 仍只记时间戳。 */
+  function nextPathTopic(fromIdx) {
+    if (!pathPracticeExists()) return null;
+    for (var i = fromIdx + 1; i < pracPath.queue.length; i++) {
+      var id = pracPath.queue[i];
+      if ((D.graph.bank[id] || []).length) return { idx: i, id: id };   // 没题的点跳过，别让「下一关」点不动
+    }
+    return null;
+  }
+  function startPathPractice() {
+    if (!session) return;
+    var queue = pathQueueFrom(E.summarize(D.graph, session));
+    var first = null;
+    for (var i = 0; i < queue.length && !first; i++) {
+      if ((D.graph.bank[queue[i]] || []).length) first = { idx: i, id: queue[i] };
+    }
+    if (!first) return;
+    pracPath = { queue: queue, idx: first.idx, results: [] };
+    pracResult = null;
+    startPractice(first.id);
+  }
+  function finishPathLevel(result) {
+    if (!pathPracticeExists()) { renderResult(); return; }   // 状态被清（例如中途退出），退回结果页
+    if (result) pracPath.results.push(result);
+    var next = nextPathTopic(pracPath.idx);
+    if (next) { renderPathPass(next); return; }
+    pracPath = null;   // 全部练完：队列结束
+    renderPathDone(result);
+  }
+  function pathLevelHead(title, topicId) {
+    var n = pracPath.queue.length;
+    return h('div', { class: 'row', id: 'path-level-head' },
+      h('span', { class: 'muted' }, '路径练习 · 第 ' + (pracPath.idx + 1) + ' 关 / 共 ' + n + ' 关' + (topicId ? ' · ' + nameOf(topicId) : '')),
+      h('span', { class: 'grow' }),
+      h('span', { class: 'muted small', text: title }));
+  }
+  function pathResultLine(result) {
+    var ok = result.ok, n = result.n;
+    var good = ok === n;
+    return h('div', { class: 'verdict ' + (good ? 'ok' : 'no'), id: 'path-level-verdict' },
+      '这一关 ' + n + ' 题，答对 ' + ok + ' 题。' + (good ? '全对，练扎实了！' : '错的题可以在这个知识点的条目里用「为什么错了」再讲一遍。'));
+  }
+  function renderPathPass(next) {
+    var r = pracPath.results[pracPath.results.length - 1];
+    var card = h('div', { class: 'card', id: 'path-pass' },
+      pathLevelHead('过关'),
+      pathResultLine(r),
+      h('p', { class: 'muted small' }, '练习只是巩固，不算掌握：下次进诊断，这个知识点仍然会被测。'),
+      h('div', { class: 'row no-print', style: 'margin-top:12px' },
+        h('button', { class: 'primary', id: 'btn-path-next-level', onclick: function () {
+          pracPath.idx = next.idx;   // 先推进 index，再开下一关（startPractice 会沿用 pracPath）
+          startPractice(next.id);
+        } }, '下一关：' + nameOf(next.id)),
+        h('button', { id: 'btn-path-quit', onclick: exitPathPractice }, '先歇一下，回结果页')));
+    show(withRouteBack(card));
+  }
+  function renderPathDone(result) {
+    var card = h('div', { class: 'card', id: 'path-done' },
+      h('div', { class: 'row' },
+        h('span', { class: 'muted' }, '路径练习 · 已练完'),
+        h('span', { class: 'grow' })),
+      h('div', { class: 'banner ok', style: 'margin-top:12px', id: 'path-done-banner' }, '路径上的 weak 都练过了'),
+      result ? pathResultLine(result) : null,
+      h('p', { class: 'muted small' }, '练习只是巩固，不算掌握：这里的每个知识点下次进诊断仍然会被测。'),
+      h('div', { class: 'row no-print', style: 'margin-top:12px' },
+        h('button', { class: 'primary', id: 'btn-path-back', onclick: function () { pracResult = null; renderResult(); } }, '回到结果页')));
+    show(withRouteBack(card));
+  }
+  function exitPathPractice() {
+    prac = null;
+    pracPath = null;
+    pracResult = null;
+    resetUi();
+    if (session) renderResult(); else render();
   }
   function finishAnswer(result) {
     if (prac) practiceNext(result);
@@ -789,9 +883,12 @@
     if (ui.key !== key) ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null };
     const n = pr ? prac.idx : session.answers.length;
     const card = h('div', { class: 'card' });
+    const onPath = pr && pathPracticeExists();
     card.append(
-      h('div', { class: 'row' },
-        h('span', { class: 'muted' }, pr ? '练习：' + t.name : '目标：' + sessionMeta.label),
+      h('div', { class: 'row', id: onPath ? 'path-level-head' : null },
+        h('span', { class: 'muted' }, pr
+          ? (onPath ? '路径练习 · 第 ' + (pracPath.idx + 1) + ' 关 / 共 ' + pracPath.queue.length + ' 关 · ' + t.name : '练习：' + t.name)
+          : '目标：' + sessionMeta.label),
         h('span', { class: 'grow' }),
         h('span', { class: 'muted' }, pr ? '第 ' + (prac.idx + 1) + ' 题 / 共 ' + prac.list.length + ' 题' : '第 ' + (n + 1) + ' 题 / 上限 ' + session.limit)),
       h('div', { class: 'progress' }, h('i', { style: 'width:' + (pr ? Math.round((prac.idx + 1) / prac.list.length * 100) : Math.round(n / session.limit * 100)) + '%' })),
@@ -875,7 +972,10 @@
 
     card.append(h('div', { class: 'notice' }, '提示：自动判题只是近似的（数字、分数、多个答案会做规范化后比较），一切以参考答案为准；判错了可以手动更正。'));
     card.append(h('div', { class: 'row no-print', style: 'margin-top:12px' },
-      pr ? h('button', { class: 'small', onclick: function () { prac = null; pracResult = null; resetUi(); render(); } }, '退出练习')
+      pr ? h('button', { class: 'small', id: 'btn-prac-exit', onclick: function () {
+        if (pathPracticeExists()) exitPathPractice();   // 路径练习：向学生明确「关掉整条路径」
+        else { prac = null; pracResult = null; resetUi(); render(); }
+      } }, pathPracticeExists() ? '退出路径练习' : '退出练习')
         : h('button', { class: 'small', onclick: function () { if (confirm('确定放弃当前诊断并回到开始页吗？')) restart(); } }, '重新开始')));
     const page = h('div');
     if (demo) page.append(demoBanner());
@@ -1307,6 +1407,19 @@
       label);
   }
 
+  /* 路径练习入口（结果页次级入口）。只有弱节点 ≥1 时出现；
+   * 与每行「练习这 N 题」并存——那个是「专门练这一个」，这里是「按顺序一关一关练」。 */
+  function pathPracticeEntry(sum) {
+    const queue = pathQueueFrom(sum).filter(function (id) { return (D.graph.bank[id] || []).length; });
+    if (!queue.length) return null;
+    const first = queue[0];
+    return h('div', { class: 'card path-practice no-print', id: 'path-practice' },
+      h('p', { class: 'small' }, '你答错的知识点有 ' + queue.length + ' 个，可以按顺序一个个练（一次一关，共 ' + queue.length + ' 关）。'),
+      h('button', { type: 'button', class: 'path-practice-btn', id: 'btn-path-practice',
+        onclick: function () { startPathPractice(); } },
+        '开始练：' + nameOf(first) + '（第 1 关 / 共 ' + queue.length + ' 关）'));
+  }
+
   function renderResult() {
     const sum = E.summarize(D.graph, session);
     const rootSet = new Set(sum.roots.map(function (r) { return r.id; }));
@@ -1376,6 +1489,7 @@
     page.append(h('div', { class: 'card', id: 'path' },
       h('h2', { text: '推荐学习路径' }),
       h('p', { class: 'muted small' }, '从根因（和「不稳」的点）出发到目标之间、尚未判定为掌握的知识点，按年级从低到高排列（同一年级里先修在前），从上往下学。「不稳」「未测」的点也在路径上，建议先巩固 / 自查。'),
+      pathPracticeEntry(sum),
       sum.path.length ? h('ol', { class: 'path' }, sum.path.map(function (p) {
         return h('li', null, topicItem(p.id, statusTags(p.id, rootSet, targetSet), null, practiceBtn(p.id)));
       })) : h('p', { text: '不需要补课。' })));
