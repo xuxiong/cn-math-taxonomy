@@ -103,3 +103,16 @@ a.start-diag {
 }
 a.start-diag:hover, a.start-diag:focus { background: #0b554c; color: #fff; }
 a.start-diag + a.start-diag { margin-left: 8px; }
+
+/* 刚才的诊断结果（第 ⑥ 段里）：有真结论时盖住候选列表，没做完时只说没做完 */
+.pill.warn { background: #fff4d6; color: #8a5b00; border: 1px solid var(--warn-line); }
+.diag-result {
+  border: 1px solid var(--line); border-left: 4px solid var(--brand);
+  border-radius: var(--radius-sm); background: var(--bg-elev);
+  padding: 10px 12px; margin: 8px 0;
+}
+.diag-result h3 { font-size: .98rem; margin: 0 0 6px; }
+.diag-result p { margin: 2px 0; font-variant-numeric: tabular-nums; }
+.diag-result.stage-unfinished { border-left-color: var(--warn-line); background: var(--warn-bg); }
+.diag-result .warn-line { font-weight: 700; }
+.diag-result ul.roots { margin-top: 6px; }

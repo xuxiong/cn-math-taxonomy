@@ -53,7 +53,7 @@
     <div id="prereq-body"></div>
   </section>
 
-  <!-- ⑥ 接下来需要确认的知识点 -->
+  <!-- ⑥ 接下来需要确认的知识点 / 你的薄弱点（诊断完成后换成真结论） -->
   <section class="card" id="sec-path" hidden>
     <h2><span class="num">6</span>接下来需要确认的知识点</h2>
     <div id="path-body"></div>
@@ -62,6 +62,8 @@
 <footer class="site-footer">
   <p>依赖图不是诊断结果：它只说「谁是谁的前置」，不说学生哪里断了。</p>
 </footer>
+<!-- engine.js 只读复用：重建图后调 replay + summarize，一行不改 -->
+<script src="engine.js"></script>
 <script src="route.js"></script>
 <script src="route-page.js"></script>
 </body>

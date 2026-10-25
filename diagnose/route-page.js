@@ -203,9 +203,74 @@
 
   /* ------------------------------------------ ⑥ 接下来需要确认的知识点 */
 
-  function renderPath(path, targetName) {
+  /* 诊断结果写回 route（kanban t_d623773c）。
+   * 分工：读 localStorage 和调 E.summarize() 在这里，判断与文案在 route.js 的 buildResultView()。
+   * 页面层只做两件事：拿到 session+sum 交上去、按结果决定 ⑥ 段显示候选还是真结论。 */
+
+  var LS_SESSION = 'cnmDiagnose.session.v2';   /* 与 app.js:9 一致；只读，绝不删 */
+
+  function readSession() {
+    try {
+      var raw = window.localStorage ? window.localStorage.getItem(LS_SESSION) : null;
+      if (!raw) return null;
+      var s = JSON.parse(raw);
+      return (s && typeof s === 'object' && s.v === 2) ? s : null;
+    } catch (e) { return null; }   /* 存储不可用/内容坏了：当作没有，不影响 ①② */
+  }
+
+  /* 用 engine 的 replay + summarize 复原出结论。answers 是唯一权威（app.js 也是这么恢复的），
+   * 自己算 statusOf 会和 engine 不一致 —— 所以这里一定要复用 engine。 */
+  function computeSummary(session) {
+    if (!session || !window.DiagEngine || !window.D.engineGraph) return null;
+    try {
+      var sess = window.DiagEngine.replay(window.D.engineGraph, session.targets, session.answers || [], {
+        mode: session.mode, limit: session.limit, seed: session.seed, avoid: session.avoid
+      });
+      return window.DiagEngine.summarize(window.D.engineGraph, sess);
+    } catch (e) { return null; }
+  }
+
+  /** 当前定位结果（⑥ 段）对应的知识点 id：第 ④ 段第一个校验通过的候选 */
+  function currentTopicId(verify) {
+    return (verify && verify.ok && verify.kept && verify.kept.length) ? verify.kept[0].id : null;
+  }
+
+  function renderResult(view) {
+    if (!view || !view.ok) return '';
+    var html = '<div class="diag-result stage-' + esc(view.stage) + '">' +
+      '<h3>' + esc(view.title || R.RESULT_TITLE) + '</h3>' +
+      (view.detail || '').split('\n').map(function (line) {
+        return '<p class="' + (view.stage === 'unfinished' ? 'warn-line' : '') + '">' + esc(line) + '</p>';
+      }).join('');
+    if (view.stage === 'roots') {
+      html += '<ul class="plain roots">' + view.roots.map(function (r) {
+        var cav = R.rootCaveat(r);
+        return '<li><strong>' + esc(r.name) + '</strong>' +
+          ' <span class="small muted">' + esc(R.gradeLabel(r.grade)) + '</span>' +
+          (cav ? ' <span class="pill warn">' + esc(cav) + '</span>' : '') + '</li>';
+      }).join('') + '</ul>';
+    }
+    html += '<p class="small muted">' + esc(R.RESULT_NOTE || '') + '</p>';
+    return html + '</div>';
+  }
+
+  function renderPath(path, targetName, view) {
+    var hasRoots = !!(view && view.ok && view.stage === 'roots');
+
+    /* ⑥ 段的标题与开销：有真结论时整段换成「你的薄弱点」，候选列表不再出现 */
+    var h2 = $('sec-path').querySelector('h2');
+    h2.innerHTML = '<span class="num">6</span>' + esc(hasRoots ? R.WEAK_TITLE : R.STRUCTURE_TITLE);
+
+    if (hasRoots) {
+      $('path-body').innerHTML = renderResult(view) +
+        '<p class="small muted">' + esc(view.sectionNote || '') + '</p>';
+      show('sec-path', true);
+      return;
+    }
+
     if (!path || !path.nodes.length) {
-      $('path-body').innerHTML = '<p class="skip">没有可给的路径</p>';
+      $('path-body').innerHTML = '<p class="skip">没有可给的路径</p>' +
+        renderResult(view);
       show('sec-path', true);
       return;
     }
@@ -220,8 +285,19 @@
     }).join('');
     html += '<p class="small muted">' + esc(R.STRUCTURE_FOOTNOTE || '') +
       '（这些节点是「' + esc(targetName || '目标') + '」在图上的前置，不是学生实际断了的地方）。</p>';
+    html += renderResult(view);
     $('path-body').innerHTML = html;
     show('sec-path', true);
+  }
+
+  /** ⑥ 段的唯一入口：没 result 就不显示；有 result 就合并诊断结论一起渲染 */
+  function renderStage6(result, verify) {
+    var session = readSession();
+    var view = R.buildResultView(session, computeSummary(session), currentTopicId(verify));
+    var path = result ? result.path : null;
+    var name = (verify && verify.ok && verify.kept.length) ? verify.kept[0].name : null;
+    if (!result && !(view && view.ok)) { show('sec-path', false); return; }
+    renderPath(path, name, view);
   }
 
   /* ------------------------------------------------------------- 主流程 */
@@ -274,8 +350,7 @@
           show('sec-verify', true);
           $('prereq-body').innerHTML = '<p class="skip">跳过：定位没确定，不给前置链和路径。</p>';
           show('sec-prereq', true);
-          $('path-body').innerHTML = '<p class="skip">跳过：定位没确定，不给路径。宁可空着，也不给一条可能全错的复习路线。</p>';
-          show('sec-path', true);
+          renderStage6(null, null);
           setStatus('网关不可用：①② 已给出，③ 未完成', 'err');
           $('btn-run').disabled = false;
           return;
@@ -286,15 +361,14 @@
         if (!v.ok) {
           $('prereq-body').innerHTML = '<p class="skip">跳过：校验拒绝，不给前置链。</p>';
           show('sec-prereq', true);
-          $('path-body').innerHTML = '<p class="skip">跳过：校验拒绝，不给路径。</p>';
-          show('sec-path', true);
+          renderStage6(null, v);
           setStatus('校验拒绝：分析结果无法定位到知识点', 'err');
           $('btn-run').disabled = false;
           return;
         }
         var pre = R.prerequisites(v.kept[0].id, 2);
         renderPrereq(pre);
-        renderPath(R.buildPath(pre), v.kept[0].name);
+        renderStage6({ path: R.buildPath(pre) }, v);
         setStatus('完成：' + v.kept.length + ' 个候选知识点，路径节点都待测确认', '');
         $('btn-run').disabled = false;
       })
@@ -316,14 +390,33 @@
       fetch('../data/dependencies.json').then(function (r) {
         if (!r.ok) throw new Error('dependencies.json HTTP ' + r.status);
         return r.json();
-      })
+      }),
+      /* 题库可选：缺了（404）也不影响 ①②，只是 engine 回退到 diagnostic_question */
+      fetch('../data/questions.json').then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; })
     ]).then(function (rs) {
       var info = R.setData(rs[0], rs[1]);
+      buildEngineGraph(rs[0], rs[1], rs[2]);
       window.__routeReady = true;
       setStatus('数据已加载：数学知识点 ' + info.topics + ' 个，依赖边 ' + info.dependencies + ' 条');
     }).catch(function (err) {
       setStatus('数据加载失败：' + (err && err.message || err) + '（请用 node scripts/serve.js 起服务后访问）', 'err');
     });
+  }
+
+  /* 给 ⑥ 段的诊断结论准备 engine 图。必须在页面层**重建**，不能读 diagnose 页的 window.D：
+   * 不同页面不共享 window。过滤口径与 app.js loadData 的数学分支一致（数学题、数学依赖边），
+   * 否则 summarize 出来的 weak/roots 会和 diagnose 页里看到的对不上。 */
+  function buildEngineGraph(topics, deps, questions) {
+    if (!window.DiagEngine) return;   /* engine.js 没加载成功：⑥ 段退回纯候选，不报错 */
+    var E = window.DiagEngine;
+    var math = (topics || []).filter(function (t) { return E.subjectOf(t) === 'math'; });
+    var allow = {};
+    math.forEach(function (t) { allow[t.id] = true; });
+    var edges = (deps || []).filter(function (d) { return allow[d.topicId] && allow[d.prerequisiteId]; });
+    var qs = questions ? questions.filter(function (q) { return allow[q.topicId]; }) : null;
+    window.D = window.D || {};
+    window.D.engineGraph = E.buildGraph(math, edges, qs);
   }
 
   $('btn-run').addEventListener('click', run);
