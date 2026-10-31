@@ -945,7 +945,9 @@
       if (q.type === 'choice') {
         card.append(choicesBlock(q, { item: item, readonly: true, correctKey: null, pickedKey: ui.answer }));
       } else {
-        card.append(answerEcho(q, ui.answer, false));
+        /* 用自定义 append：学生「不会」进来时 ui.answer 是空的，answerEcho(…, false) 会返回 null，
+         * 原生 card.append(null) 会把 null 字符串化插成一个文本节点（讲解首屏题目下面那行 "null"）。 */
+        append(card, answerEcho(q, ui.answer, false));
       }
       card.append(explainPanel(item));
     } else if (ui.phase === 'skip') {
@@ -957,7 +959,9 @@
         feedbackBlock(q),
         h('div', { class: 'row' }, h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer('skip'); } }, '下一题')));
     } else {
-      card.append(
+      /* 原生 card.append 会把三目里的 null 字符串化成文本节点（self 阶段、ui.verdict 还空时）。
+       * 自定义 append(el, c) 只吃一个子节点，兄弟节点要放进数组里传；它天生跳过 null。 */
+      append(card, [
         q.type === 'choice'
           ? choicesBlock(q, { item: item, readonly: true, correctKey: answerKeys(q), pickedKey: ui.answer })
           : answerEcho(q, ui.answer),
@@ -967,7 +971,7 @@
         h('div', { class: 'row' },
           h('button', { class: 'good', id: 'btn-right', onclick: function () { finishAnswer('correct'); } }, '对（我做对了）'),
           h('button', { class: 'bad', id: 'btn-wrong', onclick: function () { ui.phase = 'explain'; ui.explainStep = 0; ui.aiSteps = null; ui.aiState = 'idle'; ui.aiRequested = false; renderQuestion(item); } }, '不对'),
-          h('button', { id: 'btn-skip2', onclick: function () { ui.phase = 'explain'; ui.explainStep = 0; ui.aiSteps = null; ui.aiState = 'idle'; ui.aiRequested = false; renderQuestion(item); } }, '不会')));
+          h('button', { id: 'btn-skip2', onclick: function () { ui.phase = 'explain'; ui.explainStep = 0; ui.aiSteps = null; ui.aiState = 'idle'; ui.aiRequested = false; renderQuestion(item); } }, '不会'))]);
     }
 
     card.append(h('div', { class: 'notice' }, '提示：自动判题只是近似的（数字、分数、多个答案会做规范化后比较），一切以参考答案为准；判错了可以手动更正。'));
