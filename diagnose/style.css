@@ -313,6 +313,7 @@ table.log select { min-height: 44px; }
 .funclab-sliders { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-top: 8px; }
 .funclab-slider { display: flex; align-items: center; gap: 6px; font-size: 0.92rem; font-weight: 600; }
 .funclab-slider input[type=range] { width: 130px; }
+.funclab-num { width: 66px; margin-left: 8px; }
 .lab-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; font-size: 0.92rem; }
 @media print { .lab-ask { display: none; } }
 @media print { .funclab { display: none; } }
@@ -365,6 +366,10 @@ table.log select { min-height: 44px; }
 .ask-a.pending { color: var(--muted, #888); font-style: italic; }
 .ask-a.offline { color: var(--warn, #b58900); }
 .ask-input { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--line, #ccc); border-radius: 8px; font-size: 0.95rem; }
+.ask-graph { margin-top: 8px; max-width: 100%; }
+.ask-graph .funclab { max-width: 100%; }
+.ask-graph .funclab-canvas { height: 240px; }
+.ask-graph-formula { font-size: 0.95rem; font-weight: 700; color: var(--brand); margin-bottom: 4px; }
 
 /* ---- 解析公式可读性（O4）：公式段高亮 + 上下标符号显示 ---- */
 .explain, .refans { line-height: 1.65; }

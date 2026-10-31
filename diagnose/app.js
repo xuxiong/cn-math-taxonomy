@@ -1118,12 +1118,26 @@
     const t = D.graph.byId[item.topicId];
     const hist = h('div', { class: 'ask-hist', id: 'ask-hist' });
     (ui.askHistory || []).forEach(function (entry) {
-      hist.append(h('div', { class: 'ask-item' },
+      const rowEl = h('div', { class: 'ask-item' },
         h('div', { class: 'ask-q' }, '你：' + entry.q),
         entry.pending ? h('div', { class: 'ask-a pending' }, 'AI 老师正在想…')
           : entry.from === 'offline'
             ? h('div', { class: 'ask-a offline' }, 'AI 老师暂时离线，没回答上。稍后再问一次试试。')
-            : h('div', { class: 'ask-a' }, '老师：' + entry.a)));
+            : h('div', { class: 'ask-a' }, '老师：' + entry.a));
+      const g = entry.graph;
+      if (g && window.Funclab) {
+        let inst = null;
+        try {
+          inst = window.Funclab.mount(Object.assign({ type: g.type, lab: g.lab, intent: g.intent }, g.params));
+        } catch (err) { console.warn('[explain] 气泡里的画板挂载失败：', err); }
+        if (inst && inst.el) {
+          const box2 = h('div', { class: 'ask-graph' });
+          box2.append(h('div', { class: 'ask-graph-formula' }, '图：' + window.Funclab.formatFormula(Object.assign({ type: g.type }, g.params))));
+          box2.append(inst.el);
+          rowEl.append(box2);
+        }
+      }
+      hist.append(rowEl);
     });
     function sendAsk() {
       const inp = document.getElementById('ask-input');
@@ -1135,8 +1149,13 @@
       renderQuestion(item);
       window.Explain.ask(t, q, ui.answer, steps, text, ui.labDesc).then(function (res) {
         if (tick !== explainTick || !ui || ui.phase !== 'explain') return;
+        let graph = null;
+        try {
+          const v = window.ChatGraph ? window.ChatGraph.verifyChatGraph(res.graph) : { ok: false };
+          graph = v && v.ok ? v : null;   // 校验不过/异常一律当没有图，不提示「画图失败」
+        } catch (err) { graph = null; }
         const entries = (ui.askHistory || []).slice();
-        entries[entries.length - 1] = { q: text, a: res.text, from: res.from };
+        entries[entries.length - 1] = { q: text, a: res.text, from: res.from, graph: graph };
         ui.askHistory = entries;
         ui.askPending = false;
         renderQuestion(item);
