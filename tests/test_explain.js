@@ -7,7 +7,7 @@
  *   2. systemPrompt / askSystemPrompt：包含针对「画板上留白量 / 图上元素」的约束句。
  *   3. 缓存隔离：同一题 有/无 画板 两次 generate 不得互相命中（key = q.id + '|' + 有无画板）。
  *   4. ask 第 6 个参数 labDesc 透传到 llmAsk 的 user 消息。
- *   5. max_tokens 契约：讲解 2048 / 追问 1024（与 test_engine.js 一致，防止误改）。
+ *   5. max_tokens 契约：讲解 2048 / 追问 4096（与 test_engine.js 一致，防止回落到不够的 1024/2048）。
  *
  * 说明：与 test_engine.js 一样，Node 下跑需要把 engine.js 装成 window.DiagEngine。
  */
@@ -166,7 +166,7 @@ testAsync('缓存隔离：同一题 有/无画板 两次 generate 不互相命�
   } finally { m.restore(); }
 });
 
-testAsync('ask：追问请求 max_tokens=1024，且第 6 参 labDesc 透传到 user 消息', async () => {
+testAsync('ask：追问请求 max_tokens=4096（JSON 输出 + reasoning 长尾，JSON 比纯文本多吃 token），且第 6 参 labDesc 透传到 user 消息', async () => {
   const X = loadExplain();
   const steps = [{ kind: 'hint', text: '移项要变号。' }];
   const m = mockLLM('移项就是把项从一边挪到另一边，注意变号。', null);
@@ -175,7 +175,7 @@ testAsync('ask：追问请求 max_tokens=1024，且第 6 参 labDesc 透传到 u
     assert.strictEqual(r.from, 'llm');
     assert.strictEqual(m.calls.length, 1, '应恰好发起一次追问请求');
     const req = m.calls[0];
-    assert.strictEqual(req.max_tokens, 1024, '追问 max_tokens 应为 1024');
+    assert.strictEqual(req.max_tokens, 4096, '追问 max_tokens 应为 4096（防止回落到不够的 1024/2048：JSON 被 reasoning 吃光后 content 为空）');
     assert.deepStrictEqual(req.response_format, { type: 'json_object' }, '追问应要求 JSON 对象输出');
     assert.ok(req.messages[1].content.indexOf('画板：' + DESC) >= 0, '追问 user 消息应含画板行');
     assert.ok(req.messages[1].content.indexOf('学生的问题：什么叫移项？') >= 0, '追问内容应保留');

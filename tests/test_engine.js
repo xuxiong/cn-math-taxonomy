@@ -2355,7 +2355,7 @@ testAsync('Explain.generate：讲解请求 max_tokens = 2048 且 <= 4096（防 1
   } finally { cap.restore(); }
 });
 
-testAsync('Explain.ask：追问请求 max_tokens = 1024 且 <= 4096（防 16384 过度放大）', async () => {
+testAsync('Explain.ask：追问请求 max_tokens = 4096 且 <= 4096（防 16384 过度放大；4096 防回落到不够的 1024/2048）', async () => {
   const X = loadExplain();
   const q = { id: 'mt-2', type: 'numeric', prompt: 'x+2=5', answer: '3' };
   const cap = captureExplainFetch('移项就是把数挪到另一边，注意变号。');
@@ -2363,7 +2363,7 @@ testAsync('Explain.ask：追问请求 max_tokens = 1024 且 <= 4096（防 16384 
     const r = await X.ask(T_A, q, '1', [], '什么叫移项？');
     assert.strictEqual(r.from, 'llm');
     assert.strictEqual(cap.bodies.length, 1, '应捕获 1 个追问请求体');
-    assert.strictEqual(cap.bodies[0].max_tokens, 1024, '追问 max_tokens 应为 1024: ' + cap.bodies[0].max_tokens);
+    assert.strictEqual(cap.bodies[0].max_tokens, 4096, '追问 max_tokens 应为 4096: ' + cap.bodies[0].max_tokens);
     assert.ok(cap.bodies[0].max_tokens <= 4096, '追问 max_tokens 不得超过 4096: ' + cap.bodies[0].max_tokens);
   } finally { cap.restore(); }
 });
@@ -2383,10 +2383,10 @@ test('单一出处：explain.js 内 max_tokens 字面量只出现在常量定义
   assert.deepStrictEqual(offenders, [], '存在裸数字 max_tokens 字面量:\n' + offenders.join('\n'));
 });
 
-test('单一出处：explain.js 定义 EXPLAIN_MAX_TOKENS=2048 与 FOLLOWUP_MAX_TOKENS=1024', () => {
+test('单一出处：explain.js 定义 EXPLAIN_MAX_TOKENS=2048 与 FOLLOWUP_MAX_TOKENS=4096', () => {
   const src = fsExplain.readFileSync(path.join(__dirname, '..', 'diagnose', 'explain.js'), 'utf8');
   assert.ok(/const\s+EXPLAIN_MAX_TOKENS\s*=\s*2048\s*;/.test(src), '应定义 EXPLAIN_MAX_TOKENS = 2048');
-  assert.ok(/const\s+FOLLOWUP_MAX_TOKENS\s*=\s*1024\s*;/.test(src), '应定义 FOLLOWUP_MAX_TOKENS = 1024');
+  assert.ok(/const\s+FOLLOWUP_MAX_TOKENS\s*=\s*4096\s*;/.test(src), '应定义 FOLLOWUP_MAX_TOKENS = 4096（防止回落到不够的 1024/2048）');
 });
 
 /* ============================================ 函数实验室 fromPrompt 解析 */

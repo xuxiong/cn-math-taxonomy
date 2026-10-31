@@ -14,11 +14,20 @@
   const TTL = 5 * 60 * 1000;
 
   /* O3-6：max_tokens 单一出处。
-   * 讲解/追问实测输出 300-800 token 足够 —— 2048/1024 留足余量且不放大计费；
+   * 讲解输出实测 300-800 token 足够 —— 2048 留足余量且不放大计费（追问的预算见下，另行说明）；
    * 不写裸数字，避免「改一处漏一处」（O3-4 探测漏改 max_tokens:100 即此类事故）。
    * 改这两个值之前先看 tests/test_engine.js 的 max_tokens 契约断言。 */
   const EXPLAIN_MAX_TOKENS = 2048;    // 三步讲解（prompt/hint/reveal 的 JSON）
-  const FOLLOWUP_MAX_TOKENS = 1024;   // 讲解中追问（单轮纯文本回答）
+  /* 讲解中追问：单轮，但输出是 JSON 对象 {text, graph|null}（不是纯文本）。
+   * JSON 比纯文本多吃 token（键名、引号、转义 + graph 结构化参数），且推理模型的
+   * reasoning 会先吃预算 —— 正文可能一个字都吐不出来（finish_reason=length、content 空串
+   * → 学生看到「AI 老师暂时离线」）。实测同一 prompt 反复打网关：
+   *   max_tokens=1024：稳定 finish=length、content 空（本卡根因）
+   *   max_tokens=2048：仍有 3/10 次被 reasoning 吃光（completion=2048、content 空）
+   *   max_tokens=4096：37/37 次 finish=stop、JSON 完整（completion 448–3342）
+   * 取 4096：reasoning 长度有长尾，2048 不够稳；max_tokens 只是上限、按实际用量计费，
+   * 抬高上限不额外花钱，且 <= 4096 是 test_engine.js 既有的防过度放大红线。 */
+  const FOLLOWUP_MAX_TOKENS = 4096;
 
   const cache = new Map();   // qid -> {ts, steps, from}
 
@@ -164,7 +173,7 @@
       + '\n\n学生的问题：' + question;
   }
 
-  /* 截断兜底：原因是推理模型把 1024 token 花在 reasoning 上，网关会截断 JSON，
+  /* 截断兜底：原因是推理模型把 token 预算花在 reasoning 上，网关会截断 JSON，
    * 半截内容如 {"text":"你问 丢掉闭合括号，JSON.parse 必然失败。
    * 这里只从 raw 里抠 text 字段已写出的那半句；扣不出东西返回空串，由调用方沿用原样。
    * 截断场景下 graph 一律为 null —— 绝不从半截 JSON 里猜图。 */
