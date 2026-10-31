@@ -25,7 +25,8 @@
    *   max_tokens=1024：稳定 finish=length、content 空（本卡根因）
    *   max_tokens=2048：仍有 3/10 次被 reasoning 吃光（completion=2048、content 空）
    *   max_tokens=4096：37/37 次 finish=stop、JSON 完整（completion 448–3342）
-   * 取 4096：reasoning 长度有长尾，2048 不够稳；max_tokens 只是上限、按实际用量计费，
+   * 取 4096：reasoning 长度有长尾 —— 2048 多数情况够（另有一次同 prompt 量测 completion=1080、
+   * 约 2 倍余量），但长尾下会被吃光，故取 4096 换稳定；max_tokens 只是上限、按实际用量计费，
    * 抬高上限不额外花钱，且 <= 4096 是 test_engine.js 既有的防过度放大红线。 */
   const FOLLOWUP_MAX_TOKENS = 4096;
 
