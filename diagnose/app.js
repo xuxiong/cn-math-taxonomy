@@ -41,7 +41,7 @@
   let pracPath = null;     // 路径练习（一次只出一关）：{queue:[topicId], idx, results:[{topicId, ok, n}]}，null = 不走路径
   let pracResult = null;   // 练习结束返回结果页带上 {topicId, ok, n}
   let pracLoading = null;  // O3 LLM 变式异步加载：{topicId} 非 null 时渲染 loading
-  let ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null };
+  let ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, askScroll: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null };
   let subject = 'math';
   let startQuery = '';
   let startStage = '';
@@ -167,7 +167,7 @@
     if (v.indexOf(qid) < 0) { v.push(qid); lsSet(LS_SEEN, v); }
   }
   function newSeed() { return seedParam != null ? seedParam : Math.random().toString(36).slice(2, 10); }
-  function resetUi() { ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null }; }
+  function resetUi() { ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, askScroll: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null }; }
   function clearRoot() { while (root.firstChild) root.removeChild(root.firstChild); }
   function teardownPath() {
     pathToken++;
@@ -880,7 +880,7 @@
     const t = D.graph.byId[id];
     const pr = !!prac;   // T3 练习模式
     const key = id + '#' + item.attempt;
-    if (ui.key !== key) ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null };
+    if (ui.key !== key) ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, askScroll: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null };
     const n = pr ? prac.idx : session.answers.length;
     const card = h('div', { class: 'card' });
     const onPath = pr && pathPracticeExists();
@@ -981,6 +981,13 @@
     if (demo) page.append(demoBanner());
     page.append(card);
     show(withRouteBack(page));
+    // 必须放在 show() 之后：show() 内有 window.scrollTo(0,0) 会把页面拉回顶部，且此时节点还没进 document，提前调用 scrollIntoView 无效。
+    if (ui.askScroll) {
+      const items = page.querySelectorAll('.ask-item');
+      const last = items.length ? items[items.length - 1] : null;
+      if (last) last.scrollIntoView({ block: 'start' });
+      ui.askScroll = false;   // 用完即清：只有「刚提问」「刚答完」这两次渲染滚动，历史气泡/翻步骤/切题一律不滚
+    }
     const inp = document.getElementById('ans');
     if (inp && inp.setSelectionRange && inp.tagName === 'INPUT') { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
     else if (inp) inp.focus();
@@ -1145,6 +1152,7 @@
       if (!text || ui.askPending) return;
       ui.askHistory = (ui.askHistory || []).concat([{ q: text, pending: true }]);
       ui.askPending = true;
+      ui.askScroll = true;   // 刚提问：本次渲染后滚到追问区最后一条，让用户看到自己发的内容
       const tick = ++explainTick;   // 复用竞态令牌：回答只属于当前面板
       renderQuestion(item);
       window.Explain.ask(t, q, ui.answer, steps, text, ui.labDesc).then(function (res) {
@@ -1158,6 +1166,7 @@
         entries[entries.length - 1] = { q: text, a: res.text, from: res.from, graph: graph };
         ui.askHistory = entries;
         ui.askPending = false;
+        ui.askScroll = true;   // 刚答完：本次渲染后滚到这条问答，否则答案落在折叠线以下看不见
         renderQuestion(item);
       });
     }
