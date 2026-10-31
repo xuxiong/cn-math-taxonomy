@@ -1585,6 +1585,87 @@ test('app.js：练习按钮文案不再硬编码「练习这 3 题」', () => {
   assert.ok(appSrc.indexOf('练习这 3 题') < 0, 'app.js 不应再出现硬编码的练习这 3 题');
 });
 
+/* 题面卡片不许被灌进字面量 null。
+ * 原生 Element.append(null) 会把 null 字符串化插成一个文本节点，页面上就多一行 "null"
+ * （实测：?target=cnm_235 →「不会」→ 讲解首屏，题目下面那行）；app.js 里自定义的
+ * append(el, c) 有 `if (c == null || c === false) return;`，所以挂到 .card 上的东西必须走它。
+ *
+ * 测试里没有 DOM 基座（不引 jsdom），所以做源码级守卫：取出每个 card.append(…) 的实参文本，
+ * 先把 null-safe 的片段抹掉 —— h(…) 调用的参数（h 内部走自定义 append）、对象字面量 {…}
+ * —— 再看剩下的骨架里有没有
+ *   1. 三目里裸的 `: null`
+ *   2. 直接喂给原生 append 的 answerEcho(…, false)（没答过时它返回 null）
+ * 这两条正好是线上那两处 "null" 的形状；不传 showRef 的 answerEcho（skip/auto 阶段）一定
+ * 带「正确答案」那一半，不会是 null，所以不报。 */
+function cardAppendArgTexts(src) {
+  const out = [];
+  const needle = 'card.append(';
+  let idx = src.indexOf(needle);
+  while (idx >= 0) {
+    let i = idx + needle.length, depth = 0, args = '';
+    for (; i < src.length; i++) {
+      const ch = src[i];
+      if (ch === '(' || ch === '[' || ch === '{') { depth++; args += ch; continue; }
+      if (ch === ')' || ch === ']' || ch === '}') {
+        if (depth === 0 && ch === ')') break;
+        depth--; args += ch; continue;
+      }
+      args += ch;
+    }
+    out.push(args);
+    idx = src.indexOf(needle, i);
+  }
+  return out;
+}
+
+/* 抹掉 null-safe 片段：h(…) / append(…) 的整体实参，以及 {…} 对象字面量 */
+function stripNullSafeSpans(s) {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '{') {                     // 对象字面量（choicesBlock 的 opts 等）
+      let d = 0;
+      for (; i < s.length; i++) {
+        if (s[i] === '{') d++;
+        else if (s[i] === '}') { d--; if (d === 0) break; }
+      }
+      out += ' OBJ ';
+      continue;
+    }
+    if (ch === '(') {                     // 调用：看左括号前面是不是 h / append
+      const m = out.match(/([A-Za-z_$][\w$]*)\s*$/);
+      if (m && (m[1] === 'h' || m[1] === 'append')) {
+        let d = 0;
+        for (; i < s.length; i++) {
+          if (s[i] === '(') d++;
+          else if (s[i] === ')') { d--; if (d === 0) break; }
+        }
+        out += ' SAFE ';
+        continue;
+      }
+    }
+    out += ch;
+  }
+  return out;
+}
+
+test('app.js：题面卡片不用原生 append 吃三目里的 null（讲解/自评首屏那行 "null"）', () => {
+  const appSrc = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'app.js'), 'utf8');
+  const calls = cardAppendArgTexts(appSrc);
+  assert.ok(calls.length >= 8, 'card.append 调用点只找到 ' + calls.length + ' 处，源码结构变了就更新本测试');
+  const bad = [];
+  calls.forEach((args, ci) => {
+    const skeleton = stripNullSafeSpans(args);
+    if (/:\s*null\b/.test(skeleton)) {
+      bad.push('第 ' + (ci + 1) + ' 个 card.append 把三目里的 null 当实参：' + args.trim().slice(0, 100).replace(/\s+/g, ' '));
+    }
+    if (/answerEcho\s*\([^()]*,\s*false\s*\)/.test(skeleton)) {
+      bad.push('第 ' + (ci + 1) + ' 个 card.append 直接吃 answerEcho(…, false)（没答过时返回 null）');
+    }
+  });
+  assert.deepStrictEqual(bad, [], '原生 append 会把 null 字符串化成文本节点：\n  ' + bad.join('\n  '));
+});
+
 /* ------------------------------------------------------------ studentAdvice（学习小结） */
 function mkSum(extra) {
   return Object.assign({
