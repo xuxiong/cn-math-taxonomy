@@ -1861,7 +1861,9 @@
     const ctrl = document.createElement('div');
     ctrl.className = 'funclab-sliders';
     const sliders = {};
+    const nums = {};            // 数字输入框（step=any，学生可填任意小数）
     const sliderVals = {};      // P 卡：滑块读数 span（没拖动时显示 ?）
+    let syncing = false;        // 数字框驱动重绘时为 true，防止把半截输入回写进数字框
     def.sliders.forEach(function (sd) {
       start[sd.key] = p[sd.key];
       const row = document.createElement('label');
@@ -1877,21 +1879,53 @@
       input.type = 'range';
       input.min = sd.min; input.max = sd.max; input.step = sd.step;
       input.value = p[sd.key];
+      const num = document.createElement('input');
+      num.type = 'number';
+      num.step = 'any';           // 绝不抄滑块的 step：否则 0.13 会被浏览器静默吸附成 0.15
+      num.min = sd.min; num.max = sd.max;
+      num.className = 'funclab-num';
+      num.placeholder = '填数';
+      num.value = '';             // 绝不预填真值：只有学生动过才显数
       input.addEventListener('input', function () {
-        p[sd.key] = parseFloat(input.value);
-        val.textContent = fmt(p[sd.key]);
-        info.textContent = formatFormula(p);
-        moved = true;                 // 曲线已不是题面那条：文案要提醒，图上真值不再适用
-        note.textContent = noteTextOf();
-        syncCheck();                  // 参数变了 → 清掉旧作答，避免拿旧答案判新曲线
-        draw();
+        if (syncing) return;
+        setParam(sd.key, parseFloat(input.value));
+        if (!syncing) num.value = fmt(p[sd.key]);   // 拖滑块 → 数字框跟着显示该值
+      });
+      num.addEventListener('input', function () {
+        const parsed = parseFloat(num.value);
+        /* 空值 / 只敲了 - / NaN：不重绘、不写 p、不报错，保留学生正在敲的文本 */
+        if (num.value == null || String(num.value).trim() === '' || !isFinite(parsed)) return;
+        syncing = true;
+        const clamped = setParam(sd.key, parsed);
+        /* 只在被夹范围改了值时才回写；否则学生刚敲的小数点/尾随 0 会被抹掉 */
+        if (clamped !== parsed) num.value = fmt(clamped);
+        syncing = false;
       });
       row.appendChild(val);
       row.appendChild(input);
+      row.appendChild(num);
       sliders[sd.key] = input;
+      nums[sd.key] = num;
       sliderVals[sd.key] = val;
       ctrl.appendChild(row);
     });
+
+    /** 夹到该 key 的 min/max 后写 p，并走一次既有重绘路径；返回夹后的值。 */
+    function setParam(key, value) {
+      let v = value;
+      const sd = def.sliders.filter(function (s) { return s.key === key; })[0];
+      if (sd) v = Math.max(sd.min, Math.min(sd.max, v));
+      p[key] = v;
+      if (sliders[key]) sliders[key].value = v;   // 填数字 → 滑块跳到该位置
+      sliderVals[key].textContent = fmt(p[key]);
+      info.textContent = formatFormula(p);
+      moved = true;                 // 曲线已不是题面那条：文案要提醒，图上真值不再适用
+      note.textContent = noteTextOf();
+      syncCheck();                  // 参数变了 → 清掉旧作答，避免拿旧答案判新曲线
+      draw();
+      return v;
+    }
+
     const resetBtn = document.createElement('button');
     resetBtn.type = 'button';
     resetBtn.className = 'small';
@@ -1904,6 +1938,7 @@
       });
       /* 回到题目参数 → 读数重新变回 ?（又是「题面那条曲线」，值要学生自己算） */
       Object.keys(sliderVals).forEach(function (k) { sliderVals[k].textContent = '?'; });
+      Object.keys(nums).forEach(function (k) { nums[k].value = ''; });   // 数字框恢复空 + placeholder
       moved = false;
       note.textContent = noteTextOf();
       syncCheck();
@@ -2421,6 +2456,7 @@
 
   return {
     fromPrompt: fromPrompt, topicSupported: topicSupported, topicKind: topicKind,
+    TYPE_DEF: TYPE_DEF,
     labFor: labFor, labForScene: labForScene, baseOf: baseOf, mount: mount, formatFormula: formatFormula,
     /* 任务一：能力清单 + intent 文案（匹配层/审计脚本/测试的唯一来源） */
     CAPABILITIES: CAPABILITIES, CAP_TYPE: CAP_TYPE, NOTE_BY_INTENT: NOTE_BY_INTENT,

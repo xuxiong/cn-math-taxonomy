@@ -14,11 +14,21 @@
   const TTL = 5 * 60 * 1000;
 
   /* O3-6：max_tokens 单一出处。
-   * 讲解/追问实测输出 300-800 token 足够 —— 2048/1024 留足余量且不放大计费；
+   * 讲解输出实测 300-800 token 足够 —— 2048 留足余量且不放大计费（追问的预算见下，另行说明）；
    * 不写裸数字，避免「改一处漏一处」（O3-4 探测漏改 max_tokens:100 即此类事故）。
    * 改这两个值之前先看 tests/test_engine.js 的 max_tokens 契约断言。 */
   const EXPLAIN_MAX_TOKENS = 2048;    // 三步讲解（prompt/hint/reveal 的 JSON）
-  const FOLLOWUP_MAX_TOKENS = 1024;   // 讲解中追问（单轮纯文本回答）
+  /* 讲解中追问：单轮，但输出是 JSON 对象 {text, graph|null}（不是纯文本）。
+   * JSON 比纯文本多吃 token（键名、引号、转义 + graph 结构化参数），且推理模型的
+   * reasoning 会先吃预算 —— 正文可能一个字都吐不出来（finish_reason=length、content 空串
+   * → 学生看到「AI 老师暂时离线」）。实测同一 prompt 反复打网关：
+   *   max_tokens=1024：稳定 finish=length、content 空（本卡根因）
+   *   max_tokens=2048：仍有 3/10 次被 reasoning 吃光（completion=2048、content 空）
+   *   max_tokens=4096：37/37 次 finish=stop、JSON 完整（completion 448–3342）
+   * 取 4096：reasoning 长度有长尾 —— 2048 多数情况够（另有一次同 prompt 量测 completion=1080、
+   * 约 2 倍余量），但长尾下会被吃光，故取 4096 换稳定；max_tokens 只是上限、按实际用量计费，
+   * 抬高上限不额外花钱，且 <= 4096 是 test_engine.js 既有的防过度放大红线。 */
+  const FOLLOWUP_MAX_TOKENS = 4096;
 
   const cache = new Map();   // qid -> {ts, steps, from}
 
@@ -113,17 +123,40 @@
   /* ---------------- T3.5 追问（讲解中提问，AI 老师单轮答疑） ---------------- */
   const STEP_LABEL = { prompt: '第 1 步 引导', hint: '第 2 步 提示', reveal: '第 3 步 解析' };
 
+  /* 画板能力清单：运行时从 Funclab.CAPABILITIES 生成（禁止在 prompt 里另抄一份）。
+   * Funclab 未加载 / 能力清单为空时返回空串，由调用方降级为「无可用画板 → graph 填 null」。 */
+  function capabilityListText() {
+    const F = global.Funclab;
+    if (!F || !F.CAPABILITIES) return '';
+    return Object.keys(F.CAPABILITIES).map(function (name) {
+      const cap = F.CAPABILITIES[name] || {};
+      const type = (F.CAP_TYPE && F.CAP_TYPE[name]) || cap.type || '';
+      const can = (cap.canAnswer || []).join(' / ');
+      const params = (cap.params || []).join(',');
+      return '- ' + name + '（type=' + type + '）：能回答 ' + can + '；参数 ' + params;
+    }).join('\n');
+  }
+
   function askSystemPrompt() {
+    const caps = capabilityListText();
+    const capBlock = caps
+      ? '可用画板（lab 只能取下面这些名字）：\n' + caps
+      : '当前没有可用画板：graph 一律填 null。';
     return '你是人教版初中数学的一对一辅导老师，学生基础薄弱，正盯着他做错的一道题看讲解。'
       + '学生在提问，你要：'
       + '1) 直接回答他问的那个点，讲清楚、口语化、简短，贴合初中生；'
       + '2) 如果问题本质是「这道题怎么做/答案是多少」，沿用苏格拉底法引导他自己算，不要直接给最终答案；'
       + '3) 如果问题是对概念的疑问（如「什么叫移项」「为什么去括号要变号」），直接解释，可以结合当前题目举例；'
-      + '4) 不要输出 JSON 或任何标记，只输出回答文本；'
+      + '4) 输出一个 JSON 对象，只有 text 和 graph 两个字段，不要输出 JSON 以外的任何内容；text 是给学生看的正文。格式：{"text":"回答正文（纯文本）","graph":null}；'
+      + '需要画图时 graph 为对象，例：{"text":"回答正文","graph":{"type":"quadratic","lab":"quadratic-vertex","intent":"最小值","params":{"a":1,"h":0,"k":3}}}；'
       + '5) 回答是纯文本，禁止 Markdown（不要用 **、*、`、#、> 等符号），公式直接用文字写；'
       + '6) 不要写任何反斜杠命令（如 \sqrt、\frac 都不要用），根号用 √（如 2±√5）、分数用斜杠（如 1/2）。'
       + '7) 回答时如果涉及图，必须以「画板」这段描述为准。描述里说图上有什么，你才能说有；描述里没提到的元素，不要说它存在或不存在。图上是虚线还是实线、有没有箭头，一律照描述说。'
-      + '8) 画板上刻意留白的量（描述里标为「留白」或「?」）不许你直接说出数值——哪怕前面「标准解析」「讲解进度」里已经写了这个数，学生问起来也只能引导他去看图、自己算，不许代他读出。';
+      + '8) 画板上刻意留白的量（描述里标为「留白」或「?」）不许你直接说出数值——哪怕前面「标准解析」「讲解进度」里已经写了这个数，学生问起来也只能引导他去看图、自己算，不许代他读出。'
+      + '9) graph.params 必须是学生这次问的那个函数的真实系数，不许为了「凑一个能画的参数」改动函数本身。'
+      + '10) 你自己指定要画的新图，它的顶点坐标、最大值/最小值同样不许在 text 里说出具体数值——和题面画板同一条纪律；学生问「x 是多少」，引导他去看图上的落点或自己算，不代他读出。也不要用「a=…、h=…、k=…」这种列出顶点式系数的方式把数值报出来（h 就是顶点横坐标、k 就是最值）；函数本身照学生问的原样写即可。'
+      + '11) lab 只能从下面给定的能力清单里选；清单里没有合适的就填 null，不许自创。\n' + capBlock + '\n'
+      + '12) user 消息里的「画板：」段落（ui.labDesc）是题面画板的描述，和这次追问要画的新图不是一回事；学生问的是题面之外的函数时，照样要给 graph，不要因为「题面画板已经画了」就不给。';
   }
 
   function askUserPrompt(topic, q, userAnswer, steps, question, labDesc) {
@@ -141,6 +174,18 @@
       + '\n\n学生的问题：' + question;
   }
 
+  /* 截断兜底：原因是推理模型把 token 预算花在 reasoning 上，网关会截断 JSON，
+   * 半截内容如 {"text":"你问 丢掉闭合括号，JSON.parse 必然失败。
+   * 这里只从 raw 里抠 text 字段已写出的那半句；扣不出东西返回空串，由调用方沿用原样。
+   * 截断场景下 graph 一律为 null —— 绝不从半截 JSON 里猜图。 */
+  function salvageText(raw) {
+    const mm = String(raw || '').match(/"text"\s*:\s*"((?:[^"\\]|\\.)*)/);
+    if (!mm) return '';
+    return mm[1].replace(/\\(["\\n])/g, function (_m, ch) {
+      return ch === 'n' ? '\n' : ch;   // \" -> "、\\ -> \、\n -> 换行
+    });
+  }
+
   function llmAsk(topic, q, userAnswer, steps, question, labDesc) {
     const body = {
       model: MODEL,
@@ -149,7 +194,8 @@
         { role: 'user', content: askUserPrompt(topic, q, userAnswer, steps, question, labDesc) }
       ],
       max_tokens: FOLLOWUP_MAX_TOKENS,
-      temperature: 0.5
+      temperature: 0.5,
+      response_format: { type: 'json_object' }
     };
     return fetch(PROXY, {
       method: 'POST',
@@ -160,19 +206,39 @@
       return resp.json();
     }).then(function (data) {
       const c = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-      const text = cleanMarkdown(c);
-      if (!text) throw new Error('llm empty');
-      return text;
+      const raw = c == null ? '' : String(c);
+      let text = raw;
+      let graph = null;
+      const m = raw.match(/\{[\s\S]*\}/);
+      if (m) {
+        try {
+          const j = JSON.parse(m[0]);
+          text = (j && j.text != null) ? String(j.text) : '';
+          graph = (j && j.graph && typeof j.graph === 'object' && !Array.isArray(j.graph)) ? j.graph : null;
+        } catch (e) {
+          /* 宽松兜底：不是合法 JSON 就把整段 content 当正文，不 throw；
+           * 但截断场景要先把 text 半句抠出来，别把 '"text":"你问' 当正文给学生看 */
+          text = salvageText(raw) || raw;
+          graph = null;
+        }
+      } else if (raw.trim().charAt(0) === '{') {
+        /* 有 '{' 却没有闭合 '}' —— token 被截断，同样只展示 text 半句 */
+        text = salvageText(raw) || raw;
+        graph = null;
+      }
+      const cleaned = cleanMarkdown(text);
+      if (!cleaned) throw new Error('llm empty');
+      return { text: cleaned, graph: graph };
     });
   }
 
-  /** 讲解中追问（单轮）。返回 Promise<{text, from: 'llm'|'offline'}>，永不 reject：
-   *   llm    —— AI 老师正常回答
-   *   offline—— 网关不可用，text 为 null（UI 显示引导语） */
+  /** 讲解中追问（单轮）。返回 Promise<{text, graph, from: 'llm'|'offline'}>，永不 reject：
+   *   llm    —— AI 老师正常回答（graph 为校验前的原始对象，由 ChatGraph 校验后再挂图）
+   *   offline—— 网关不可用，text/graph 均为 null（UI 显示引导语） */
   function ask(topic, q, userAnswer, steps, question, labDesc) {
     return llmAsk(topic, q, userAnswer, steps, question, labDesc)
-      .then(function (text) { return { text: text, from: 'llm' }; })
-      .catch(function () { return { text: null, from: 'offline' }; });
+      .then(function (res) { return { text: res.text, graph: res.graph, from: 'llm' }; })
+      .catch(function () { return { text: null, graph: null, from: 'offline' }; });
   }
 
   /** reveal 里声明的最终解值是否与标准答案一致（O2）。
