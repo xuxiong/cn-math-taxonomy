@@ -314,17 +314,22 @@ test('app.js：练习入口先加载变式模块（模块顶层不再抓引用�
 
 /* ---------------------------------------------------------------- 6. sw.js 预热 */
 
-test('sw.js：预热清单覆盖所有被移出的脚本，且不塞进 CORE', function () {
+test('sw.js：被移出的懒加载脚本一律不进预热清单，也绝不进 CORE', function () {
   const core = SW.slice(SW.indexOf('var CORE = ['), SW.indexOf('];', SW.indexOf('var CORE = [')) + 2);
+  const rest = SW.replace(core, '');
   MOVED.forEach(function (p) {
     const key = swPath(p);
-    assert.ok(SW.indexOf("'" + key + "'") >= 0, 'sw.js 预热清单缺 ' + key + '（离线二次访问会 404）');
     assert.strictEqual(core.indexOf("'" + key + "'"), -1, key + ' 不许进 CORE（install 必须几秒内装完）');
+    /* 卡 t_c84bc026：预热预算砍到 ≤150KB。这些脚本（funclab 41KB gz、geomlab 29KB gz、
+     * cytoscape 117KB gz、dagre 65KB gz…）全部改成运行时按需取 —— 页面首次请求就会由
+     * staleWhileRevalidate / networkFirst 写进缓存，所以「预热要覆盖它们」这条老断言
+     * 被反过来守：不许再进预热清单（否则 1043KB 又回来了）。 */
+    assert.strictEqual(rest.indexOf("'" + key + "'"), -1, key + ' 不许再进预热清单（预热预算 ≤150KB，见 test_sw_preheat.js）');
   });
-  /* A+B 那张卡要求「不改 VERSION」；C1（首屏数据瘦身，topics-lite）把数据文件集合改了，
-   * 按 sw.js 的约定必须升版本让老缓存失效，所以这里的字面量跟着 v6 → v7 → v8（题库不再预热，
-   * 仍是一条有效断言，而不是删掉/skip）。当前版本由 test_data_split.js 再守一遍。 */
-  assert.ok(/var VERSION = 'v8';/.test(SW), 'VERSION 应已是 v8（数据文件集合变了，老缓存必须失效）');
+  /* A+B 那张卡要求「不改 VERSION」；C1（首屏数据瘦身）与 t_c84bc026（预热预算）都把清单
+   * 改了，按 sw.js 的约定必须升版本让老缓存失效，所以这里的字面量跟着 v6 → v7 → v8 → v9
+   * （仍是一条有效断言，而不是删掉/skip）。当前版本由 test_sw_preheat.js 再守一遍。 */
+  assert.ok(/var VERSION = 'v9';/.test(SW), 'VERSION 应已是 v9（预热清单变了，老缓存必须失效）');
 });
 
 /* ---------------------------------------------------------------- 7. 自检：测试真的会红 */
