@@ -10,7 +10,7 @@
  *
  * 覆盖：
  *   sw.js
- *     1. VERSION 已是 v6（旧缓存靠它自动清掉）
+ *     1. VERSION 已是 v7（旧缓存靠它自动清掉）
  *     2. install 段内不再出现 cache.addAll(SHELL / cache.addAll(DATA
  *     3. 存在 CORE 极小核心列表且条目 ≤ 6
  *     4. fetch 事件里三条策略分支仍都在（navigate / json-png-svg / 其它）
@@ -65,8 +65,8 @@ function section(src, kind) {
 }
 
 /* ---------------------------------------------------------------- sw.js */
-test('sw.js：VERSION 已是 v6（旧 cnm-pwa-v5 缓存靠它清掉）', function () {
-  assert.ok(/var VERSION = 'v6';/.test(SW), 'VERSION 应该是 v6');
+test('sw.js：VERSION 已是 v7（旧 cnm-pwa-v5 缓存靠它清掉）', function () {
+  assert.ok(/var VERSION = 'v7';/.test(SW), 'VERSION 应该是 v7');
   assert.strictEqual(SW.indexOf("VERSION = 'v5'"), -1, 'VERSION 不应再是 v5');
 });
 

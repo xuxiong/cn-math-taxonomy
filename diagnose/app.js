@@ -87,6 +87,22 @@
   let shareBlobUrl = null;
   let shareToken = 0;
 
+  /* 三阶段数据：首屏只等 topics-lite + id-aliases，其余按需取。
+   * 每个「按需」都是一次性 Promise，模块级缓存（见 loadData 下面的 ensure* 三兄弟）。 */
+  let graphQuestions = null;     // 题库到货后缓存一份，重建图时复用
+  let depsLoaded = false;        // 阶段 2：先修关系已到货
+  let depsPromise = null;
+  let fullTopicsLoaded = false;  // 阶段 2：全量 topics.json 的字段已补进 D.topics
+  let fullTopicsPromise = null;
+  let fullTopicsFailed = false;  // 取失败：占位文字改成「载入失败」而不是无限「正在载入…」
+  let standardsLoaded = false;   // 阶段 3：课标条目正文已到货
+  let standardsPromise = null;
+  let standardsFailed = false;
+  let questionsSettled = false;  // 题库定案（到货或失败）：判断「题源是否还在路上」的一半
+  let questionsPromise = null;   // 题库加载的一次性 Promise（不改变发起时机，只是让等待方可 await）
+  let pendingStart = null;       // 题源还没到货就点了目标：把会话参数挂起，数据到货后自动重开
+  let flowPending = false;       // 已经在等题源（防止连点两次叠出两个会话）
+
   /* ------------------------------------------------------------ 小工具 */
   function h(tag, attrs) {
     const el = document.createElement(tag);
@@ -301,22 +317,232 @@
   }
 
   /* ------------------------------------------------------------ 数据 */
-  /* 首屏数据（阶段 1）：只等这四份（并行，约 520KB）。题库不在首屏链上，见 loadQuestions()。 */
+  /* 首屏数据（阶段 1，唯一阻挡首屏的请求）：只等 topics-lite + id-aliases（约 60KB gzip）。
+   * 另外三份都挪出首屏链：
+   *   - dependencies.json（114KB）      → ensureDeps()，选中知识点后、出题前才等（阶段 2）
+   *   - topics.json 的说明类字段（347KB）→ ensureFullTopics()，同一时机后台取，到货原地补字段（阶段 2）
+   *   - cn-curriculum-standards.json    → ensureStandards()，进结果页 / 课标对照才取（阶段 3）
+   * 题库不在首屏链上，见 loadQuestions()。 */
   async function loadData() {
-    const urls = ['../data/topics.json', '../data/dependencies.json', '../data/cn-curriculum-standards.json', '../data/id-aliases.json'];
+    const urls = ['../data/topics-lite.json', '../data/id-aliases.json'];
     const rs = await Promise.all(urls.map(function (u) { return fetch(u); }));
     rs.forEach(function (r, i) { if (!r.ok) throw new Error(urls[i] + ' → HTTP ' + r.status); });
     const js = await Promise.all(rs.map(function (r) { return r.json(); }));
     const topics = js[0].filter(function (t) { return E.subjectOf(t) === subject; });
-    const allow = {};
-    topics.forEach(function (t) { allow[t.id] = true; });
-    const deps = js[1].filter(function (d) { return allow[d.topicId] && allow[d.prerequisiteId]; });
-    const stdById = {};
-    js[2].items.forEach(function (x) { stdById[x.id] = x; });
+    // 先修关系先留空：图照样能用（只是暂时不回溯），选中知识点后由 ensureDeps() 补齐再重建
+    const deps = [];
     // 题库还没有：buildGraph 会为每个知识点回退到 topics.json 的 diagnostic_question
     const graph = E.buildGraph(topics, deps, null);
-    D = { topics: topics, deps: deps, stdById: stdById, graph: graph, tree: buildTree(topics), aliases: (js[3] && js[3].aliases) || {} };
-    loadQuestions();   // 阶段 2：后台加载，不 await —— 首屏立刻能渲染
+    D = { topics: topics, deps: deps, stdById: {}, graph: graph, tree: buildTree(topics), aliases: (js[1] && js[1].aliases) || {} };
+    questionsPromise = loadQuestions();   // 题库仍在首屏之后立刻后台加载（时序与 A+B 一致，只是把 Promise 存下来）
+  }
+
+  /* 纯函数（Node 可直测）：这份数据快照上，这些目标还问得出题吗？
+   * 为什么需要它：lite 里没有 diagnostic_question，题库又可能还在路上，
+   * 这时候开会话 → E.nextItem 立刻 null → 会话一题没问就收敛成 0 题结果页。
+   * 所以「点进流程」之前必须先问这一句（见 ensureFlowReady / startSession）。 */
+  function askable(Eg, topics, deps, questions, targets, opts) {
+    if (!Eg || !Array.isArray(topics) || !topics.length) return false;
+    if (!Array.isArray(targets) || !targets.length) return false;
+    try {
+      const g = Eg.buildGraph(topics, deps || [], questions || null);
+      const s = Eg.createSession(g, targets, opts || {});
+      return !!Eg.nextItem(g, s);
+    } catch (e) {
+      return false;   // 目标不在图里等：当作问不出题
+    }
+  }
+
+  function sessionOpts(limit, mode) {
+    const st = getSettings();
+    const screen = mode === 'screen';
+    return {
+      mode: screen ? 'screen' : 'target',
+      limit: limit || (screen ? st.screenLimit : st.limit),
+      confirm: st.confirm,
+      seed: 'probe'
+    };
+  }
+
+  function flowAskable(targets, limit, mode) {
+    if (!D) return false;
+    return askable(E, D.topics, D.deps, graphQuestions, targets, sessionOpts(limit, mode));
+  }
+
+  /* 两份题源（题库 questions.json / 全量 topics 的 diagnostic_question）都定案了吗？
+   * 未定案 = 还有一份在路上 → 这时候不给孩子看结果页，显示「题目还在载入，稍等…」。 */
+  function questionSourcesSettled() {
+    return questionsSettled && (fullTopicsLoaded || fullTopicsFailed);
+  }
+
+  /* 重建图。D.topics 里始终是同一批对象（字段补齐是原地完成的），所以重建只换索引与先修/题库。 */
+  function rebuildGraph() {
+    if (!D) return;
+    D.graph = E.buildGraph(D.topics, D.deps, graphQuestions);
+    D.tree = buildTree(D.topics);
+  }
+
+  /* 阶段 2a：先修关系。取不到就降级 —— 图里没有先修边，结果页的「先修回溯」不工作，
+   * 但孩子照样能做题（界面上本来就有这条兜底）。失败下一次进流程再试。 */
+  function ensureDeps() {
+    if (depsLoaded) return Promise.resolve(true);
+    if (depsPromise) return depsPromise;
+    depsPromise = (async function () {
+      try {
+        const r = await fetch('../data/dependencies.json');
+        if (!r.ok) return false;
+        const all = await r.json();
+        if (!Array.isArray(all)) return false;
+        const allow = {};
+        D.topics.forEach(function (t) { allow[t.id] = true; });
+        D.deps = all.filter(function (d) { return d && allow[d.topicId] && allow[d.prerequisiteId]; });
+        depsLoaded = true;
+        rebuildGraph();
+        return true;
+      } catch (e) {
+        return false;   // 先修数据坏了：静默降级，不挡出题
+      }
+    })();
+    depsPromise.then(function (ok) { if (!ok) depsPromise = null; });
+    return depsPromise;
+  }
+
+  /* 阶段 2b：全量 topics.json（347KB）只取一次，把 lite 里没有的字段原地补进 D.topics。
+   * 只补缺口、不覆盖 lite 已有字段；补完重建一次图（diagnostic_question 回退题要靠它），
+   * 再原地刷新正在显示「正在载入说明…」的节点 —— 不整页重绘，界面不会闪。 */
+  function ensureFullTopics() {
+    if (fullTopicsLoaded) return Promise.resolve(true);
+    if (fullTopicsPromise) return fullTopicsPromise;
+    fullTopicsPromise = (async function () {
+      try {
+        const r = await fetch('../data/topics.json');
+        if (!r.ok) return false;
+        const all = await r.json();
+        if (!Array.isArray(all)) return false;
+        const byId = {};
+        all.forEach(function (t) { if (t && t.id) byId[t.id] = t; });
+        D.topics.forEach(function (t) {
+          const full = byId[t.id];
+          if (!full) return;
+          Object.keys(full).forEach(function (k) { if (!(k in t)) t[k] = full[k]; });
+        });
+        fullTopicsLoaded = true;
+        rebuildGraph();
+        refreshPending();
+        resumePendingStart();   // 题源到了：把「点了目标但还没出题」的那次操作续上
+        return true;
+      } catch (e) {
+        fullTopicsFailed = true;   // 失败不挡流程：详情改说「说明载入失败」，可刷新重试
+        refreshPending();
+        resumePendingStart();      // 另一份题源也可能在这之后失败：这里更新一次挂起状态
+        return false;
+      }
+    })();
+    fullTopicsPromise.then(function (ok) { if (!ok) { fullTopicsPromise = null; fullTopicsFailed = true; } });
+    return fullTopicsPromise;
+  }
+
+  /* 阶段 3：课标条目正文。进结果页 / 课标对照时才取，到货后原地换掉「正在载入课标原文…」。 */
+  function ensureStandards() {
+    if (standardsLoaded) return Promise.resolve(true);
+    if (standardsPromise) return standardsPromise;
+    standardsPromise = (async function () {
+      try {
+        const r = await fetch('../data/cn-curriculum-standards.json');
+        if (!r.ok) return false;
+        const js = await r.json();
+        const by = {};
+        ((js && js.items) || []).forEach(function (x) { if (x && x.id) by[x.id] = x; });
+        D.stdById = by;
+        standardsLoaded = true;
+        refreshStdText();
+        return true;
+      } catch (e) {
+        standardsFailed = true;
+        refreshStdText();
+        return false;
+      }
+    })();
+    standardsPromise.then(function (ok) { if (!ok) { standardsPromise = null; standardsFailed = true; } });
+    return standardsPromise;
+  }
+
+  /* 阶段 2 的统一入口：先修关系要等（出题正确性依赖它），全量字段后台取（不挡出题）。 */
+  function ensureStage2Data() {
+    ensureFullTopics();
+    return ensureDeps();
+  }
+
+  /* 题库加载只发起一次（时机与 A+B 完全一致：loadData 末尾立刻开始，不 await 在首屏链上）。
+   * 存下 Promise 只是为了让「题源还在路上」的等待方能等到它。 */
+  function ensureQuestions() {
+    if (questionsPromise) return questionsPromise;
+    questionsPromise = loadQuestions();
+    return questionsPromise;
+  }
+
+  /* 「点进流程」的题源门（阶段 2）：先修关系 → 至少一份题源。
+   * 顺序：先修关系必须等（出题正确性依赖它）；然后等两份题源里先到的那一份，
+   * 够出题就立刻放行（不多等另一份），不够再等齐。两份都失败才返回 false。
+   * 为什么不能只 await ensureDeps()：lite 没有 diagnostic_question，题库弱网下要几十秒，
+   * 那时候开会话就是一题都问不出来的空结果页（P0 回归，reviewer 在 50KB/s 下必现）。 */
+  async function ensureFlowReady(targets, limit, mode) {
+    await ensureDeps();
+    if (flowAskable(targets, limit, mode)) return true;
+    stage2Status('题目还在载入，稍等…');
+    const full = ensureFullTopics();
+    const bank = ensureQuestions();
+    await Promise.race([full, bank]);
+    if (flowAskable(targets, limit, mode)) return true;
+    await Promise.all([full, bank]);
+    return flowAskable(targets, limit, mode);
+  }
+
+  /* 题源到货后，把「点了目标但还没出题」的那次操作原地续上（会话按到货后的图重开）。
+   * 返回 true 表示接管了这次渲染（调用方不要再画首页）。 */
+  function resumePendingStart() {
+    if (!pendingStart || !D || typeof document === 'undefined') return false;
+    const p = pendingStart;
+    if (flowAskable(p.targets, p.limit, p.mode)) {
+      pendingStart = null;
+      startSession(p.targets, p.label, p.limit, p.mode);
+      return true;
+    }
+    if (!questionSourcesSettled()) return true;   // 还有题源在路上：继续等，别画结果页
+    pendingStart = null;
+    renderNoQuestions(p.targets, p.label, p.limit, p.mode);
+    return true;
+  }
+
+  /* 全量字段到货后，把正在显示占位文字的节点原地填上（不重绘整页）。
+   * 覆盖四类缺口：description（详情）、mastery_criteria（掌握标准）、
+   * standards 引用（详情里的课标条目 + 结果页「相关课标条目」整卡）。 */
+  function refreshPending() {
+    if (typeof document === 'undefined' || !D) return;
+    Array.prototype.forEach.call(document.querySelectorAll('.desc-pending'), function (el) {
+      const t = D.graph.byId[el.getAttribute('data-topic-id')];
+      if (!t || !t.description) return;
+      el.textContent = t.description;
+      el.className = 'topic-desc';
+      el.removeAttribute('data-topic-id');
+    });
+    if (!fullTopicsLoaded) return;
+    Array.prototype.forEach.call(document.querySelectorAll('.mastery-pending'), function (el) {
+      const t = D.graph.byId[el.getAttribute('data-topic-id')];
+      if (!t) return;
+      const real = masteryNode(t);
+      if (real) el.replaceWith(real); else el.remove();
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.std-block-pending'), function (el) {
+      const id = el.getAttribute('data-topic-id');
+      if (!D.graph.byId[id]) return;
+      el.replaceWith(standardsBlock(id));
+    });
+    /* 课标对照卡的结构（哪几条、对应哪些知识点）也依赖全量 standards 引用，到货后整卡换一次 */
+    const card = document.getElementById('standards');
+    if (card && session && D.graph) {
+      try { card.replaceWith(standardsCard(E.summarize(D.graph, session))); } catch (e) { /* 结构没变好就留旧的 */ }
+    }
   }
 
   /* 阶段 2：题库后台加载（约 1.27MB gzip / 7.5MB 原文，弱网下几十秒），绝不阻塞首屏。
@@ -329,20 +555,29 @@
    * 404 / 解析失败 → questions 保持 null，走 topics.json 的 diagnostic_question 回退，静默。 */
   async function loadQuestions() {
     let questions = null;
+    let ok = false;
     try {
       const r = await fetch('../data/questions.json');
       if (r.ok) questions = await r.json();          // 404：保持 questions = null
-      if (!D || !Array.isArray(questions)) { questions = null; return; }   // 空/坏 JSON：同样当没有题库
-      const allow = {};
-      D.topics.forEach(function (t) { allow[t.id] = true; });
-      questions = questions.filter(function (q) { return q && allow[q.topicId]; });
-      D.graph = E.buildGraph(D.topics, D.deps, questions);
-      if (typeof document === 'undefined') return;
-      if (session || prac || pracLoading) return;    // 用户已在流程里：只更新 D，不重绘
-      renderStart(startErr);                         // 首页 / 图谱 / 选题列表：静默重绘
+      if (!D || !Array.isArray(questions)) { questions = null; }   // 空/坏 JSON：同样当没有题库
+      else {
+        const allow = {};
+        D.topics.forEach(function (t) { allow[t.id] = true; });
+        questions = questions.filter(function (q) { return q && allow[q.topicId]; });
+        graphQuestions = questions;                  // 缓存：之后 ensureDeps / ensureFullTopics 重建图时复用
+        D.graph = E.buildGraph(D.topics, D.deps, questions);
+        ok = true;
+      }
     } catch (e) {
       questions = null;   // 题库损坏：静默当作没有题库（首屏阶段 1 早就渲染完了，不受影响）
     }
+    questionsSettled = true;
+    if (typeof document === 'undefined') return;
+    /* 有人在等这份题库（点了目标但题库还没到货）：按到货后的图重开会话，别让调用方再画首页。 */
+    if (resumePendingStart()) return;
+    if (!ok) { questionsPromise = null; return; }    // 失败后再点一次时可以重试
+    if (session || prac || pracLoading) return;      // 用户已在流程里：只更新 D，不重绘
+    renderStart(startErr);                           // 首页 / 图谱 / 选题列表：静默重绘
   }
 
   function buildTree(topics) {
@@ -504,7 +739,60 @@
     sessionMeta = { label: label };
     resetUi();
     save();
+    /* 兜底：题源还在路上（lite 没有 diagnostic_question + 题库没到 + 全量没到）时开出的会话
+     * 一题都问不出来，直接 render() 就会收敛成「0 已答题数 / 未测」的空结果页 ——
+     * 孩子一题没答就被告知做完了，弱网 5–25s 窗口内点任何知识点都会踩到（P0 回归）。
+     * 这里挂起会话参数、显示「题目还在载入，稍等…」，数据到货后由 resumePendingStart() 重开。 */
+    if (!E.nextItem(D.graph, session) && !session.answers.length) {
+      if (!questionSourcesSettled()) {
+        pendingStart = { targets: targets, label: label, limit: limit, mode: mode };
+        renderQuestionsPending();
+        return;
+      }
+      renderNoQuestions(targets, label, limit, mode);
+      return;
+    }
+    pendingStart = null;
     render();
+  }
+
+  /* 阶段 2 的等待只发生在这里：点了目标之后、出题之前。先修关系没到就等一下
+   * （弱网下 114KB 约 2s），并在开始页留一行状态文字；全量字段在后台同时开取。 */
+  function stage2Status(msg) {
+    if (typeof document === 'undefined') return;
+    const el = document.getElementById('stage2-status');
+    if (el) el.textContent = msg || '';
+  }
+
+  async function startSessionReady(targets, label, limit, mode) {
+    await ensureFlowReady(targets, limit, mode);
+    stage2Status('');
+    startSession(targets, label, limit, mode);
+  }
+
+  /* 所有「进流程」的按钮都过这一道：先修关系 + 至少一份题源到货（见 ensureFlowReady）。
+   * ensureFlowReady 在取不到时会降级/失败返回，绝不会把用户无声卡住：
+   *   - 停在中途（题库还在下）→ 开始页留一行「题目还在载入，稍等…」，到货后自动继续；
+   *   - 两份题源都失败 → 给一张可操作的重试卡（不是 0 题空结果页）。 */
+  function withStage2(targets, mode, fn) {
+    if (flowPending) return;               // 已经在等题源：连点不叠第二次
+    flowPending = true;
+    if (typeof document !== 'undefined') stage2Status('正在载入先修关系…');
+    ensureFlowReady(targets, undefined, mode).then(function (ok) {
+      flowPending = false;
+      if (typeof document !== 'undefined') stage2Status('');
+      if (ok) { fn(); return; }
+      renderFlowBlocked(targets, mode, fn);
+    });
+  }
+
+  /* 不走诊断会话的入口（练习 / 路径练习）只需要阶段 2 的先修关系与说明字段，不需要题库门。 */
+  function withStage2Data(fn) {
+    if (typeof document !== 'undefined') stage2Status('正在载入先修关系…');
+    ensureStage2Data().then(function () {
+      if (typeof document !== 'undefined') stage2Status('');
+      fn();
+    });
   }
 
   function restoreSession(saved) {
@@ -591,7 +879,18 @@
     if (prac) { renderQuestion(pracItem()); return; }   // T3 练习模式
     if (!session) return renderStart();
     const item = E.nextItem(D.graph, session);
-    if (item) renderQuestion(item); else renderResult();
+    if (item) return renderQuestion(item);
+    /* 兜底：一题没答却说没题 —— 多半是题源还在路上（弱网题库 1.27MB、全量 265KB），
+     * 绝不许把「0 已答题数 / 未测」的空结果页当成结论给孩子。 */
+    if (!session.answers.length && !questionSourcesSettled()) {
+      /* 挂起这次会话的参数，题源到货后由 resumePendingStart() 原地续上（深链/恢复会话也走这里） */
+      pendingStart = {
+        targets: session.targets, label: (sessionMeta && sessionMeta.label) || '',
+        limit: session.limit || null, mode: session.mode || 'target'
+      };
+      return renderQuestionsPending();
+    }
+    renderResult();
   }
 
   /* 来自 route 的 session：页面顶上加一行「← 回到作业分析」。只动这一行，不动流程。 */
@@ -865,6 +1164,78 @@
     }, label);
   }
 
+  /* 学段按钮组：骨架（阶段 0）与真界面（阶段 1）共用，保证位置一致、不跳动。 */
+  function stageTabs(disabled) {
+    const mk = disabled
+      ? function (value, label) { return h('button', { type: 'button', class: 'stage-tab', role: 'tab', 'aria-selected': 'false', disabled: 'disabled' }, label); }
+      : stageButton;
+    const list = subject === 'physics' ? [mk('', '全部'), mk('j', '初中'), mk('h', '高中')]
+      : subject === 'history' || subject === 'geography' ? [mk('', '全部'), mk('j', '初中')]
+      : subject === 'chinese' || subject === 'science' || subject === 'morality' ? [mk('', '全部'), mk('p', '小学')]
+      : [mk('', '全部'), mk('p', '小学'), mk('j', '初中'), mk('h', '高中')];
+    return h('div', { class: 'stage-tabs', role: 'tablist', 'aria-label': '学段' }, list);
+  }
+
+  /* 阶段 0（0ms，不等任何 fetch）：骨架。
+   * 结构与 renderStart 的第一张卡片一致（同样顺序的 h1 / 状态行 / 学段按钮 / 搜索框 / 说明行），
+   * 所以数据到货后原地替换不会跳版；不给转圈动画，用文字 + 骨架占位条告诉孩子「在装知识库」。 */
+  function renderSkeleton() {
+    if (!root) return;
+    const page = h('div', null,
+      h('div', { class: 'card', id: 'skeleton-card' },
+        h('h1', { text: '选择诊断目标' }),
+        h('p', { class: 'muted', id: 'skeleton-status', role: 'status' }, '正在载入知识库…'),
+        stageTabs(true),
+        h('input', {
+          type: 'search', class: 'search-lg', id: 'search', placeholder: '正在载入…', autocomplete: 'off',
+          'aria-label': '搜索知识点', disabled: 'disabled'
+        }),
+        h('p', { class: 'muted small', id: 'match-count' }),
+        h('div', { class: 'skel', 'aria-hidden': 'true' },
+          h('span', { class: 'skel-bar' }), h('span', { class: 'skel-bar' }), h('span', { class: 'skel-bar skel-short' })),
+        h('p', { class: 'muted small' }, '知识点清单大约 60KB，弱网几秒；题目和说明在后台接着装，不影响你选。')));
+    show(page);
+  }
+
+  /* 题源还在路上时的等待界面（阶段 2 中途）：文字 + 占位条，不用转圈；
+   * 与骨架同布局（同一张 card、同样的 skel-bar），到货后原地换成题目页/结果页，不跳版。 */
+  function renderQuestionsPending() {
+    if (typeof document === 'undefined' || !root) return;
+    show(h('div', null,
+      h('div', { class: 'card', id: 'questions-pending' },
+        h('h1', { text: '题目马上就到' }),
+        h('p', { class: 'muted', id: 'questions-pending-status', role: 'status' }, '题目还在载入，稍等…'),
+        h('div', { class: 'skel', 'aria-hidden': 'true' },
+          h('span', { class: 'skel-bar' }), h('span', { class: 'skel-bar' }), h('span', { class: 'skel-bar skel-short' })),
+        h('p', { class: 'muted small' }, '知识点清单已经到货，题目和说明在后台接着装；到货后这一页会自动换成第 1 题，不用点。'))));
+  }
+
+  /* 题源全部定案（都不在路上了）、但这些目标确实没有可问的题：给可操作的重试卡，不给空结果页。 */
+  function renderNoQuestions(targets, label, limit, mode) {
+    if (typeof document === 'undefined' || !root) return;
+    show(h('div', null,
+      h('div', { class: 'card', id: 'questions-unavailable' },
+        h('h1', { text: '这个目标暂时没有题' }),
+        h('p', { class: 'muted', role: 'status' }, '题库和知识库都到手了，但这个目标没有可问的题（可能是纯前置知识或未录入题目的知识点）。'),
+        h('div', { class: 'row no-print' },
+          h('button', { class: 'primary', id: 'btn-noq-retry', onclick: function () { startSession(targets, label, limit, mode); } }, '重新试试'),
+          h('button', { id: 'btn-noq-back', onclick: function () { renderStart(); } }, '回选题页')))));
+  }
+
+  /* 两份题源都取失败（Pages 部署竞态 / 断网首访）：明确告诉孩子「没到」，给重试，不留白屏。 */
+  function renderFlowBlocked(targets, mode, fn) {
+    if (typeof document === 'undefined' || !root) return;
+    show(h('div', null,
+      h('div', { class: 'card', id: 'flow-blocked' },
+        h('h1', { text: '数据没下来' }),
+        h('p', { class: 'muted', id: 'flow-blocked-status', role: 'status' }, '题库和知识点说明都没能载入，可能是网络或站点正在更新。'),
+        h('div', { class: 'skel', 'aria-hidden': 'true' },
+          h('span', { class: 'skel-bar' }), h('span', { class: 'skel-bar skel-short' })),
+        h('div', { class: 'row no-print' },
+          h('button', { class: 'primary', id: 'btn-flow-retry', onclick: function () { withStage2(targets, mode, fn); } }, '重新试试'),
+          h('button', { id: 'btn-flow-back', onclick: function () { renderStart(); } }, '回选题页')))));
+  }
+
   function renderStart(errMsg) {
     startErr = errMsg || null;
     const page = h('div');
@@ -873,7 +1244,7 @@
       page.append(h('div', { class: 'banner' },
         h('b', { text: '有一份未清除的诊断：' }), saved.label || saved.targets.map(nameOf).join('、'),
         '（已答 ' + (saved.answers || []).length + ' 题）　',
-        h('button', { class: 'primary', onclick: function () { if (restoreSession(saved)) render(); else { lsDel(sessionKey()); renderStart('存档无法恢复，已清除。'); } } }, '继续'),
+        h('button', { class: 'primary', onclick: function () { withStage2(saved.targets, saved.mode, function () { if (restoreSession(saved)) render(); else { lsDel(sessionKey()); renderStart('存档无法恢复，已清除。'); } }); } }, '继续'),
         ' ', h('button', { onclick: function () { lsDel(sessionKey()); renderStart(); } }, '放弃存档')));
     }
     if (errMsg) page.append(h('p', { class: 'err', text: errMsg }));
@@ -923,11 +1294,7 @@
         : subject === 'geography'
         ? '选一个想学会或想检查的地理知识点。' + confirmHelp
         : '选一个想学会或想检查的知识点。' + confirmHelp),
-      h('div', { class: 'stage-tabs', role: 'tablist', 'aria-label': '学段' },
-        subject === 'physics' ? [stageButton('', '全部'), stageButton('j', '初中'), stageButton('h', '高中')]
-          : subject === 'history' || subject === 'geography' ? [stageButton('', '全部'), stageButton('j', '初中')]
-          : subject === 'chinese' || subject === 'science' || subject === 'morality' ? [stageButton('', '全部'), stageButton('p', '小学')]
-          : [stageButton('', '全部'), stageButton('p', '小学'), stageButton('j', '初中'), stageButton('h', '高中')]),
+      stageTabs(false),
       h('input', {
         type: 'search', class: 'search-lg', id: 'search',
         placeholder: subject === 'physics' ? '搜索知识点，例如：欧姆定律、浮力、牛顿第二定律、楞次定律' : subject === 'english' ? '搜索知识点，例如：现在进行时、虚拟语气、there is' : subject === 'chinese' ? '搜索知识点，例如：声母、静夜思、的地得' : subject === 'science' ? '搜索知识点，例如：溶解、电路、昼夜交替' : subject === 'morality' ? '搜索知识点，例如：升国旗、排队、宪法、节约用水' : subject === 'history' ? '搜索知识点，例如：鸦片战争、丝绸之路、五四运动' : subject === 'geography' ? '搜索知识点，例如：经纬网、季风气候、长江' : '搜索知识点，例如：配方法、20 以内加法、一次函数',
@@ -939,6 +1306,7 @@
         }
       }),
       h('p', { class: 'muted small', id: 'match-count' }),
+      h('p', { class: 'muted small', id: 'stage2-status', role: 'status' }),
       h('div', { class: 'row' },
         h('label', null, '单点 / 整章题量上限（' + LIMIT_MIN + '–' + LIMIT_MAX + '）', limitInput),
         h('label', null, '每知识点确认题数', confirmSelect),
@@ -1026,7 +1394,7 @@
           h('label', null, '题量上限（' + SCREEN_MIN + '–' + SCREEN_MAX + '）', limitInput),
           h('button', {
             class: 'primary', id: 'btn-grade-start', disabled: !g,
-            onclick: function () { if (g) startSession(g.ids, g.label + '（整体筛查）', null, 'screen'); }
+            onclick: function () { if (g) withStage2(g.ids, 'screen', function () { startSession(g.ids, g.label + '（整体筛查）', null, 'screen'); }); }
           }, '开始整体诊断')),
         h('p', { class: 'muted small' }, '知识点多、题量有限，到上限后没测到的标为「未测」；结果页可以再加题。默认 ' + E.SCREEN_LIMIT + ' 题。'));
     };
@@ -1052,7 +1420,7 @@
         const chHit = q && ch.label.toLowerCase().indexOf(q) >= 0;
         const rows = ch.topics.filter(function (x) {
           if (!q || chHit) return true;
-          return (x.t.name + ' ' + x.t.description + ' ' + x.t.chapter).toLowerCase().indexOf(q) >= 0;
+          return (x.t.name + ' ' + (x.t.description || '') + ' ' + x.t.chapter).toLowerCase().indexOf(q) >= 0;
         });
         if (rows.length) chapters.push({ ch: ch, rows: rows });
       });
@@ -1070,13 +1438,13 @@
             h('span', { class: 't', text: ch.label }),
             h('button', {
               class: 'primary', title: '把本章全部 ' + ch.topics.length + ' 个知识点一起作为目标',
-              onclick: function () { startSession(ch.topics.map(function (x) { return x.t.id; }), ch.volume + ' ' + ch.label + '（整章）'); }
+              onclick: function () { withStage2(ch.topics.map(function (x) { return x.t.id; }), 'target', function () { startSession(ch.topics.map(function (x) { return x.t.id; }), ch.volume + ' ' + ch.label + '（整章）'); }); }
             }, '以整章为目标')),
           c.rows.map(function (x) {
             return h('div', { class: 'topic-row', title: x.t.description },
               h('span', { class: 'nm', text: x.t.name }),
               h('span', { class: 'sec', text: x.section }),
-              h('button', { onclick: function () { startSession([x.t.id], x.t.name); } }, '选为目标'));
+              h('button', { onclick: function () { withStage2([x.t.id], 'target', function () { startSession([x.t.id], x.t.name); }); } }, '选为目标'));
           })));
       });
       box.append(det);
@@ -1777,27 +2145,71 @@
   }
 
   /* ------------------------------------------------------------ 结果页 */
+  /* 详情面板的说明正文：lite 里没有 description，全量 topics.json 到货后原地补上。
+   * 没到货时给一行「正在载入说明…」，不是空白也不是报错（ensureFullTopics 到货后 refreshPending 换掉）。 */
+  function descNode(t) {
+    if (t.description) return h('div', { class: 'topic-desc', text: t.description });
+    if (!fullTopicsLoaded && !fullTopicsFailed) ensureFullTopics();
+    if (fullTopicsLoaded) return h('div', { class: 'topic-desc' }, '暂无说明。');
+    if (fullTopicsFailed) return h('div', { class: 'muted small desc-pending', 'data-topic-id': t.id }, '说明载入失败，可刷新重试。');
+    return h('div', { class: 'muted small desc-pending', 'data-topic-id': t.id }, '正在载入说明…');
+  }
+
+  /* 课标条目正文：阶段 3 才取（ensureStandards），没到货时同样给占位文字。
+   * 到货后 refreshStdText 按 data-std-id 原地换掉，不重绘整页。 */
+  function stdText(k) {
+    const item = D.stdById[k];
+    if (item) return item.text;
+    if (standardsLoaded) return '（课标文件中找不到该条目）';
+    if (standardsFailed) return '（课标原文载入失败，可刷新重试）';
+    return '正在载入课标原文…';
+  }
+  function refreshStdText() {
+    if (typeof document === 'undefined' || !D || !D.stdById) return;
+    Array.prototype.forEach.call(document.querySelectorAll('.std-text'), function (el) {
+      el.textContent = stdText(el.getAttribute('data-std-id'));
+    });
+  }
+
   function standardsBlock(id) {
     const t = D.graph.byId[id];
     const list = t.standards || [];
-    if (!list.length) return h('div', { class: 'muted small', text: t.external ? '小学阶段知识点，未对应第四学段课标条目。' : '没有对应的课标条目。' });
+    if (!list.length) {
+      /* lite 里没有 standards 引用：全量到货前不说「没有」，给占位，到货后原地换 */
+      if (!fullTopicsLoaded && !fullTopicsFailed) {
+        ensureFullTopics();
+        return h('div', { class: 'muted small std-block-pending', 'data-topic-id': id }, '正在载入课标条目…');
+      }
+      if (fullTopicsFailed) return h('div', { class: 'muted small', text: '课标条目载入失败，可刷新重试。' });
+      return h('div', { class: 'muted small', text: t.external ? '小学阶段知识点，未对应第四学段课标条目。' : '没有对应的课标条目。' });
+    }
     return h('div', null, h('b', null, '课标条目：'), list.map(function (sd) {
-      const item = D.stdById[sd.id];
       return h('div', { class: 'std' },
         h('code', { text: sd.id }), h('span', { class: 'conf', text: sd.confidence === 'exact' ? '直接对应' : '推断对应' }),
-        h('div', { text: item ? item.text : '（课标文件中找不到该条目）' }),
+        h('div', { class: 'std-text', 'data-std-id': sd.id }, stdText(sd.id)),
         sd.note ? h('div', { class: 'muted small', text: '说明：' + sd.note }) : null);
     }));
+  }
+
+  /* 掌握标准同理：lite 里没有 mastery_criteria，全量到货前给占位而不是静默省略。 */
+  function masteryNode(t) {
+    if (t.mastery_criteria && t.mastery_criteria.length) {
+      return h('div', null, h('b', null, '掌握标准：'), h('ul', null, t.mastery_criteria.map(function (m) { return h('li', { text: m }); })));
+    }
+    if (!fullTopicsLoaded && !fullTopicsFailed) {
+      ensureFullTopics();
+      return h('div', { class: 'muted small mastery-pending', 'data-topic-id': t.id }, '正在载入掌握标准…');
+    }
+    if (fullTopicsFailed) return h('div', { class: 'muted small', text: '掌握标准载入失败，可刷新重试。' });
+    return null;
   }
 
   function topicBody(id, extra) {
     const t = D.graph.byId[id];
     const body = h('div', { class: 'body' });
     body.append(h('div', { class: 'muted' }, (t.external ? '小学先修知识点（无诊断题）' : t.chapter) + (t.domain ? ' · ' + t.domain : '')));
-    body.append(h('div', { text: t.description }));
-    if (t.mastery_criteria && t.mastery_criteria.length) {
-      body.append(h('div', null, h('b', null, '掌握标准：'), h('ul', null, t.mastery_criteria.map(function (m) { return h('li', { text: m }); }))));
-    }
+    body.append(descNode(t));
+    body.append(masteryNode(t));
     if (extra) body.append(extra);
     body.append(standardsBlock(id));
     return body;
@@ -1832,7 +2244,7 @@
     const n = (E.pickPracticeQuestions(D.graph, id, PRACTICE_N, seenList()) || []).length;
     const label = done ? '再练一遍' : (n > 1 ? '练习这 ' + n + ' 题' : '练习这道题');
     return h('button', { type: 'button', class: 'practice-btn no-print',
-      onclick: function (e) { e.stopPropagation(); e.preventDefault(); startPractice(id); } },
+      onclick: function (e) { e.stopPropagation(); e.preventDefault(); withStage2Data(function () { startPractice(id); }); } },
       label);
   }
 
@@ -1845,12 +2257,15 @@
     return h('div', { class: 'card path-practice no-print', id: 'path-practice' },
       h('p', { class: 'small' }, '你答错的知识点有 ' + queue.length + ' 个，可以按顺序一个个练（一次一关，共 ' + queue.length + ' 关）。'),
       h('button', { type: 'button', class: 'path-practice-btn', id: 'btn-path-practice',
-        onclick: function () { startPathPractice(); } },
+        onclick: function () { withStage2(session ? session.targets : null, 'target', function () { startPathPractice(); }); } },
         '开始练：' + nameOf(first) + '（第 1 关 / 共 ' + queue.length + ' 关）'));
   }
 
   function renderResult() {
     const sum = E.summarize(D.graph, session);
+    /* 阶段 3：进结果页（详情 / 课标对照）才取课标条目正文；两个 ensure 都到货后原地换掉占位文字，不重绘。 */
+    ensureStandards();
+    ensureFullTopics();
     const rootSet = new Set(sum.roots.map(function (r) { return r.id; }));
     const screen = session.mode === 'screen';
     const targetSet = new Set(screen ? [] : session.targets);
@@ -2021,10 +2436,10 @@
         : subject === 'geography'
         ? '目标与学习路径上的知识点对应的《义务教育地理课程标准（2022年版）》第四学段内容要求的公开转述。'
         : '目标与学习路径上的知识点对应的《义务教育数学课程标准（2022年版）》内容要求（第一至第四学段）。'),
-      keys.length ? keys.map(function (k) {
-        const item = D.stdById[k];
+      !fullTopicsLoaded ? h('p', { class: 'muted small', text: fullTopicsFailed ? '课标条目载入失败，可刷新重试。' : '正在载入课标条目…' })
+        : keys.length ? keys.map(function (k) {
         return h('div', { class: 'std' }, h('code', { text: k }),
-          h('div', { text: item ? item.text : '' }),
+          h('div', { class: 'std-text', 'data-std-id': k }, stdText(k)),
           h('div', { class: 'muted small', text: '对应知识点：' + by[k].map(nameOf).join('、') }));
       }) : h('p', { class: 'muted', text: '无。' }));
   }
@@ -2443,6 +2858,7 @@
   async function init() {
     subject = detectSubject();
     applySubjectChrome();
+    renderSkeleton();                       // 阶段 0：0ms，不等任何 fetch，先给出可看的界面
     try { await loadData(); } catch (e) {
       clearRoot();
       root.append(h('div', { class: 'card' }, h('h2', { class: 'err', text: '数据加载失败' }),
@@ -2450,12 +2866,19 @@
         h('p', null, '请在项目根目录运行 ', h('code', { text: 'python3 -m http.server 8000' }), '，再访问 http://localhost:8000/diagnose/ （不能直接用 file:// 打开）。')));
       return;
     }
+    renderStart();                          // 阶段 1：知识库清单（topics-lite）到货，选题界面可用
     const params = new URLSearchParams(location.search);
     let resolved = null;
     try { resolved = resolveTargets(params); } catch (e) { renderStart(e.message); return; }
     if (params.get('seed')) seedParam = params.get('seed');
     const paramLimit = parseInt(params.get('limit'), 10);
     const limit = paramLimit > 0 ? paramLimit : undefined;
+    if (resolved) {
+      /* 直接带 ?target= / ?grade= 进来：出题前把先修关系与至少一份题源等到（弱网题库 25s）。
+       * 等不到就明给「数据没下来 + 重试」，绝不进 0 题空结果页。 */
+      const ready = await ensureFlowReady(resolved.ids, limit, resolved.mode);
+      if (!ready) { renderStart('题目没能载入，可刷新重试。'); return; }
+    }
     if (resolved && params.get('demo')) {
       demo = { oracle: makeOracle(resolved.ids, resolved.mode) };
       session = E.createSession(D.graph, resolved.ids, {
@@ -2476,7 +2899,7 @@
       startSession(resolved.ids, resolved.label, limit, resolved.mode);
       return;
     }
-    renderStart();
+    /* 没有深链参数：上面的 renderStart() 已经把选题界面画好了，不再重绘一次（避免闪一下） */
   }
 
   if (typeof document !== 'undefined') document.addEventListener('click', function (event) {
@@ -2501,6 +2924,8 @@
   /* 纯函数层暴露给 Node 测试（不启动界面）：node -e "require('./diagnose/app.js')" 无 window，直接跳过 */
   if (typeof window !== 'undefined') init();
   else if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { routeReturnHref: routeReturnHref };
+    /* askable：P0 回归守卫用的纯判据（tests/test_data_split.js 直测它：
+     * lite + 无题库 + 全量未到货 的图上必须返回 false，否则就会开出 0 题空会话）。 */
+    module.exports = { routeReturnHref: routeReturnHref, askable: askable };
   }
 })();
