@@ -226,6 +226,11 @@
     var html = '<p class="small muted">目标：<strong>' + esc(pre.target.name) + '</strong> ' +
       esc(R.gradeLabel(pre.target.grade)) + '</p>';
     html += skippedHtml(pre.target.id);
+    var skipNote = R.skippedReasonText(pre.excluded);
+    if (skipNote) {
+      /* 路径侧口径：按 GRADE_GAP_LIMIT / PRIMARY_MAX 过滤，句子由 route.js 拼好，页面只显示 */
+      html += '<p class="skip-note small" id="path-skip-note">' + esc(skipNote) + '</p>';
+    }
     pre.levels.forEach(function (lv) {
       html += '<div class="depth-head">第 ' + lv.depth + ' 层 hard 前置（' + lv.items.length + ' 个）</div>';
       if (!lv.items.length) html += '<p class="skip">（这一层没有 hard 前置）</p>';
@@ -242,7 +247,7 @@
         }).join('') + '</ul>';
     }
     if (pre.excluded && pre.excluded.length) {
-      html += '<div class="depth-head">已过滤（噪音）</div><ul class="plain">' +
+      html += '<div class="depth-head">未画入主路径（按噪音过滤）</div><ul class="plain">' +
         pre.excluded.map(function (it) {
           return '<li class="small">' + esc(it.name) + ' <span class="muted">' +
             esc(R.gradeLabel(it.grade)) + ' · ' + esc(it.strength) + ' · ' + esc(it.excludedWhy) + '</span></li>';
@@ -254,9 +259,11 @@
 
   /* ------------------------------------------ ⑥ 接下来需要确认的知识点 */
 
-  /* 「已略过更早的前置」（kanban t_be33ff76）。
+  /* 「本次诊断未测」那一行（kanban t_be33ff76）。
    * app.js 存盘时只留 answers（会话靠 replay 重建），suppressed 不落盘，
    * 所以这里拿 targets 现算一次：E.createSession → suppressed → 纯文案在 route.js。
+   * 这是 engine 的 session.suppressed，只能叫「本次诊断未测」——和路径侧的
+   * 「未画入主路径」是两条口径，绝不能混用措辞。
    * 只挂在 ⑤⑥ 两段里，**不进「你的薄弱点」结论**——被排除的候选不是诊断结果。
    *
    * 何时显示：只在这个会话确实做过诊断时才说。判定复用 matchSession（它与 ⑥ 段写回同一口径：
@@ -269,7 +276,7 @@
     var items = R.skippedByGrade(session.targets, function (ts) {
       return window.DiagEngine.createSession(window.D.engineGraph, ts);
     });
-    var note = R.skippedNote(items, window.DiagEngine.GRADE_GAP);
+    var note = R.suppressedNote(items, window.DiagEngine.GRADE_GAP);
     return note ? '<p class="skip-note small" id="skipped-note">' + esc(note) + '</p>' : '';
   }
 
