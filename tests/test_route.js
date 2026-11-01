@@ -938,6 +938,136 @@ test('⑪ 页面层只读 session、不删 localStorage、复用 engine（读源
   assert.ok(html.indexOf('engine.js') < html.indexOf('route.js'), 'engine 要先于 route 加载');
 });
 
+/* ================================================================
+ * 13. 刷新后恢复（kanban t_70cabf77）：sessionStorage 存档
+ * ================================================================
+ * 全部直测 route.js 的纯函数：存储对象用假 storage 注入，不装 jsdom、不碰真浏览器。
+ * 四条主线（存档写 / 存档读 / 坏 JSON / 版本不匹配）各一条，另加结构校验、
+ * 存储不可用、提示文案与「键名不许进 sw.js 预热清单」。
+ */
+
+console.log('\n--- 13. 刷新后恢复（sessionStorage 存档） ---');
+
+/** 假 sessionStorage：只实现用到的三个方法，坏键也能塞进去 */
+function fakeStore(seed) {
+  const box = Object.assign({}, seed || {});
+  return {
+    getItem(k) { return Object.prototype.hasOwnProperty.call(box, k) ? box[k] : null; },
+    setItem(k, v) { box[k] = String(v); },
+    removeItem(k) { delete box[k]; },
+    keys() { return Object.keys(box); }
+  };
+}
+
+const ARCHIVE_KEY = R.archiveKey();
+
+test('存档写：键名 cnmRouteDraft.v1，内容是 {v,at,text,view}，不存 HTML 字符串', () => {
+  assert.strictEqual(ARCHIVE_KEY, 'cnmRouteDraft.v1');
+  const s = fakeStore();
+  const view = { fields: { grade: { parsed: true, value: 9 } }, pool: null, skip: 'insufficient', status: '信息不足，未做定位', level: 'err' };
+  assert.strictEqual(R.saveArchive(s, 1700000000000, '这是一道初三数学题', view), true);
+  const raw = s.getItem(ARCHIVE_KEY);
+  assert.ok(raw, '存档没写进去');
+  const obj = JSON.parse(raw);
+  assert.strictEqual(obj.v, 1, '存档必须带版本号');
+  assert.strictEqual(obj.at, 1700000000000);
+  assert.strictEqual(obj.text, '这是一道初三数学题');
+  assert.deepStrictEqual(obj.view, view, 'view 要原样存下（渲染时再拼，不存 HTML）');
+  assert.ok(!/<[a-z][^>]*>/i.test(raw), '存档里不许出现 HTML 标签：' + raw.slice(0, 120));
+  /* 单独再断一次：view 是对象不是字符串 */
+  assert.strictEqual(typeof obj.view, 'object');
+});
+
+test('存档读：text/view 原样读回；没有存档 → 静默 no-op，不抛', () => {
+  const s = fakeStore();
+  const view = { fields: null, pool: { ok: true, count: 3, topics: [] }, picks: { stage: 'ok', picks: [] } };
+  R.saveArchive(s, 1700000123000, '配方法解一元二次方程', view);
+  const got = R.loadArchive(s);
+  assert.strictEqual(got.ok, true);
+  assert.strictEqual(got.data.text, '配方法解一元二次方程');
+  assert.deepStrictEqual(got.data.view, view);
+  assert.strictEqual(got.data.at, 1700000123000, '时间要留着，顶部提示要显示 xx:xx');
+
+  const empty = R.loadArchive(fakeStore());
+  assert.strictEqual(empty.ok, false);
+  assert.strictEqual(empty.why, 'empty');
+  assert.strictEqual(R.loadArchive(null).ok, false, '存储不可用 → 当作没存档，不抛');
+});
+
+test('坏 JSON → 静默忽略并清掉，不抛错（刷新不许白屏）', () => {
+  const s = fakeStore({ [ARCHIVE_KEY]: '{"v":1,"at":1,"text":"断了' });
+  let got;
+  assert.doesNotThrow(() => { got = R.loadArchive(s); }, '坏 JSON 不许抛');
+  assert.strictEqual(got.ok, false);
+  assert.strictEqual(got.why, 'bad-json');
+  assert.strictEqual(s.getItem(ARCHIVE_KEY), null, '坏档必须被清掉，不能留着反复踩');
+  assert.deepStrictEqual(s.keys(), [], '存储里不该留下任何东西');
+});
+
+test('版本不匹配 → 静默忽略并清掉（v 变了 / 缺 v / 不是同一个数）', () => {
+  [{ v: 99, at: 1, text: 'x' }, { at: 1, text: 'x' }, { v: '1', at: 1, text: 'x' }, { v: 0, at: 1, text: 'x' }]
+    .forEach((bad) => {
+      const s = fakeStore({ [ARCHIVE_KEY]: JSON.stringify(bad) });
+      const got = R.loadArchive(s);
+      assert.strictEqual(got.ok, false, '版本不对还认了：' + JSON.stringify(bad));
+      assert.strictEqual(got.why, 'version');
+      assert.strictEqual(s.getItem(ARCHIVE_KEY), null, '旧版本存档要清掉：' + JSON.stringify(bad));
+    });
+  /* 对照：版本对的那份能读 */
+  const okStore = fakeStore({ [ARCHIVE_KEY]: JSON.stringify({ v: 1, at: 5, text: 'ok', view: null }) });
+  assert.strictEqual(R.loadArchive(okStore).ok, true);
+});
+
+test('结构不对（view 是 HTML 字符串 / text 不是字符串）→ 当坏档清掉', () => {
+  [{ v: 1, at: 1, text: 'x', view: '<div>旧页面</div>' }, { v: 1, at: 1, text: null }, { v: 1, at: 1, text: 42 }]
+    .forEach((bad) => {
+      const s = fakeStore({ [ARCHIVE_KEY]: JSON.stringify(bad) });
+      const got = R.loadArchive(s);
+      assert.strictEqual(got.ok, false, '结构不对还认了：' + JSON.stringify(bad));
+      assert.strictEqual(got.why, 'bad-shape');
+      assert.strictEqual(s.getItem(ARCHIVE_KEY), null);
+    });
+});
+
+test('存储不可用/写满 → 存档失败返回 false，绝不抛；清空也不抛', () => {
+  const boom = {
+    getItem() { throw new Error('SecurityError'); },
+    setItem() { throw new Error('QuotaExceededError'); },
+    removeItem() { throw new Error('SecurityError'); }
+  };
+  assert.doesNotThrow(() => R.saveArchive(boom, 1, 'x', null));
+  assert.strictEqual(R.saveArchive(boom, 1, 'x', null), false);
+  assert.strictEqual(R.loadArchive(boom).why, 'no-storage');
+  assert.strictEqual(R.clearArchive(boom), false);
+  assert.strictEqual(R.saveArchive(null, 1, 'x', null), false, '没有存储对象 → false');
+
+  const s = fakeStore();
+  R.saveArchive(s, 1, 'x', null);
+  assert.strictEqual(R.clearArchive(s), true, '「清空」必须能清掉存档');
+  assert.strictEqual(s.getItem(ARCHIVE_KEY), null);
+  assert.deepStrictEqual(R.buildArchive(1, null, null), { v: 1, at: 1, text: '', view: null }, 'text 缺省是空串，不是 undefined');
+});
+
+test('提示文案：带 xx:xx 的时间，坏时间也不抛', () => {
+  const at = new Date(2026, 10, 1, 14, 5, 0).getTime();
+  assert.strictEqual(R.archiveNote(at), '已恢复上次的分析（时间 14:05）');
+  assert.strictEqual(R.archiveNote(at, true), '已恢复上次的分析（时间 14:05）');
+  /* 这次只有输入、没有结果：说「输入」，别让学生以为结果还在 */
+  assert.strictEqual(R.archiveNote(at, false), '已恢复上次的输入（时间 14:05）');
+  assert.ok(R.archiveNote(0).includes('已恢复上次的分析'), '时间缺失也要给出提示');
+  assert.ok(R.archiveNote('坏值').includes('已恢复上次的分析'));
+  /* 页面层只通过 route.js 的纯函数读写存档，且提示条在 HTML 里 */
+  const page = stripComments(fs.readFileSync(path.join(ROOT, 'diagnose', 'route-page.js'), 'utf8'));
+  ['R.saveArchive', 'R.loadArchive', 'R.clearArchive'].forEach((fn) => {
+    assert.ok(page.includes(fn), '页面层要走 route.js 的纯函数：' + fn);
+  });
+  const html = fs.readFileSync(path.join(ROOT, 'diagnose', 'route.html'), 'utf8');
+  assert.ok(/id="restore-bar"/.test(html) && /id="restore-note"/.test(html), '顶部提示条要存在');
+  assert.ok(/id="btn-clear"/.test(html), '已有的清空按钮不许动');
+  const sw = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
+  assert.ok(sw.indexOf(ARCHIVE_KEY) < 0, '存档键名不许出现在 sw.js（预热清单/缓存策略里都不许）');
+});
+
 /* ================================================================ */
 
 Promise.all(ASYNC).then(() => {
