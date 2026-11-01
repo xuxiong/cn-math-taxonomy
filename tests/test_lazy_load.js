@@ -322,9 +322,9 @@ test('sw.js：预热清单覆盖所有被移出的脚本，且不塞进 CORE', f
     assert.strictEqual(core.indexOf("'" + key + "'"), -1, key + ' 不许进 CORE（install 必须几秒内装完）');
   });
   /* A+B 那张卡要求「不改 VERSION」；C1（首屏数据瘦身，topics-lite）把数据文件集合改了，
-   * 按 sw.js 的约定必须升版本让老缓存失效，所以这里的字面量跟着 v6 → v7（仍是一条有效断言，
-   * 而不是删掉/skip）。当前版本由 test_data_split.js 再守一遍。 */
-  assert.ok(/var VERSION = 'v7';/.test(SW), 'VERSION 应已是 v7（数据文件集合变了，老缓存必须失效）');
+   * 按 sw.js 的约定必须升版本让老缓存失效，所以这里的字面量跟着 v6 → v7 → v8（题库不再预热，
+   * 仍是一条有效断言，而不是删掉/skip）。当前版本由 test_data_split.js 再守一遍。 */
+  assert.ok(/var VERSION = 'v8';/.test(SW), 'VERSION 应已是 v8（数据文件集合变了，老缓存必须失效）');
 });
 
 /* ---------------------------------------------------------------- 7. 自检：测试真的会红 */
