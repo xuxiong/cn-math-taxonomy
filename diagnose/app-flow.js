@@ -635,7 +635,7 @@ function renderQuestion(item) {
 
     if (S.ui.phase === 'ask') {
       if (q.type === 'choice') {
-        card.append(choicesBlock(q, { item: item, readonly: false, pickedKey: S.ui.picked }));
+        append(card, choicesBlock(q, { item: item, readonly: false, pickedKey: S.ui.picked }));
       } else if (q.type === 'self') {
         card.append(h('textarea', {
           class: 'ans-input', id: 'ans', rows: 3, placeholder: '开放题：可以写下自己的思路（不会自动判分），再点「看参考答案并自评」', value: S.ui.answer,
@@ -670,13 +670,13 @@ function renderQuestion(item) {
        * 学生能对照解析看题，却不能边看答案边改答案。选项块挂在 explainPanel 之前，
        * 折叠块与画板都在 explainPanel 内部，不受影响。 */
       if (q.type === 'choice') {
-        card.append(choicesBlock(q, { item: item, readonly: true, correctKey: null, pickedKey: S.ui.answer }));
+        append(card, choicesBlock(q, { item: item, readonly: true, correctKey: null, pickedKey: S.ui.answer }));
       } else {
         /* 用自定义 append：学生「不会」进来时 ui.answer 是空的，answerEcho(…, false) 会返回 null，
          * 原生 card.append(null) 会把 null 字符串化插成一个文本节点（讲解首屏题目下面那行 "null"）。 */
         append(card, answerEcho(q, S.ui.answer, false));
       }
-      card.append(explainPanel(item));
+      append(card, explainPanel(item));
     } else if (S.ui.phase === 'skip') {
       card.append(
         h('div', { class: 'muted' }, '你选择了「不会」。看一下答案和解析再继续：'),
@@ -710,7 +710,7 @@ function renderQuestion(item) {
         : h('button', { class: 'small', onclick: function () { if (confirm('确定放弃当前诊断并回到开始页吗？')) restart(); } }, '重新开始')));
     const page = h('div');
     if (S.demo) page.append(demoBanner());
-    page.append(childBar('question'));
+    append(page, childBar('question'));
     page.append(card);
     show(withRouteBack(page));
     // 必须放在 show() 之后：show() 内有 window.scrollTo(0,0) 会把页面拉回顶部，且此时节点还没进 document，提前调用 scrollIntoView 无效。
@@ -1203,9 +1203,9 @@ function topicBody(id, extra) {
     const body = h('div', { class: 'body' });
     body.append(h('div', { class: 'muted' }, (t.external ? '小学先修知识点（无诊断题）' : t.chapter) + (t.domain ? ' · ' + t.domain : '')));
     body.append(descNode(t));
-    body.append(masteryNode(t));
+    append(body, masteryNode(t));
     if (extra) body.append(extra);
-    body.append(standardsBlock(id));
+    append(body, standardsBlock(id));
     return body;
   }
 
@@ -1310,7 +1310,7 @@ function renderResult() {
     if (S.demo) page.append(demoBanner());
     saveToChild(sum);
     noteBlind(sum);
-    page.append(childBar('result'));
+    append(page, childBar('result'));
     const pracBanner = practiceResultBanner();
     if (pracBanner) page.append(pracBanner);
     else if (diagOnly) page.append(noBankCard(sum));
