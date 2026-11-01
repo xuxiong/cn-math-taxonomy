@@ -29,6 +29,65 @@
   const EXPLAIN_MAX_TOKENS = CFG ? CFG.maxTokens.explain : null;   // 三步讲解（prompt/hint/reveal 的 JSON）
   const FOLLOWUP_MAX_TOKENS = CFG ? CFG.maxTokens.followup : null;
 
+  /* ---------------- 超时（网络挂起不再永远等） ----------------
+   * 讲解与追问都是 chat 类长请求，超时唯一真源是 llm-config.js 的 timeouts.chat；
+   * 本文件不写任何超时数字（与 llm-gateway.js 的 TIMEOUT_MS 同一条纪律）。
+   * 每次请求时读取，测试可把该键调小来验证，不必真等 30 秒。 */
+  function chatTimeoutMs() {
+    const t = CFG && CFG.timeouts && CFG.timeouts.chat;
+    return (typeof t === 'number' && t > 0) ? t : null;
+  }
+
+  /* 失败原因标记：timeout / network / http / llm。
+   * 只有 reason 区分原因，给学生的文案统一一条（可操作、不让孩子对着「生成中」干等）。 */
+  const FAIL_NOTICE = '讲解没取到：可以重试，或先看答案。';
+
+  function _isAbort(err) {
+    const name = err && err.name;
+    return name === 'AbortError' || name === 'TimeoutError' || (err && err.code === 'ABORT_ERR');
+  }
+
+  function _markFail(err, reason) {
+    const e = (err instanceof Error) ? err : new Error(String(err));
+    if (!e.reason) e.reason = reason;
+    return e;
+  }
+
+  /** 发一次 chat 请求并解析 JSON。超时覆盖「连接 + 响应体」：
+   *  超时即 abort（AbortError），错误统一打上 reason 标记后抛给调用方。
+   *  AbortController 不可用（很老的浏览器）时退化为无超时，行为与改动前一致。 */
+  function postChat(body) {
+    if (typeof fetch !== 'function') return Promise.reject(_markFail(new Error('fetch 不可用'), 'network'));
+    const timeoutMs = chatTimeoutMs();
+    const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const opts = {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, CFG ? CFG.authHeaders() : {}),
+      body: JSON.stringify(body)
+    };
+    if (!controller || !timeoutMs) return fetch(PROXY, opts);
+
+    opts.signal = controller.signal;
+    let timer = setTimeout(function () { timer = null; try { controller.abort(); } catch (e) { /* 已 abort */ } }, timeoutMs);
+    const done = function () { if (timer) { clearTimeout(timer); timer = null; } };
+    return fetch(PROXY, opts).then(function (resp) {
+      if (!resp.ok) { done(); throw _markFail(new Error('llm http ' + resp.status), 'http'); }
+      return Promise.resolve(resp.json()).then(function (data) { done(); return data; }, function (err) {
+        done();
+        throw _markFail(err, _isAbort(err) ? 'timeout' : 'network');
+      });
+    }, function (err) {
+      done();
+      throw _markFail(err, _isAbort(err) ? 'timeout' : 'network');
+    });
+  }
+
+  /** 把失败错误收成 {reason, notice}：给调用方 / UI 的一致失败形状。 */
+  function failInfo(err) {
+    const reason = (err && err.reason) || 'network';
+    return { reason: reason, notice: FAIL_NOTICE };
+  }
+
   const cache = new Map();   // qid -> {ts, steps, from}
 
   function staticSteps(topic, q) {
@@ -198,14 +257,7 @@
       temperature: 0.5,
       response_format: { type: 'json_object' }
     };
-    return fetch(PROXY, {
-      method: 'POST',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, CFG ? CFG.authHeaders() : {}),
-      body: JSON.stringify(body)
-    }).then(function (resp) {
-      if (!resp.ok) throw new Error('llm http ' + resp.status);
-      return resp.json();
-    }).then(function (data) {
+    return postChat(body).then(function (data) {
       const c = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
       const raw = c == null ? '' : String(c);
       let text = raw;
@@ -228,7 +280,7 @@
         graph = null;
       }
       const cleaned = cleanMarkdown(text);
-      if (!cleaned) throw new Error('llm empty');
+      if (!cleaned) throw _markFail(new Error('llm empty'), 'llm');
       return { text: cleaned, graph: graph };
     });
   }
@@ -239,7 +291,10 @@
   function ask(topic, q, userAnswer, steps, question, labDesc) {
     return llmAsk(topic, q, userAnswer, steps, question, labDesc)
       .then(function (res) { return { text: res.text, graph: res.graph, from: 'llm' }; })
-      .catch(function () { return { text: null, graph: null, from: 'offline' }; });
+      .catch(function (err) {
+        const f = failInfo(err);   // 超时 / 网络失败同一条可操作文案，绝不把 aborted 当空内容
+        return { text: null, graph: null, from: 'offline', reason: f.reason, notice: f.notice };
+      });
   }
 
   /** reveal 里声明的最终解值是否与标准答案一致（O2）。
@@ -265,18 +320,12 @@
       max_tokens: EXPLAIN_MAX_TOKENS,
       temperature: 0.6
     };
-    const resp = await fetch(PROXY, {
-      method: 'POST',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, CFG ? CFG.authHeaders() : {}),
-      body: JSON.stringify(body)
-    });
-    if (!resp.ok) throw new Error('llm http ' + resp.status);
-    const data = await resp.json();
+    const data = await postChat(body);
     const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
     const steps = parseSteps(content);
-    if (!steps) throw new Error('llm bad json');
+    if (!steps) throw _markFail(new Error('llm bad json'), 'llm');
     // 数值校验：reveal 的最终解值与标准答案不一致就整轮作废（抛错 -> generate 回退静态讲解）
-    if (checkReveal(q, steps).ok === false) throw new Error('llm reveal mismatch');
+    if (checkReveal(q, steps).ok === false) throw _markFail(new Error('llm reveal mismatch'), 'llm');
     return steps;
   }
 
@@ -298,7 +347,17 @@
         if (ckey) cache.set(ckey, { ts: Date.now(), steps: steps, from: 'llm' });
         return { steps: steps, from: 'llm' };
       })
-      .catch(() => ({ steps: fallback, from: 'static' }));   // 网关挂了 / reveal 数值校验没过，都用静态版
+      .catch(function (err) {
+        /* 失败一律给静态版（契约不变：永不 reject），但要带 reason/notice：
+         * 超时（AbortError）与网络错误走同一条可操作文案，不把 aborted 当空内容静默渲染。
+         * 失败时删掉先前的占位缓存 —— 否则 5 分钟内点「重试」会直接命中静态占位发不出请求。 */
+        const f = failInfo(err);
+        if (ckey) cache.delete(ckey);
+        if (global.console && global.console.warn) {
+          global.console.warn('Explain.generate 失败（' + f.reason + '）：' + f.notice);
+        }
+        return { steps: fallback, from: 'static', reason: f.reason, notice: f.notice };
+      });   // 网关挂了 / reveal 数值校验没过，都用静态版
   }
 
   global.Explain = {
