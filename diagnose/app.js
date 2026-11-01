@@ -141,6 +141,7 @@
     resetUi: resetUi, renderStart: renderStart, renderQuestionsPending: renderQuestionsPending,
     renderQuestionsPendingWith: renderQuestionsPendingWith,
     renderNoQuestions: renderNoQuestions, questionSourcesSettled: questionSourcesSettled,
+    screenRoundGraph: screenRoundGraph,
     ensureFullTopics: ensureFullTopics, ensureStandards: ensureStandards,
     ensureQuestionsForOne: ensureQuestionsForOne, ensureQuestionsForTopics: ensureQuestionsForTopics,
     ensureQuestionsForAnswers: ensureQuestionsForAnswers,
@@ -518,6 +519,23 @@
   function flowAskable(targets, limit, mode) {
     if (!S.D) return false;
     return askable(E, S.D.topics, S.D.deps, S.graphQuestions, targets, sessionOpts(limit, mode));
+  }
+
+  /* screen 轮：只能问「题库已经到货的章节」。未到货章节的 legacy 兜底题在这里剔掉 ——
+   * engine.isTestable 看 graph.bank.length，legacy 也算可测，不剔就会问出「本知识点第 1 / 1 题」
+   * 的假结论（卡 t_386e1b88 第 3 条硬要求：题库没到 → 跳过、计未测，绝不按已掌握结算）。
+   * session.order 仍然来自完整 targets，所以没测到 / 没加载的点照样落进 untested。 */
+  function screenRoundGraph() {
+    if (!S.D || !S.D.topics) return null;
+    const g = Ch.buildGraph(S.D.topics, S.D.deps, S.graphQuestions);
+    Object.keys(g.bank).forEach(function (id) {
+      const t = g.byId[id];
+      if (!t) return;
+      const key = questionsKeyOf(t);
+      if (key && S.bundleLoaded[key]) return;          // 章节已到货：真题/兜底题都保留
+      g.bank[id] = (g.bank[id] || []).filter(function (q) { return q && q.type !== 'legacy'; });
+    });
+    return g;
   }
 
   /* 两份题源（按章节取的题库 / 全量 topics 的 diagnostic_question）都定案了吗？
@@ -989,17 +1007,19 @@
     if (!S.session || S.session.mode !== 'screen' || !S.D || !E) return false;
     const limit = S.session.limit;
     if (typeof limit === 'number' && S.session.answers.length >= limit) return false;
-    if (E.nextItem(S.D.graph, S.session)) return false;   // 屏幕上有题：绝不重绘/换题
+    /* 续接也必须只 replay「已到货章节」的图，否则会把未到货章节的 legacy 点重新放回 stack。 */
+    const graph = screenRoundGraph() || S.D.graph;
+    if (E.nextItem(graph, S.session)) return false;   // 屏幕上有题：绝不重绘/换题
     let next = null;
     try {
-      next = E.replay(S.D.graph, S.session.targets, S.session.answers, {
+      next = E.replay(graph, S.session.targets, S.session.answers, {
         mode: 'screen', limit: limit,
         confirm: S.session.confirm, seed: S.session.seed, avoid: S.session.avoid
       });
     } catch (e) {
       return false;   // 重放失败（存档/图不一致）：保持原会话，绝不把孩子正在做的进度弄丢
     }
-    if (!next || !E.nextItem(S.D.graph, next)) return false;
+    if (!next || !E.nextItem(graph, next)) return false;
     S.session = next;
     save();
     return true;
@@ -1047,6 +1067,9 @@
         await Promise.all([full, bank]);
       }
     }
+    /* screen：门内章节最终没到货（bundle 404 + 全量回退也失败）就不许开门 ——
+     * 否则 topics.json 的 legacy 兜底题会让 flowAskable 为 true，开出一轮「1/1 题」的假会话。 */
+    if (mode === 'screen' && !gateLoaded()) { gateProgressDone(); return false; }
     /* 开门后的收尾：清掉进度、screen 下启动后台补齐（只补 rest，不回头挡门）。
      * 定义放在等待之后：startBackgroundFill 只能作为「门真的开了」的收尾被调用。 */
     function openGate() {
@@ -2051,6 +2074,7 @@
       gateTargetsOf: gateTargetsOf,
       chapterKeysOf: chapterKeysOf,
       ensureFlowReady: ensureFlowReady,
+      screenRoundGraph: screenRoundGraph,
       extendScreenSession: extendScreenSession,
       backgroundFillState: backgroundFillState,
       SCREEN_GATE_BUNDLES: SCREEN_GATE_BUNDLES,

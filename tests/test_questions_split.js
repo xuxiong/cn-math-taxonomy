@@ -976,6 +976,96 @@ async function runScreenGateTests() {
     assert.ok(/gateKeys\.every\(/.test(body), 'gateLoaded 必须是逐 key 判据（gateKeys.every）');
     assert.ok(/S\.bundleLoaded/.test(body), 'gateLoaded 必须读 S.bundleLoaded（bundle 真的到货才算到齐）');
   });
+
+  /* ---- ⑦ screen 会话只能问「已到货章节」：未到货章节的 legacy 兜底题必须先剔掉 ---- */
+  test('app.js/app-flow.js：screen 建会话与续接都必须走 screenRoundGraph()', function () {
+    const start = bodyAfter(APP, 'function startSession(');
+    assert.ok(/screenRoundGraph/.test(start),
+      'startSession 必须用 screenRoundGraph 给 screen 会话取图（否则未加载章节的 legacy 点会进 stack）');
+    const ext = bodyAfter(APP, 'function extendScreenSession(');
+    assert.ok(/screenRoundGraph/.test(ext),
+      'extendScreenSession 的 replay 也必须用 screenRoundGraph（否则续接又把 legacy 点放回 stack）');
+    const gr = bodyAfter(APP_SRC, 'function screenRoundGraph(');
+    assert.ok(/type !== 'legacy'/.test(gr),
+      'screenRoundGraph 必须剔掉未到货章节的 legacy 兜底题（engine.isTestable 把 legacy 也当可测）');
+    const core = bodyAfter(APP_SRC, 'var CORE = {');
+    assert.ok(/screenRoundGraph\s*:\s*screenRoundGraph/.test(core),
+      'CORE 必须暴露 screenRoundGraph 给 app-flow');
+  });
+
+  await testAsync('行为级：screen 会话只用已到货章节的题（未到货章节的 legacy 点不进 stack）', async function () {
+    APP_MOD.resetQuestionsCache();
+    APP_MOD.setEngine(ENGINE);
+    setupMathGrade(7);
+    const ids = CHAPTER.gradeTargets(APP_MOD.S.D.graph, '七年级', 'math').ids;
+    assert.strictEqual(ids.length, 119, '七年级数学目标数应为 119，实际 ' + ids.length);
+    const split = APP_MOD.gateTargetsOf(ids, 'screen');
+    const gateKeys = APP_MOD.chapterKeysOf(split.gate);
+    const gateFiles = gateFileSet(gateKeys);
+    const calls = stubFetchDynamic(function (u) {
+      if (/data\/topics\.json$/.test(u)) return okJson(TOPICS);
+      if (/data\/dependencies\.json$/.test(u)) return okJson([]);
+      if (/questions-index\//.test(u)) return okJson(index);
+      if (/data\/questions\/[^/]+\.json$/.test(u)) {
+        const file = u.split('/').pop();
+        /* gate 章节的 bundle 立刻到货；其余章节永远挂住（模拟题库还没下来）。 */
+        if (gateFiles[file]) {
+          const p = path.join(DIR, file);
+          return okJson(JSON.parse(fs.readFileSync(p, 'utf8')));
+        }
+        return new Promise(function () {});
+      }
+      return notFound();
+    });
+    try {
+      assert.strictEqual(await APP_MOD.ensureFlowReady(ids, null, 'screen'), true, 'gate 章节到货后门应放行');
+      assert.ok(gateKeys.length > 0 && gateKeys.every(function (k) { return APP_MOD.S.bundleLoaded[k]; }),
+        'gate 章节应已标记到货');
+      const g = APP_MOD.screenRoundGraph();
+      assert.ok(g, 'screenRoundGraph 应返回图');
+      const loaded = APP_MOD.S.bundleLoaded;
+      /* 图中还剩题的点必须全部落在已到货章节：未到货章节的 legacy 已被剔掉。 */
+      const testableIds = Object.keys(g.bank).filter(function (id) { return g.bank[id] && g.bank[id].length; });
+      testableIds.forEach(function (id) {
+        const k = keyForTopic(g.byId[id]);
+        assert.ok(loaded[k], '可测点 ' + id + ' 落在未到货章节：' + k);
+      });
+      const session = ENGINE.createSession(g, ids, { mode: 'screen', limit: 40, confirm: 3, seed: 'gate' });
+      assert.ok(session.stack.length > 0, 'gate 章节有真题，stack 不应为空');
+      session.stack.forEach(function (id) {
+        const k = keyForTopic(g.byId[id]);
+        assert.ok(loaded[k], 'stack 混进未到货章节的点：' + id + ' / ' + k);
+      });
+      const item = ENGINE.nextItem(g, session);
+      assert.ok(item, '已到货章节应能出第一题');
+      assert.notStrictEqual(item.question.type, 'legacy',
+        '第一题不许是题库没到的 legacy 兜底题（「本知识点第 1 / 1 题」的假结论）');
+      const sum = ENGINE.summarize(g, session);
+      assert.ok(sum.untested.length > 0, '未到货章节的点必须仍算未测，不能当成测过');
+      console.log('       screenRoundGraph：可测点 ' + testableIds.length + ' 个 / bank key ' +
+        Object.keys(g.bank).length + ' 个；createSession(...).stack.length = ' + session.stack.length);
+    } finally { restoreFetch(); APP_MOD.resetQuestionsCache(); }
+  });
+
+  await testAsync('行为级：gate 章节全 404 且全量回退也失败时 ensureFlowReady 返回 false（不开假会话）', async function () {
+    APP_MOD.resetQuestionsCache();
+    APP_MOD.setEngine(ENGINE);
+    setupMathGrade(7);
+    const ids = CHAPTER.gradeTargets(APP_MOD.S.D.graph, '七年级', 'math').ids;
+    stubFetchDynamic(function (u) {
+      if (/data\/topics\.json$/.test(u)) return okJson(TOPICS);
+      if (/data\/dependencies\.json$/.test(u)) return okJson([]);
+      if (/questions-index\//.test(u)) return okJson(index);
+      return notFound();   // 章节 bundle 404 + 全量 questions.json 也 404
+    });
+    try {
+      const warns = await captureWarns(async function () {
+        assert.strictEqual(await APP_MOD.ensureFlowReady(ids, null, 'screen'), false,
+          '题源真取不到时必须返回 false：不许拿 topics.json 的 legacy 兜底题开「1/1 题」的假会话');
+      });
+      assert.ok(warns.join(' | ').indexOf('回退全量') >= 0, 'bundle 404 仍应先按老路径 warn 并尝试回退全量');
+    } finally { restoreFetch(); APP_MOD.resetQuestionsCache(); }
+  });
 }
 
 function report() {

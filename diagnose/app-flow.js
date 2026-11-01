@@ -34,6 +34,7 @@
   var questionSourcesSettled = CORE.questionSourcesSettled, ensureFullTopics = CORE.ensureFullTopics, ensureStandards = CORE.ensureStandards;
   var ensureQuestionsForOne = CORE.ensureQuestionsForOne, ensureQuestionsForTopics = CORE.ensureQuestionsForTopics, ensureQuestionsForAnswers = CORE.ensureQuestionsForAnswers;
   var withStage2 = CORE.withStage2, withStage2Data = CORE.withStage2Data, stage2Status = CORE.stage2Status;
+  var screenRoundGraph = CORE.screenRoundGraph;
   var childBar = CORE.childBar, diagnoseHrefFor = CORE.diagnoseHrefFor, routeReturnHref = CORE.routeReturnHref, routeBackBar = CORE.routeBackBar;
   var isPrereqKnowledge = CORE.isPrereqKnowledge, reasonFor = CORE.reasonFor, noteBlind = CORE.noteBlind, blindResultCard = CORE.blindResultCard;
   var llmVariantsMod = CORE.llmVariantsMod;
@@ -67,7 +68,10 @@ function startSession(targets, label, limit, mode) {
     S.pathExpanded = false;
     const screen = mode === 'screen';
     const st = getSettings();
-    S.session = eng().createSession(S.D.graph, targets, {
+    /* screen 轮只给「题库已到货章节」的题，未到货章节的 legacy 兜底题必须剔掉；
+     * 非 screen 完全走老路（S.D.graph）。 */
+    const graph = (screen && screenRoundGraph && screenRoundGraph()) || S.D.graph;
+    S.session = eng().createSession(graph, targets, {
       mode: mode, limit: limit || (screen ? st.screenLimit : st.limit), confirm: st.confirm, seed: newSeed(), avoid: seenList()
     });
     S.sessionMeta = { label: label };
@@ -77,7 +81,7 @@ function startSession(targets, label, limit, mode) {
      * 一题都问不出来，直接 render() 就会收敛成「0 已答题数 / 未测」的空结果页 ——
      * 孩子一题没答就被告知做完了，弱网 5–25s 窗口内点任何知识点都会踩到（P0 回归）。
      * 这里挂起会话参数、显示「题目还在载入，稍等…」，数据到货后由 resumePendingStart() 重开。 */
-    if (!eng().nextItem(S.D.graph, S.session) && !S.session.answers.length) {
+    if (!eng().nextItem(graph, S.session) && !S.session.answers.length) {
       if (!questionSourcesSettled()) {
         S.pendingStart = { targets: targets, label: label, limit: limit, mode: mode };
         renderQuestionsPending();
