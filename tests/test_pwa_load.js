@@ -65,8 +65,8 @@ function section(src, kind) {
 }
 
 /* ---------------------------------------------------------------- sw.js */
-test('sw.js：VERSION 已是 v7（旧 cnm-pwa-v5 缓存靠它清掉）', function () {
-  assert.ok(/var VERSION = 'v7';/.test(SW), 'VERSION 应该是 v7');
+test('sw.js：VERSION 已是 v8（旧 cnm-pwa-v5 缓存靠它清掉）', function () {
+  assert.ok(/var VERSION = 'v8';/.test(SW), 'VERSION 应该是 v8');
   assert.strictEqual(SW.indexOf("VERSION = 'v5'"), -1, 'VERSION 不应再是 v5');
 });
 

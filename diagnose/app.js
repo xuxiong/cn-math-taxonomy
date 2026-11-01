@@ -98,10 +98,25 @@
   let standardsLoaded = false;   // 阶段 3：课标条目正文已到货
   let standardsPromise = null;
   let standardsFailed = false;
-  let questionsSettled = false;  // 题库定案（到货或失败）：判断「题源是否还在路上」的一半
-  let questionsPromise = null;   // 题库加载的一次性 Promise（不改变发起时机，只是让等待方可 await）
+  let questionsPromise = null;   // 首屏之后的全量预取（只有 ?questions=full 排障开关会走，见 questionsAutoLoad）
   let pendingStart = null;       // 题源还没到货就点了目标：把会话参数挂起，数据到货后自动重开
-  let flowPending = false;       // 已经在等题源（防止连点两次叠出两个会话）
+  let flowPending = false;       // 题源门已开着（连点不叠第二个门；门开时按最后一次点击重过门，见 withStage2）
+
+  /* ---- 题库按章节按需取（卡 t_e855de2f）----
+   * data/questions.json 仍是唯一真源，但浏览器不再整份下：构建脚本拆成
+   * data/questions/<slug>.json（每章节一份）+ data/questions-index.json（key → 文件）。
+   * 选一个知识点后只取它所在章节的那一份（gzip 中位 ≈1.5KB、最大 ≈6KB，原先 1164KB）。 */
+  let questionsIndex = null;                    // {"<subject>|<grade>|<chapter>": "<slug>.json"}
+  let questionsIndexPromise = null;
+  const bundlePromises = Object.create(null);   // key → Promise<boolean>（并发调用复用同一个，不重复请求）
+  const bundleLoaded = Object.create(null);     // key → true（已到货；同一章节只取一次）
+  const bankByTopic = Object.create(null);      // topicId → [q]（bundle 到货后建的内存索引）
+  let questionsInFlight = 0;                    // 在飞的题库请求数 → 「题源还在路上」的判据
+  let fullBankPromise = null;                   // 全量兜底（index 缺 key）只取一次
+  let commitPending = false;                    // 答错回溯要先等先修章节的题库，防连点重复提交
+  /* 排障开关：?questions=full 恢复「首屏之后立刻整份下题库」的老行为（拆分文件没构建 / 站点没更新时用）。
+   * 默认关 —— 所以首屏阶段零题库请求。 */
+  const questionsAutoLoad = typeof location !== 'undefined' && /[?&]questions=full(?:&|$)/.test(location.search);
 
   /* ------------------------------------------------------------ 小工具 */
   function h(tag, attrs) {
@@ -334,7 +349,9 @@
     // 题库还没有：buildGraph 会为每个知识点回退到 topics.json 的 diagnostic_question
     const graph = E.buildGraph(topics, deps, null);
     D = { topics: topics, deps: deps, stdById: {}, graph: graph, tree: buildTree(topics), aliases: (js[1] && js[1].aliases) || {} };
-    questionsPromise = loadQuestions();   // 题库仍在首屏之后立刻后台加载（时序与 A+B 一致，只是把 Promise 存下来）
+    /* 题库不再在首屏之后整份预热（原 loadQuestions() 全量拉 1164KB gzip）：改成选中知识点后
+     * 由 ensureQuestionsForOne(topicId) 只取它所在章节的那一份。排障开关 ?questions=full 才走老路。 */
+    if (questionsAutoLoad) questionsPromise = loadQuestions();
   }
 
   /* 纯函数（Node 可直测）：这份数据快照上，这些目标还问得出题吗？
@@ -369,10 +386,10 @@
     return askable(E, D.topics, D.deps, graphQuestions, targets, sessionOpts(limit, mode));
   }
 
-  /* 两份题源（题库 questions.json / 全量 topics 的 diagnostic_question）都定案了吗？
-   * 未定案 = 还有一份在路上 → 这时候不给孩子看结果页，显示「题目还在载入，稍等…」。 */
+  /* 两份题源（按章节取的题库 / 全量 topics 的 diagnostic_question）都定案了吗？
+   * 未定案 = 还有题库请求在路上 → 这时候不给孩子看结果页，显示「题目还在载入，稍等…」。 */
   function questionSourcesSettled() {
-    return questionsSettled && (fullTopicsLoaded || fullTopicsFailed);
+    return questionsInFlight === 0 && (fullTopicsLoaded || fullTopicsFailed);
   }
 
   /* 重建图。D.topics 里始终是同一批对象（字段补齐是原地完成的），所以重建只换索引与先修/题库。 */
@@ -473,27 +490,201 @@
     return ensureDeps();
   }
 
-  /* 题库加载只发起一次（时机与 A+B 完全一致：loadData 末尾立刻开始，不 await 在首屏链上）。
-   * 存下 Promise 只是为了让「题源还在路上」的等待方能等到它。 */
-  function ensureQuestions() {
-    if (questionsPromise) return questionsPromise;
-    questionsPromise = loadQuestions();
-    return questionsPromise;
+  /* ------------------------------------------------------------ 题库（按章节按需取）
+   * 一次「取题库」= 一次索引查表 + 一个章节 bundle（中位 ≈1.5KB gzip）。
+   * 同一章节只请求一次：并发调用复用同一个 Promise（bundlePromises）。 */
+
+  /* index 的 key：与 scripts/build-questions-split.mjs 的 keyOf() 同一套规则。
+   * 数学 topics 没有 subject 字段，用与 engine.subjectOf() 一致的推导。 */
+  function questionsKeyOf(t) {
+    if (!t) return null;
+    const subj = E.subjectOf ? E.subjectOf(t) : (t.subject || 'math');
+    const grade = (t.grade == null || t.grade === '') ? '' : String(t.grade);
+    return subj + '|' + grade + '|' + String(t.chapter || '');
   }
 
-  /* 「点进流程」的题源门（阶段 2）：先修关系 → 至少一份题源。
+  /* data/questions-index.json 实测 ≈77KB 原文 / ≈19KB gzip（整份题库的 1/60），用到时才取，取一次记住。 */
+  function ensureQuestionsIndex() {
+    if (questionsIndex) return Promise.resolve(questionsIndex);
+    if (questionsIndexPromise) return questionsIndexPromise;
+    questionsIndexPromise = (async function () {
+      try {
+        const r = await fetch('../data/questions-index.json');
+        if (!r.ok) return null;
+        const js = await r.json();
+        if (!js || typeof js !== 'object' || Array.isArray(js)) return null;
+        questionsIndex = js;
+        return js;
+      } catch (e) {
+        return null;   // 索引坏了/没构建：交给全量兜底
+      }
+    })();
+    questionsIndexPromise.then(function (m) { if (!m) questionsIndexPromise = null; });   // 失败下次可重试
+    return questionsIndexPromise;
+  }
+
+  /* 把一批题并进内存索引并重建图。同一道题（同 id）只进一次：重复调用幂等。 */
+  function addQuestions(list) {
+    if (!D || !Array.isArray(list)) return 0;
+    const allow = Object.create(null);
+    D.topics.forEach(function (t) { allow[t.id] = true; });
+    const fresh = [];
+    list.forEach(function (q) {
+      if (!q || !q.id || !q.topicId || !allow[q.topicId]) return;
+      const arr = bankByTopic[q.topicId] || (bankByTopic[q.topicId] = []);
+      for (let i = 0; i < arr.length; i++) { if (arr[i].id === q.id) return; }
+      arr.push(q);
+      fresh.push(q);
+    });
+    if (!fresh.length) return 0;
+    graphQuestions = (graphQuestions || []).concat(fresh);   // 重建图时复用（buildGraph 自己按题号排序）
+    rebuildGraph();
+    return fresh.length;
+  }
+
+  /* 题库到货：把「点了目标但还没出题」的那次操作续上；没人等就静默重绘一次当前视图。
+   * 与改前 loadQuestions 末尾的行为一致，只是现在每个 bundle 到货都可能触发。 */
+  function questionsArrived() {
+    if (typeof document === 'undefined') return;
+    if (resumePendingStart()) return;
+    if (session || prac || pracLoading) return;   // 用户已在流程里：只更新 D，不重绘
+    renderStart(startErr);
+  }
+
+  /* 取一个知识点所在章节的题库：同一章节只请求一次，并发调用复用同一个 Promise。
+   * 返回 Promise<boolean>：到货 true（该知识点本身没题也算到货），失败 false（下次可重试）。 */
+  function ensureQuestionsForOne(topicId) {
+    if (!D || !D.graph) return Promise.resolve(false);
+    const t = D.graph.byId[topicId];
+    if (!t) return Promise.resolve(false);
+    const key = questionsKeyOf(t);
+    if (bundleLoaded[key]) return Promise.resolve(true);
+    if (bundlePromises[key]) return bundlePromises[key];
+    questionsInFlight++;
+    const p = (async function () {
+      try {
+        return await loadBundle(key);
+      } catch (e) {
+        return false;
+      } finally {
+        questionsInFlight--;
+      }
+    })();
+    bundlePromises[key] = p;
+    p.then(function (ok) {
+      if (!ok) { delete bundlePromises[key]; return; }   // 失败：清掉 Promise，下次操作再试
+      bundleLoaded[key] = true;
+      questionsArrived();
+    });
+    return p;
+  }
+
+  /* 取一组知识点所在章节的题库（去重后并发；同一章节只会发一个请求）。
+   * 并发按 6 条泳道走：整年级诊断的目标可能有几百个、落在几十个章节上，
+   * 一次性全部发起会把浏览器同域连接打满（HTTP/1.1 上限 6，多的排队），
+   * 也会和首屏/正在做的题抢带宽。总量不变（每章节仍只取一次），只是排成队列。 */
+  const QUESTION_LANES = 6;
+  function ensureQuestionsForTopics(ids) {
+    const uniq = Array.from(new Set((ids || []).filter(Boolean)));
+    if (!uniq.length) return Promise.resolve(true);
+    const results = new Array(uniq.length);
+    let cursor = 0;
+    function lane() {
+      if (cursor >= uniq.length) return Promise.resolve();
+      const i = cursor++;
+      return ensureQuestionsForOne(uniq[i]).then(function (ok) {
+        results[i] = ok;
+        return lane();
+      });
+    }
+    const lanes = [];
+    for (let i = 0; i < Math.min(QUESTION_LANES, uniq.length); i++) lanes.push(lane());
+    return Promise.all(lanes).then(function () {
+      return results.every(function (ok) { return ok; });
+    });
+  }
+
+  /* 恢复存档用：目标 + 存档里答过的题的章节都要先取到，否则 replay 会用「空题库」算
+   * needConfirm，判定与存档时不一致（答 3 题掌握会被算成 1 题）。 */
+  function ensureQuestionsForAnswers(targets, answers) {
+    return ensureQuestionsForTopics((targets || []).concat((answers || []).map(function (a) { return a && a.id; })));
+  }
+
+  /* 取一个章节的 bundle。两条兜底（都与 warn 文案一起，测试守：tests/test_questions_split.js）：
+   *   - index 里查不到 key（老数据 / 新加章节没重新构建）→ 回退全量；
+   *   - bundle 取不到（404 / 离线未缓存 / 坏 JSON / 非数组）→ 同样的 warn + 回退全量。
+   * 为什么 bundle 取不到也必须回退：不回退就静默落到 topics.json 的 diagnostic_question，
+   * 每个点只剩 1 道兜底题，答完一题就收敛成「都掌握啦，真棒！…目标知识点已掌握」——
+   * 等于给孩子一个假结论（复核卡 t_588d8341 用注入 404 的服务实测过）。 */
+  async function loadBundle(key) {
+    const index = await ensureQuestionsIndex();
+    const file = index && typeof index[key] === 'string' ? index[key] : null;
+    if (file) {
+      const list = await fetchBundle(file);
+      if (Array.isArray(list)) { addQuestions(list); return true; }
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('[questions] bundle 取不到，回退全量', key, file);
+      }
+      return loadFullQuestions();
+    }
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn('[questions] index 缺 key，回退全量', key);
+    }
+    return loadFullQuestions();
+  }
+
+  /* 取一个 bundle 文件：404 / 网络错 / 坏 JSON / 不是数组，一律返回 null（交给 loadBundle 回退全量）。 */
+  async function fetchBundle(file) {
+    try {
+      const r = await fetch('../data/questions/' + file);
+      if (!r.ok) return null;
+      const list = await r.json();
+      return Array.isArray(list) ? list : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /* 全量兜底只发起一次；失败清 Promise 以便下次重试。 */
+  function loadFullQuestions() {
+    if (fullBankPromise) return fullBankPromise;
+    fullBankPromise = loadQuestions();
+    fullBankPromise.then(function (ok) { if (!ok) fullBankPromise = null; });
+    return fullBankPromise;
+  }
+
+  /* 题库门：取「这一轮要测的目标」所在章节的题库（无参形式给 ensureFlowReady 用）。
+   * flowTargets 由 ensureFlowReady 在调用前放进；显式版本是 ensureQuestionsForTopics(ids)，
+   * 练习 / 恢复存档 / 先修回溯那些入口直接传 ids。 */
+  let flowTargets = [];
+  function ensureQuestions() {
+    return ensureQuestionsForTopics(flowTargets);
+  }
+
+  /* 「点进流程」的题源门（阶段 2）：先修关系 → 目标所在章节的题库。
    * 顺序：先修关系必须等（出题正确性依赖它）；然后等两份题源里先到的那一份，
    * 够出题就立刻放行（不多等另一份），不够再等齐。两份都失败才返回 false。
-   * 为什么不能只 await ensureDeps()：lite 没有 diagnostic_question，题库弱网下要几十秒，
+   * 为什么不能只 await ensureDeps()：lite 没有 diagnostic_question，
    * 那时候开会话就是一题都问不出来的空结果页（P0 回归，reviewer 在 50KB/s 下必现）。 */
   async function ensureFlowReady(targets, limit, mode) {
     await ensureDeps();
-    if (flowAskable(targets, limit, mode)) return true;
-    stage2Status('题目还在载入，稍等…');
+    flowTargets = targets || [];
+    /* 先把「这些目标所在章节的题库」这一份开起来，再判能不能出题。
+     * 顺序曾经是「能出题就早退」，于是第二次点知识点时（全量 topics 已到货、目标自带
+     * diagnostic_question）会直接放行、一次 bundle 都不取 —— 会话退化成「本知识点第 1 / 1 题」，
+     * 答完一题就是假结论（A→B 快速切换时必现，卡 t_83ca3ac5 实测）。
+     * 同一章节只会请求一次（bundleLoaded / 在途 Promise 去重），重复点不产生额外请求。 */
     const full = ensureFullTopics();
-    const bank = ensureQuestions();
+    const bank = ensureQuestions();                   // 只取这些目标所在章节（不再是整份 1164KB 题库）
+    if (flowAskable(targets, limit, mode) && questionsInFlight === 0) return true;
+    stage2Status('题目还在载入，稍等…');
     await Promise.race([full, bank]);
-    if (flowAskable(targets, limit, mode)) return true;
+    /* 题库还没定案（还在路上）时不许开门：bundle 404 → 回退全量 7.8MB 的那几秒里，
+     * 图里只剩 topics.json 的 diagnostic_question，这时候开出的会话就是「本知识点第 1 / 1 题」，
+     * 答完一题直接给结论 —— 复核卡 t_588d8341 与 t_83ca3ac5 都是这么复现的假结论。
+     * 判据用 questionsInFlight（在飞的题库请求数）而不是「bank 为空」：
+     * buildGraph 给无真题的点塞 type:'legacy' 兜底题，bank 永远非空。 */
+    if (flowAskable(targets, limit, mode) && questionsInFlight === 0) return true;
     await Promise.all([full, bank]);
     return flowAskable(targets, limit, mode);
   }
@@ -545,9 +736,8 @@
     }
   }
 
-  /* 阶段 2：题库后台加载（约 1.27MB gzip / 7.5MB 原文，弱网下几十秒），绝不阻塞首屏。
-   * 注意：这里的 await 只在本函数内部 —— loadData 调用它时不等（见上面的 loadData），
-   * 所以首屏渲染只取决于阶段 1 那四份。
+  /* 全量兜底（1.27MB gzip）：只在 index 缺 key 或 bundle 取不到时由 loadBundle / ?questions=full 触发。
+   * 首屏阶段不再调用它，所以首屏零题库请求。
    * 到货后用同一份 topics / deps 重建图，然后：
    *   - 用户还没进诊断流程（首页 / 图谱 / 选题列表）→ 静默重绘一次当前视图
    *   - 已经进了诊断 / 讲解 / 自评（session / prac 非空）→ 只更新 D，不重绘，
@@ -564,20 +754,21 @@
         const allow = {};
         D.topics.forEach(function (t) { allow[t.id] = true; });
         questions = questions.filter(function (q) { return q && allow[q.topicId]; });
-        graphQuestions = questions;                  // 缓存：之后 ensureDeps / ensureFullTopics 重建图时复用
+        addQuestions(questions);                     // 按章节已到货的题不重复加（addQuestions 按 id 去重）
+        graphQuestions = questions;                  // 全量在手：之后 ensureDeps / ensureFullTopics 重建图时复用
         D.graph = E.buildGraph(D.topics, D.deps, questions);
         ok = true;
       }
     } catch (e) {
       questions = null;   // 题库损坏：静默当作没有题库（首屏阶段 1 早就渲染完了，不受影响）
     }
-    questionsSettled = true;
     if (typeof document === 'undefined') return;
     /* 有人在等这份题库（点了目标但题库还没到货）：按到货后的图重开会话，别让调用方再画首页。 */
     if (resumePendingStart()) return;
     if (!ok) { questionsPromise = null; return; }    // 失败后再点一次时可以重试
     if (session || prac || pracLoading) return;      // 用户已在流程里：只更新 D，不重绘
     renderStart(startErr);                           // 首页 / 图谱 / 选题列表：静默重绘
+    return ok;
   }
 
   function buildTree(topics) {
@@ -773,16 +964,38 @@
   /* 所有「进流程」的按钮都过这一道：先修关系 + 至少一份题源到货（见 ensureFlowReady）。
    * ensureFlowReady 在取不到时会降级/失败返回，绝不会把用户无声卡住：
    *   - 停在中途（题库还在下）→ 开始页留一行「题目还在载入，稍等…」，到货后自动继续；
-   *   - 两份题源都失败 → 给一张可操作的重试卡（不是 0 题空结果页）。 */
+   *   - 两份题源都失败 → 给一张可操作的重试卡（不是 0 题空结果页）。
+   * latest-click-wins：等待期间又点了别的知识点，门一开就按「最后一次点击」重过门，
+   * 不为用户已经不想要的那次点击开会话（旧版 `if (flowPending) return;` 把后一次点击静默吞掉：
+   * 点 A（慢章）→ 0.45s 内点 B（快章）→ B 的题库一次都没请求，最后开的却是 A 的会话）。
+   * 同一章节重过门命中的是 ensureQuestionsForOne 的在途 Promise，不会重复发请求。 */
+  let flowSeq = 0;      // 每次点击 +1：门开时用它判断「还是不是最新那次点击」
+  let flowJob = null;   // 最后一次点击的 { targets, mode, fn }
+
   function withStage2(targets, mode, fn) {
-    if (flowPending) return;               // 已经在等题源：连点不叠第二次
+    flowJob = { targets: targets, mode: mode, fn: fn };
+    flowSeq++;
+    if (flowPending) return;       // 门已开着：那次门开时会按最新点击重过一遍，不叠第二个门
+    openStage2Gate();
+  }
+
+  function openStage2Gate() {
+    const seq = flowSeq;
+    const job = flowJob;
     flowPending = true;
     if (typeof document !== 'undefined') stage2Status('正在载入先修关系…');
-    ensureFlowReady(targets, undefined, mode).then(function (ok) {
+    ensureFlowReady(job.targets, undefined, job.mode).then(function (ok) {
+      if (seq !== flowSeq) return openStage2Gate();   // 等待期间又点了别的：按最新那次重过门
       flowPending = false;
       if (typeof document !== 'undefined') stage2Status('');
-      if (ok) { fn(); return; }
-      renderFlowBlocked(targets, mode, fn);
+      if (ok) { job.fn(); return; }
+      renderFlowBlocked(job.targets, job.mode, job.fn);
+    }, function () {
+      /* 取题源本身抛错（不该发生，但别让 flowPending 卡死成「点了没反应」） */
+      if (seq !== flowSeq) return openStage2Gate();
+      flowPending = false;
+      if (typeof document !== 'undefined') stage2Status('');
+      renderFlowBlocked(job.targets, job.mode, job.fn);
     });
   }
 
@@ -792,6 +1005,17 @@
     ensureStage2Data().then(function () {
       if (typeof document !== 'undefined') stage2Status('');
       fn();
+    });
+  }
+
+  /* 恢复存档：先把存档里答过的章节题库取到再 replay（replay 的 needConfirm 看当时的题库），
+   * 取不到也照 replay —— 只是判定按现有图算，和改前「题库没到就恢复」的处境一样。 */
+  function restoreFromSave(saved, onFail) {
+    ensureQuestionsForAnswers(saved.targets, saved.answers).then(function () {
+      if (restoreSession(saved)) { render(); return; }
+      lsDel(sessionKey());
+      if (typeof onFail === 'function') { onFail(); return; }
+      renderStart('存档无法恢复，已清除。');
     });
   }
 
@@ -814,7 +1038,25 @@
   }
 
   function commit(result) {
+    if (commitPending) return;                       // 防连点：上一次作答还没落定
     const item = E.nextItem(D.graph, session);
+    if (!item) return;
+    /* 答错 / 不会会向先修回溯，而引擎的 isTestable() 看的是「当时有没有题库」：
+     * 题库按章节懒取，所以应用作答之前先把本题直接先修所在章节的题库取到
+     * （同一章节只取一次；通常和本题同章 → 0 个新请求）。
+     * 取不到（弱网 / 404）就按现有降级继续 —— 引擎跳过没题的先修，绝不静默变成 0 题空结果页。 */
+    if (result === 'correct') { applyAnswerAndRender(item, result); return; }
+    const pre = (D.graph.prereqs[item.topicId] || []).map(function (p) { return p.id; });
+    if (!pre.length) { applyAnswerAndRender(item, result); return; }
+    commitPending = true;
+    ensureQuestionsForTopics(pre).then(function () {
+      commitPending = false;
+      applyAnswerAndRender(E.nextItem(D.graph, session) || item, result);
+    });
+  }
+
+  /* 落定一次作答并按新图重绘（commit 的两条分支共用）。 */
+  function applyAnswerAndRender(item, result) {
     session = E.applyAnswer(D.graph, session, item.topicId, result, { text: ui.answer });
     markSeen(item.question.id);
     resetUi();
@@ -921,6 +1163,28 @@
   function pathPracticeExists() { return !!(pracPath && pracPath.queue && pracPath.queue.length); }
 
   function startPractice(topicId) {
+    /* 题库按章节懒取：这个知识点所在章节的题库可能还没到货（结果页学习路径里的点就可能
+     * 在别的章节）。先取一次（同一章节只发一个请求），取不到就明确说，不静默变空练习。 */
+    var pt = D && D.graph ? D.graph.byId[topicId] : null;
+    if (!pt || pt.external) { alert('这个知识点暂时没有练习题。'); return; }
+    if (!(D.graph.bank[topicId] || []).length) {
+      pracLoading = { topicId: topicId, bank: true };
+      resetUi();
+      render();
+      ensureQuestionsForOne(topicId).then(function (ok) {
+        pracLoading = null;
+        if (!ok || !(D.graph.bank[topicId] || []).length) {
+          if (typeof console !== 'undefined' && console.warn) {
+            console.warn('[questions] 练习取题库失败', topicId, ok ? 'empty' : 'fetch');
+          }
+          alert('这个知识点的题库还没取到，请检查网络后重试。');
+          render();
+          return;
+        }
+        startPractice(topicId);
+      });
+      return;
+    }
     /* 练习模块（variants.js + llm-* 三件）不在首屏链上：第一次点「练习」才按需加载。
      * 加载期间复用已有的「正在准备题目」页；失败明确告诉学生，不静默降级成空练习。 */
     if (!variantsMod()) {
@@ -1002,7 +1266,8 @@
         h('span', { class: 'grow' }),
         h('span', { class: 'muted' }, '正在准备题目…')),
       h('div', { class: 'progress' }, h('i', { style: 'width:30%' })),
-      h('p', { style: 'margin:12px 0;color:#888' }, '正在向 AI 网关请求变式题，请稍候…')));
+      h('p', { style: 'margin:12px 0;color:#888' },
+        pracLoading.bank ? '正在取这个知识点的题库（按章节，几 KB），请稍候…' : '正在向 AI 网关请求变式题，请稍候…')));
   }
   function practiceNext(result) {
     prac.pact.push(result);
@@ -1244,7 +1509,7 @@
       page.append(h('div', { class: 'banner' },
         h('b', { text: '有一份未清除的诊断：' }), saved.label || saved.targets.map(nameOf).join('、'),
         '（已答 ' + (saved.answers || []).length + ' 题）　',
-        h('button', { class: 'primary', onclick: function () { withStage2(saved.targets, saved.mode, function () { if (restoreSession(saved)) render(); else { lsDel(sessionKey()); renderStart('存档无法恢复，已清除。'); } }); } }, '继续'),
+        h('button', { class: 'primary', onclick: function () { withStage2(saved.targets, saved.mode, function () { restoreFromSave(saved); }); } }, '继续'),
         ' ', h('button', { onclick: function () { lsDel(sessionKey()); renderStart(); } }, '放弃存档')));
     }
     if (errMsg) page.append(h('p', { class: 'err', text: errMsg }));
@@ -2236,13 +2501,20 @@
     return out;
   }
 
-  /* T3：练习按钮（结果页每个知识点条目旁） */
+  /* T3：练习按钮（结果页每个知识点条目旁）。题库按章节懒取还没到货时也给按钮：
+   * 文案退成「练习」，点下去由 startPractice 先取该章节的题库（取不到会明说，不会静默空练习）。 */
   function practiceBtn(id) {
     const t = D.graph.byId[id];
-    if (!t || !D.graph.bank[id] || !D.graph.bank[id].length) return null;   // 小学/无题点不练
+    if (!t || t.external) return null;   // 小学 / 前置知识不练
+    const bank = D.graph.bank[id] || [];
     const done = practicedMap()[id];
-    const n = (E.pickPracticeQuestions(D.graph, id, PRACTICE_N, seenList()) || []).length;
-    const label = done ? '再练一遍' : (n > 1 ? '练习这 ' + n + ' 题' : '练习这道题');
+    let label;
+    if (bank.length) {
+      const n = (E.pickPracticeQuestions(D.graph, id, PRACTICE_N, seenList()) || []).length;
+      label = done ? '再练一遍' : (n > 1 ? '练习这 ' + n + ' 题' : '练习这道题');
+    } else {
+      label = '练习';
+    }
     return h('button', { type: 'button', class: 'practice-btn no-print',
       onclick: function (e) { e.stopPropagation(); e.preventDefault(); withStage2Data(function () { startPractice(id); }); } },
       label);
@@ -2261,6 +2533,50 @@
         '开始练：' + nameOf(first) + '（第 1 关 / 共 ' + queue.length + ' 关）'));
   }
 
+  /* 这一轮是不是「只有 diagnostic_question 兜底题」？
+   * 判据不能是「D.graph.bank 里为空」：engine.buildGraph 会给没有真题的点塞一道 type 'legacy'
+   * 的兜底题（diagnostic_question），bank 里永远有题（复核卡 t_588d8341 实测）。所以判据是
+   * 「目标点在图里的题全是 legacy 兜底题」——只看图，不动引擎判分。
+   * graph/session 作为参数传入是为了 Node 直测（tests/test_questions_split.js）。 */
+  function diagnosticOnlyRound(graph, sess) {
+    if (!graph || !sess || !Array.isArray(sess.targets) || !sess.targets.length) return false;
+    const bank = graph.bank || {};
+    const ids = sess.targets.filter(function (id) { return graph.byId && graph.byId[id]; });
+    if (!ids.length) return false;
+    return ids.every(function (id) {
+      const list = bank[id] || [];
+      return !list.length || list.every(function (q) { return q && q.type === 'legacy'; });
+    });
+  }
+
+  /* 结果页头条（纯函数，Node 直测）。只有诊断题的一轮必须先说「不作数」，
+   * 绝不能出现「目标知识点已掌握」——那是答完 1 道兜底题就给出的假结论。 */
+  function resultHeadline(sum, sess, screen, diagOnly, targetsMastered) {
+    if (diagOnly) {
+      return '题库没取到，本轮只做了 ' + sum.asked + ' 道诊断题，结果不作数（答完一题说明不了掌握情况）。';
+    }
+    if (screen) {
+      if (!sum.weak.length && !sum.shaky.length) return sum.untested.length
+        ? '已测到的知识点没有发现薄弱点，另有 ' + sum.untested.length + ' 个没测到。'
+        : '范围内的知识点都已掌握，没有发现薄弱点。';
+      return '范围内共 ' + sess.targets.length + ' 个知识点：薄弱 ' + sum.weak.length + '、不稳 ' + sum.shaky.length + '、未测 ' + sum.untested.length +
+        '。先看下面的「按章汇总」，薄弱的章排在前面。';
+    }
+    if (!sum.roots.length && !sum.shaky.length && targetsMastered) return '目标知识点已掌握，没有发现需要补的先修。';
+    if (!sum.roots.length && !sum.shaky.length) return '没有判出薄弱点，但目标尚未全部测到。';
+    if (!sum.roots.length) return '没有判出薄弱点，但有 ' + sum.shaky.length + ' 个知识点「不稳」（中途答错过、确认题答对），建议巩固。';
+    return '共发现 ' + sum.roots.length + ' 个薄弱根因' + (sum.shaky.length ? '、' + sum.shaky.length + ' 个不稳的知识点' : '') + '，按下面的学习路径从前往后补。';
+  }
+
+  /* 题库没取到时的结果卡：替掉「接下来练什么」小结（那句「都掌握啦，真棒！」在这一轮是假的）。 */
+  function noBankCard(sum) {
+    return h('div', { class: 'card', id: 'advice-summary' },
+      h('h2', { text: '题库没取到，这轮结果不作数' }),
+      h('p', { style: 'margin:2px 0' }, '题库没取到，本轮只做了 ' + sum.asked + ' 道诊断题，结果不作数。'),
+      h('p', { class: 'muted small', style: 'margin:2px 0' },
+        '这一轮的结论既不能说明掌握，也不能说明薄弱。换个有网的网络后，回到开始页重新点一次这个知识点，工具会重新取整套题。'));
+  }
+
   function renderResult() {
     const sum = E.summarize(D.graph, session);
     /* 阶段 3：进结果页（详情 / 课标对照）才取课标条目正文；两个 ensure 都到货后原地换掉占位文字，不重绘。 */
@@ -2269,6 +2585,9 @@
     const rootSet = new Set(sum.roots.map(function (r) { return r.id; }));
     const screen = session.mode === 'screen';
     const targetSet = new Set(screen ? [] : session.targets);
+    /* 题库整个没取到时（bundle 404 / 离线未缓存 / 全量兜底也失败），本轮只有 diagnostic_question 兜底题：
+     * 结果页必须先说「不作数」——「都掌握啦，真棒！」和一题就判的「已掌握」都是假结论。 */
+    const diagOnly = diagnosticOnlyRound(D.graph, session);
     const page = h('div');
     if (demo) page.append(demoBanner());
     saveToChild(sum);
@@ -2276,23 +2595,13 @@
     page.append(childBar('result'));
     const pracBanner = practiceResultBanner();
     if (pracBanner) page.append(pracBanner);
+    else if (diagOnly) page.append(noBankCard(sum));
     else page.append(adviceCard(sum));
 
     const targetsMastered = session.targets.every(function (id) { return E.statusOf(session, id) === 'mastered'; });
     const chapters = screen ? E.chapterSummary(D.graph, session) : null;
     const outOfScope = screen ? sum.roots.filter(function (r) { return r.outOfScopePrereqs.length; }) : [];
-    let headline;
-    if (screen) {
-      if (!sum.weak.length && !sum.shaky.length) headline = sum.untested.length
-        ? '已测到的知识点没有发现薄弱点，另有 ' + sum.untested.length + ' 个没测到。'
-        : '范围内的知识点都已掌握，没有发现薄弱点。';
-      else headline = '范围内共 ' + session.targets.length + ' 个知识点：薄弱 ' + sum.weak.length + '、不稳 ' + sum.shaky.length + '、未测 ' + sum.untested.length +
-        '。先看下面的「按章汇总」，薄弱的章排在前面。';
-    }
-    else if (!sum.roots.length && !sum.shaky.length && targetsMastered) headline = '目标知识点已掌握，没有发现需要补的先修。';
-    else if (!sum.roots.length && !sum.shaky.length) headline = '没有判出薄弱点，但目标尚未全部测到。';
-    else if (!sum.roots.length) headline = '没有判出薄弱点，但有 ' + sum.shaky.length + ' 个知识点「不稳」（中途答错过、确认题答对），建议巩固。';
-    else headline = '共发现 ' + sum.roots.length + ' 个薄弱根因' + (sum.shaky.length ? '、' + sum.shaky.length + ' 个不稳的知识点' : '') + '，按下面的学习路径从前往后补。';
+    const headline = resultHeadline(sum, session, screen, diagOnly, targetsMastered);
 
     const more = screen ? 10 : 4;
     const summaryCard = h('div', { class: 'card', id: 'summary' },
@@ -2302,7 +2611,7 @@
         stat('ask', sum.asked, '已答题数'),
         stat('bad', sum.weak.length, '薄弱'),
         stat('shaky', sum.shaky.length, '不稳'),
-        stat('ok', sum.mastered.length, '已掌握'),
+        diagOnly ? null : stat('ok', sum.mastered.length, '已掌握'),
         stat('unk', sum.untested.length, '未测')),
       sum.unconfirmed.length ? h('p', { class: 'notice' }, '「' + sum.unconfirmed.map(nameOf).join('」「') + '」答错过但还没完成确认就到了题量上限，没来得及复测，暂按薄弱处理。') : null,
       sum.limitReached ? h('p', { class: 'notice' }, '已达到题量上限（' + sum.limit + '），剩余没测到的知识点标为「未测」。薄弱根因的先修里若有未测点，真正的根因可能更靠前。',
@@ -2364,7 +2673,7 @@
         h('div', { id: 'path-cy', role: 'img', 'aria-label': '先修路径图' }),
         h('div', { id: 'node-tip', class: 'node-tip', role: 'tooltip', hidden: true }))));
 
-    page.append(h('details', { class: 'card', id: 'mastered' },
+    if (!diagOnly) page.append(h('details', { class: 'card', id: 'mastered' },
       h('summary', null, h('b', null, '已掌握的知识点（' + sum.mastered.length + '）')),
       sum.mastered.map(function (id) {
         const src = session.status[id].src === 'direct' ? '答对' : '由后续知识点答对推断';
@@ -2895,7 +3204,7 @@
       const saved = lsGet(sessionKey());
       const same = saved && JSON.stringify(saved.targets) === JSON.stringify(Array.from(new Set(resolved.ids))) &&
         (saved.mode || 'target') === (resolved.mode || 'target') && (seedParam == null || saved.seed === seedParam);
-      if (same && restoreSession(saved)) { render(); return; }
+      if (same) { restoreFromSave(saved, function () { startSession(resolved.ids, resolved.label, limit, resolved.mode); }); return; }
       startSession(resolved.ids, resolved.label, limit, resolved.mode);
       return;
     }
@@ -2925,7 +3234,25 @@
   if (typeof window !== 'undefined') init();
   else if (typeof module !== 'undefined' && module.exports) {
     /* askable：P0 回归守卫用的纯判据（tests/test_data_split.js 直测它：
-     * lite + 无题库 + 全量未到货 的图上必须返回 false，否则就会开出 0 题空会话）。 */
-    module.exports = { routeReturnHref: routeReturnHref, askable: askable };
+     * lite + 无题库 + 全量未到货 的图上必须返回 false，否则就会开出 0 题空会话）。
+     * 其余几个是本题库拆分 / 退化的守卫（tests/test_questions_split.js）：
+     *   loadBundle          —— bundle 404 时 warn + 回退全量（真跑，配合注入的 fetch 计数）；
+     *   diagnosticOnlyRound —— 「这一轮只有 diagnostic_question 兜底题」的判据；
+     *   resultHeadline      —— 结果页头条文案（只有兜底题时不许说「已掌握」）；
+     *   resetQuestionsCache —— 用例之间清掉缓存/在途 Promise。 */
+    module.exports = {
+      routeReturnHref: routeReturnHref,
+      askable: askable,
+      loadBundle: loadBundle,
+      diagnosticOnlyRound: diagnosticOnlyRound,
+      resultHeadline: resultHeadline,
+      resetQuestionsCache: function () {
+        questionsIndex = null; questionsIndexPromise = null; fullBankPromise = null; questionsPromise = null;
+        Object.keys(bundlePromises).forEach(function (k) { delete bundlePromises[k]; });
+        Object.keys(bundleLoaded).forEach(function (k) { delete bundleLoaded[k]; });
+        Object.keys(bankByTopic).forEach(function (k) { delete bankByTopic[k]; });
+        graphQuestions = null;
+      }
+    };
   }
 })();

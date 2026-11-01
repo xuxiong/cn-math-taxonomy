@@ -14,7 +14,7 @@
  * 改了 SHELL 或 DATA 列表、或数据结构变了，就把 VERSION 加一。 */
 'use strict';
 
-var VERSION = 'v7';
+var VERSION = 'v8';
 var CACHE = 'cnm-pwa-' + VERSION;
 var SCOPE = self.registration.scope;
 
@@ -78,9 +78,15 @@ var DATA = [
   'data/topics.json',
   'data/dependencies.json',
   'data/cn-curriculum-standards.json',
-  'data/questions.json',
   'data/id-aliases.json'
 ];
+
+/* 题库不再预热（卡 t_e855de2f）：
+ *   data/questions.json 整份 1164KB gzip、data/questions/*.json 有 894 个 —— 预热哪一个都没意义，
+ *   而且慢网下会跟首屏、跟正在做的题抢带宽。
+ *   题库改走运行时缓存：后缀是 .json 的资源本来就走 staleWhileRevalidate（见下面 fetch 策略②），
+ *   取到就写进 cnm-pwa-v8（put() 里 cache.put）。所以离线时「做过的章节」照样能做题，
+ *   没做过的章节本来也没题可做（不会白屏，会明说题库没取到）。 */
 
 function abs(path) { return new URL(path, SCOPE).href; }
 
