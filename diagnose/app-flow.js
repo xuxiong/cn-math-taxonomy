@@ -5,17 +5,24 @@
  * 全部代码注释用中文且说明 WHY。 */
 (function (global, factory) {
   var api = factory(global);
-  if (typeof module !== 'undefined' && module.exports) module.exports = api;
-  else {
-    global.DiagFlow = api;
-    /* 浏览器下把自己注册成 DiagFlow：app.js 的 flow('xxx') 由此转发（show→closeShare、路径图等）。 */
-    if (global.DiagCore && typeof global.DiagCore.registerFlow === 'function') global.DiagCore.registerFlow(api);
+  /* 注册失败必须出声：a94fef3 拆分时 CORE 漏挂 registerFlow，这里的 if 静默跳过，
+   * FLOW 恒为 null → 点整年级/单点全都「没反应」。Node 直测也走这里，保证
+   * require('../diagnose/app-flow.js') 后 DiagCore.flow('enter') 立刻可用。 */
+  if (global.DiagCore && typeof global.DiagCore.registerFlow === 'function') global.DiagCore.registerFlow(api);
+  else if (typeof console !== 'undefined' && console.warn) {
+    console.warn('[flow] DiagCore.registerFlow 缺失，进流程会无反应', typeof (global.DiagCore && global.DiagCore.registerFlow));
   }
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else global.DiagFlow = api;
 })(typeof self !== 'undefined' ? self : (typeof globalThis !== 'undefined' ? globalThis : this), function (global) {
   'use strict';
   var CORE = global.DiagCore;
   if (!CORE) throw new Error('app-flow.js 需要先加载 app.js（DiagCore）');
-  var S = CORE.S, Browser = CORE.Browser, E = CORE.E, h = CORE.h, Lazy = CORE.Lazy;
+  var S = CORE.S, Browser = CORE.Browser, h = CORE.h, Lazy = CORE.Lazy;
+  /* 引擎不在首屏：app-flow 可能在 engine.js 之前加载，CORE.E 那时还是 undefined。
+   * 抓成局部变量会永远 undefined（实测 "reading 'createSession'"：点了没反应的真身），
+   * 所以每次用时再过一遍 getter。 */
+  function eng() { return CORE.E; }
   var nameOf = CORE.nameOf, clipLabel = CORE.clipLabel, labelLimit = CORE.labelLimit, theme = CORE.theme;
   var lazyFail = CORE.lazyFail, LAZY_PATH = CORE.LAZY_PATH, PATH_FOLD_AT = CORE.PATH_FOLD_AT, STATUS_LABEL = CORE.STATUS_LABEL;
   var append = CORE.append, figureEl = CORE.figureEl, show = CORE.show, root = CORE.root;
@@ -23,12 +30,16 @@
   var markSeen = CORE.markSeen, lsGet = CORE.lsGet, lsSet = CORE.lsSet, lsDel = CORE.lsDel;
   var save = CORE.save, saveToChild = CORE.saveToChild, sessionKey = CORE.sessionKey, resetUi = CORE.resetUi;
   var renderStart = CORE.renderStart, renderQuestionsPending = CORE.renderQuestionsPending, renderNoQuestions = CORE.renderNoQuestions;
+  var renderQuestionsPendingWith = CORE.renderQuestionsPendingWith;
   var questionSourcesSettled = CORE.questionSourcesSettled, ensureFullTopics = CORE.ensureFullTopics, ensureStandards = CORE.ensureStandards;
   var ensureQuestionsForOne = CORE.ensureQuestionsForOne, ensureQuestionsForTopics = CORE.ensureQuestionsForTopics, ensureQuestionsForAnswers = CORE.ensureQuestionsForAnswers;
   var withStage2 = CORE.withStage2, withStage2Data = CORE.withStage2Data, stage2Status = CORE.stage2Status;
+  var screenRoundGraph = CORE.screenRoundGraph;
   var childBar = CORE.childBar, diagnoseHrefFor = CORE.diagnoseHrefFor, routeReturnHref = CORE.routeReturnHref, routeBackBar = CORE.routeBackBar;
   var isPrereqKnowledge = CORE.isPrereqKnowledge, reasonFor = CORE.reasonFor, noteBlind = CORE.noteBlind, blindResultCard = CORE.blindResultCard;
   var llmVariantsMod = CORE.llmVariantsMod;
+  /* screen 会话续接 + 后台补齐进度（都在 app.js，经 CORE 唯一一份状态）。 */
+  var extendScreenSession = CORE.extendScreenSession, backgroundFillState = CORE.backgroundFillState;
   /* 常量（都在 app.js 的 CORE 定义之前，直接引用；与核心不共享、私有在这里）。 */
   var DIFF_LABEL = CORE.DIFF_LABEL, LAZY_EXPLAIN = CORE.LAZY_EXPLAIN, LAZY_LAB = CORE.LAZY_LAB;
   var LAZY_SHARE = CORE.LAZY_SHARE, LAZY_VARIANTS = CORE.LAZY_VARIANTS, LS_PRAC = CORE.LS_PRAC, LS_VSEQ = CORE.LS_VSEQ;
@@ -57,7 +68,10 @@ function startSession(targets, label, limit, mode) {
     S.pathExpanded = false;
     const screen = mode === 'screen';
     const st = getSettings();
-    S.session = E.createSession(S.D.graph, targets, {
+    /* screen 轮只给「题库已到货章节」的题，未到货章节的 legacy 兜底题必须剔掉；
+     * 非 screen 完全走老路（S.D.graph）。 */
+    const graph = (screen && screenRoundGraph && screenRoundGraph()) || S.D.graph;
+    S.session = eng().createSession(graph, targets, {
       mode: mode, limit: limit || (screen ? st.screenLimit : st.limit), confirm: st.confirm, seed: newSeed(), avoid: seenList()
     });
     S.sessionMeta = { label: label };
@@ -67,7 +81,7 @@ function startSession(targets, label, limit, mode) {
      * 一题都问不出来，直接 render() 就会收敛成「0 已答题数 / 未测」的空结果页 ——
      * 孩子一题没答就被告知做完了，弱网 5–25s 窗口内点任何知识点都会踩到（P0 回归）。
      * 这里挂起会话参数、显示「题目还在载入，稍等…」，数据到货后由 resumePendingStart() 重开。 */
-    if (!E.nextItem(S.D.graph, S.session) && !S.session.answers.length) {
+    if (!eng().nextItem(graph, S.session) && !S.session.answers.length) {
       if (!questionSourcesSettled()) {
         S.pendingStart = { targets: targets, label: label, limit: limit, mode: mode };
         renderQuestionsPending();
@@ -97,7 +111,7 @@ function restoreFromSave(saved, onFail) {
 
 function restoreSession(saved) {
     try {
-      S.session = E.replay(S.D.graph, saved.targets, saved.answers, {
+      S.session = eng().replay(S.D.graph, saved.targets, saved.answers, {
         mode: saved.mode, limit: saved.limit, confirm: saved.confirm, seed: saved.seed, avoid: saved.avoid
       });
       S.sessionMeta = { label: saved.label || saved.targets.map(nameOf).join('、') };
@@ -115,7 +129,7 @@ function restart() {
 
 function commit(result) {
     if (S.commitPending) return;                       // 防连点：上一次作答还没落定
-    const item = E.nextItem(S.D.graph, S.session);
+    const item = eng().nextItem(S.D.graph, S.session);
     if (!item) return;
     /* 答错 / 不会会向先修回溯，而引擎的 isTestable() 看的是「当时有没有题库」：
      * 题库按章节懒取，所以应用作答之前先把本题直接先修所在章节的题库取到
@@ -127,12 +141,12 @@ function commit(result) {
     S.commitPending = true;
     ensureQuestionsForTopics(pre).then(function () {
       S.commitPending = false;
-      applyAnswerAndRender(E.nextItem(S.D.graph, S.session) || item, result);
+      applyAnswerAndRender(eng().nextItem(S.D.graph, S.session) || item, result);
     });
   }
 
 function applyAnswerAndRender(item, result) {
-    S.session = E.applyAnswer(S.D.graph, S.session, item.topicId, result, { text: S.ui.answer });
+    S.session = eng().applyAnswer(S.D.graph, S.session, item.topicId, result, { text: S.ui.answer });
     markSeen(item.question.id);
     resetUi();
     save();
@@ -140,7 +154,7 @@ function applyAnswerAndRender(item, result) {
   }
 
 function rebuild(answers, limit) {
-    S.session = E.replay(S.D.graph, S.session.targets, answers, {
+    S.session = eng().replay(S.D.graph, S.session.targets, answers, {
       mode: S.session.mode, limit: limit == null ? S.session.limit : limit, confirm: S.session.confirm,
       seed: S.session.seed, avoid: S.session.avoid
     });
@@ -160,8 +174,8 @@ function makeOracle(targets, mode) {
         return 'correct';
       };
     }
-    const t0 = E.createSession(G, targets).stack[0];
-    const testablePre = function (id) { return G.prereqs[id].filter(function (x) { return E.isTestable(G, x.id); }).map(function (x) { return x.id; }); };
+    const t0 = eng().createSession(G, targets).stack[0];
+    const testablePre = function (id) { return G.prereqs[id].filter(function (x) { return eng().isTestable(G, x.id); }).map(function (x) { return x.id; }); };
     const weak = new Set([t0]);
     const shaky = new Set();
     const p = testablePre(t0);
@@ -181,18 +195,24 @@ function makeOracle(targets, mode) {
 function runDemo(steps) {
     let n = 0;
     while (n < steps) {
-      const item = E.nextItem(S.D.graph, S.session);
+      const item = eng().nextItem(S.D.graph, S.session);
       if (!item) break;
-      S.session = E.applyAnswer(S.D.graph, S.session, item.topicId, S.demo.oracle(item.topicId, item.attempt));
+      S.session = eng().applyAnswer(S.D.graph, S.session, item.topicId, S.demo.oracle(item.topicId, item.attempt));
       n++;
     }
+  }
+
+/* screen 会话中途等待文案：把后台补齐进度带上（DOM 不存在时只是字符串拼接，不报错）。 */
+function screenPendingText(bg) {
+    if (!bg || !bg.total) return '题目还在载入，稍等…';
+    return '题目还在载入，稍等…（' + bg.done + '/' + bg.total + ' 章）';
   }
 
 function render() {
     if (S.pracLoading) { renderPracticeLoading(); return; }   // O3 LLM 变式加载中
     if (S.prac) { renderQuestion(pracItem()); return; }   // T3 练习模式
     if (!S.session) return renderStart();
-    const item = E.nextItem(S.D.graph, S.session);
+    const item = eng().nextItem(S.D.graph, S.session);
     if (item) return renderQuestion(item);
     /* 兜底：一题没答却说没题 —— 多半是题源还在路上（弱网题库 1.27MB、全量 265KB），
      * 绝不许把「0 已答题数 / 未测」的空结果页当成结论给孩子。 */
@@ -203,6 +223,21 @@ function render() {
         limit: S.session.limit || null, mode: S.session.mode || 'target'
       };
       return renderQuestionsPending();
+    }
+    /* screen 中途：后台还有章节在补齐，nextItem 恰好为空也不许收敛成结果页 ——
+     * 那会把「题库没到」当成「已掌握/未测」，给孩子假结论。先尝试用新到货的图续接，
+     * 续不上就继续显示「题目还在载入」，等下一章到货再由 questionsArrived 重绘。 */
+    if (S.session.mode === 'screen') {
+      const answers = S.session.answers.length;
+      const limit = S.session.limit;
+      const bg = backgroundFillState ? backgroundFillState() : null;
+      if ((limit == null || answers < limit) && bg && bg.running) {
+        if (extendScreenSession && extendScreenSession()) {
+          const nextItem = eng().nextItem(S.D.graph, S.session);
+          if (nextItem) return renderQuestion(nextItem);
+        }
+        return renderQuestionsPendingWith(screenPendingText(bg));
+      }
     }
     renderResult();
   }
@@ -266,7 +301,7 @@ function startPractice(topicId) {
     }
     var V = variantsMod();
     var LLMV = llmVariantsMod();
-    var bankPicks = E.pickPracticeQuestions(S.D.graph, topicId, PRACTICE_N, seenList());
+    var bankPicks = eng().pickPracticeQuestions(S.D.graph, topicId, PRACTICE_N, seenList());
     var seqMap = variantSeqMap();
     var startIndex = seqMap[topicId] || 0;
     var bankPrompts = (S.D.graph.bank[topicId] || []).map(function (q) { return q.prompt; });
@@ -368,7 +403,7 @@ function nextPathTopic(fromIdx) {
 
 function startPathPractice() {
     if (!S.session) return;
-    var queue = pathQueueFrom(E.summarize(S.D.graph, S.session));
+    var queue = pathQueueFrom(eng().summarize(S.D.graph, S.session));
     var first = null;
     for (var i = 0; i < queue.length && !first; i++) {
       if ((S.D.graph.bank[queue[i]] || []).length) first = { idx: i, id: queue[i] };
@@ -457,7 +492,7 @@ function practiceResultBanner() {
   }
 
 function adviceCard(sum) {
-    const text = E.studentAdvice(sum, nameOf);
+    const text = eng().studentAdvice(sum, nameOf);
     const lines = text.split('\n');
     return h('div', { class: 'card', id: 'advice-summary' },
       h('h2', { text: '接下来练什么' }),
@@ -492,7 +527,7 @@ function judgeAndGo(item) {
     const q = item.question;
     const val = S.ui.answer.trim();
     if (!val) { const el = document.getElementById('ans'); if (el) el.focus(); return; }
-    const r = E.judgeQuestion(q, val);
+    const r = eng().judgeQuestion(q, val);
     S.ui.verdict = r;
     S.ui.phase = r.verdict === 'manual' ? 'self' : 'auto';
     renderQuestion(item);
@@ -588,7 +623,7 @@ function renderQuestion(item) {
         isPrereqKnowledge(id) ? h('span', { class: 'tag ext', text: '前置知识' }) : null,
         h('span', { class: 'tag diff-' + q.difficulty, text: DIFF_LABEL[q.difficulty] || q.difficulty }),
         h('span', { class: 'tag', text: TYPE_LABEL[q.type] || q.type }),
-        h('span', { class: 'tag', text: pr ? '练习第 ' + (S.prac.idx + 1) + ' 题' : '本知识点第 ' + item.attempt + ' / ' + E.needConfirm(S.D.graph, S.session, id) + ' 题' }),
+        h('span', { class: 'tag', text: pr ? '练习第 ' + (S.prac.idx + 1) + ' 题' : '本知识点第 ' + item.attempt + ' / ' + eng().needConfirm(S.D.graph, S.session, id) + ' 题' }),
         q.variant ? h('span', { class: 'tag', text: q.variantSource === 'llm' ? 'LLM变式' : '变式' }) : null),
       h('div', { class: 'reason', text: pr ? '针对性练习（不进诊断结果）。做完自动判定对错，答错可以点「为什么错了」看讲解。' : reasonFor(item) }),
       h('div', { class: 'q-text', id: 'q-text', text: q.prompt }));
@@ -694,7 +729,7 @@ function explainPanel(item) {
     const id = item.topicId;
     const q = item.question;
     const t = S.D.graph.byId[id];
-    const steps = (S.ui.aiSteps && S.ui.aiSteps.length === 3) ? S.ui.aiSteps : E.socraticSteps(t, q);
+    const steps = (S.ui.aiSteps && S.ui.aiSteps.length === 3) ? S.ui.aiSteps : eng().socraticSteps(t, q);
     const show = S.ui.explainStep || 0;      // 0=prompt 1=hint 2=reveal
     /* 讲解模块（explain.js）不在首屏链上：第一次进讲解面板才加载，到货后重渲染一次。
      * 没到货时下面用 window.Explain 守卫，先显示静态三步讲解 —— 学生看不到空白。 */
@@ -1028,7 +1063,7 @@ function buildShareModel(sum, chapters) {
       sum.weak.forEach(pushId);
       sum.shaky.forEach(pushId);
       spots = ids.map(function (id) {
-        return { title: nameOf(id), detail: STATUS_LABEL[E.statusOf(S.session, id)] || '' };
+        return { title: nameOf(id), detail: STATUS_LABEL[eng().statusOf(S.session, id)] || '' };
       });
     }
     var now = new Date();
@@ -1079,8 +1114,8 @@ function openShare() {
       return;
     }
     var token = ++S.shareToken;
-    var sum = E.summarize(S.D.graph, S.session);
-    var chapters = S.session.mode === 'screen' ? E.chapterSummary(S.D.graph, S.session) : null;
+    var sum = eng().summarize(S.D.graph, S.session);
+    var chapters = S.session.mode === 'screen' ? eng().chapterSummary(S.D.graph, S.session) : null;
     var model = buildShareModel(sum, chapters);
     window.__shareModel = model;
     var canvas = document.createElement('canvas');
@@ -1186,7 +1221,7 @@ function topicItem(id, tags, extra, pbtn) {
 function tag(cls, text) { return h('span', { class: 'tag ' + cls, text: text }); }
 
 function statusTags(id, rootSet, targetSet) {
-    const st = E.statusOf(S.session, id);
+    const st = eng().statusOf(S.session, id);
     const out = [];
     if (targetSet.has(id)) out.push(tag('target', '目标'));
     if (rootSet.has(id)) out.push(tag('root', '根因'));
@@ -1203,7 +1238,7 @@ function practiceBtn(id) {
     const done = practicedMap()[id];
     let label;
     if (bank.length) {
-      const n = (E.pickPracticeQuestions(S.D.graph, id, PRACTICE_N, seenList()) || []).length;
+      const n = (eng().pickPracticeQuestions(S.D.graph, id, PRACTICE_N, seenList()) || []).length;
       label = done ? '再练一遍' : (n > 1 ? '练习这 ' + n + ' 题' : '练习这道题');
     } else {
       label = '练习';
@@ -1261,7 +1296,7 @@ function noBankCard(sum) {
   }
 
 function renderResult() {
-    const sum = E.summarize(S.D.graph, S.session);
+    const sum = eng().summarize(S.D.graph, S.session);
     /* 阶段 3：进结果页（详情 / 课标对照）才取课标条目正文；两个 ensure 都到货后原地换掉占位文字，不重绘。 */
     ensureStandards();
     ensureFullTopics();
@@ -1281,8 +1316,8 @@ function renderResult() {
     else if (diagOnly) page.append(noBankCard(sum));
     else page.append(adviceCard(sum));
 
-    const targetsMastered = S.session.targets.every(function (id) { return E.statusOf(S.session, id) === 'mastered'; });
-    const chapters = screen ? E.chapterSummary(S.D.graph, S.session) : null;
+    const targetsMastered = S.session.targets.every(function (id) { return eng().statusOf(S.session, id) === 'mastered'; });
+    const chapters = screen ? eng().chapterSummary(S.D.graph, S.session) : null;
     const outOfScope = screen ? sum.roots.filter(function (r) { return r.outOfScopePrereqs.length; }) : [];
     const headline = resultHeadline(sum, S.session, screen, diagOnly, targetsMastered);
 
@@ -1438,7 +1473,7 @@ function standardsCard(sum) {
 
 function logCard() {
     const rows = S.session.answers.map(function (a, i) {
-      const q = E.questionById(S.D.graph, a.qid) || { prompt: '', answer: '' };
+      const q = eng().questionById(S.D.graph, a.qid) || { prompt: '', answer: '' };
       const sel = h('select', {
         onchange: function (e) {
           const next = S.session.answers.map(function (x, j) { return j === i ? Object.assign({}, x, { result: e.target.value }) : x; });
@@ -1459,13 +1494,13 @@ function logCard() {
   }
 
 function exportJson() {
-    const sum = E.summarize(S.D.graph, S.session);
+    const sum = eng().summarize(S.D.graph, S.session);
     const stdIds = new Set();
     const brief = function (id) { return { id: id, name: nameOf(id) }; };
     sum.path.concat(S.session.mode === 'screen' ? [] : S.session.targets.map(function (id) { return { id: id }; })).forEach(function (p) {
       (S.D.graph.byId[p.id].standards || []).forEach(function (sd) { stdIds.add(sd.id); });
     });
-    const chapters = S.session.mode === 'screen' ? E.chapterSummary(S.D.graph, S.session) : null;
+    const chapters = S.session.mode === 'screen' ? eng().chapterSummary(S.D.graph, S.session) : null;
     const out = {
       tool: 'cn-math-taxonomy/diagnose', version: 2, mode: S.session.mode || 'target', generatedAt: new Date().toISOString(),
       note: '自动判题是近似的，以参考答案为准。',
@@ -1473,7 +1508,7 @@ function exportJson() {
       targets: S.session.targets.map(brief),
       limit: S.session.limit, seed: S.session.seed, asked: sum.asked, finished: sum.finished, limitReached: sum.limitReached,
       answers: S.session.answers.map(function (a, i) {
-        const q = E.questionById(S.D.graph, a.qid) || {};
+        const q = eng().questionById(S.D.graph, a.qid) || {};
         return {
           order: i + 1, topicId: a.id, name: nameOf(a.id), questionId: a.qid, difficulty: q.difficulty, type: q.type,
           prompt: q.prompt, userAnswer: a.text == null ? null : a.text, result: a.result,
@@ -1514,7 +1549,7 @@ function resolveTargets(params) {
     const t = params.get('target');
     if (t) {
       const raw = t.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
-      const ids = E.resolveTargets(raw, S.D.aliases);
+      const ids = eng().resolveTargets(raw, S.D.aliases);
       const bad = ids.filter(function (id) { return !S.D.graph.byId[id] || S.D.graph.byId[id].external; });
       if (bad.length) throw new Error('URL 参数 target 里有无效知识点：' + bad.join(', '));
       const aliased = raw.filter(function (id) { return S.D.aliases[id]; });
@@ -1563,7 +1598,7 @@ function resolveTargets(params) {
         if (scope.charAt(0) !== gch) throw new Error('URL 参数 grade 与 volume 不一致：' + grade + ' / ' + volume);
       }
       if (/^[一二三四五六七八九]$/.test(scope)) scope += '年级';
-      const g = E.gradeTargets(S.D.graph, scope, S.subject);
+      const g = eng().gradeTargets(S.D.graph, scope, S.subject);
       if (!g) throw new Error('URL 参数 grade / volume 无法识别：' + (volume || grade) + '（写法如 grade=七年级、volume=七上）');
       return { ids: g.ids, label: g.label + '（整体筛查）', mode: 'screen' };
     }
@@ -1742,7 +1777,7 @@ function resolveTargets(params) {
     if (!cyEl) return;
     cyEl.dataset.ready = '0';
     hidePathTip();
-    const lay = E.layout(S.D.graph, S.session, sum);
+    const lay = eng().layout(S.D.graph, S.session, sum);
     requestAnimationFrame(function () {
       if (token !== S.pathToken || !document.body.contains(cyEl)) return;
       /* 首屏不带 cytoscape/dagre：临画前才注入（3 个文件按依赖顺序串行），
