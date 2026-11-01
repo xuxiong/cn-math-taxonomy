@@ -240,13 +240,18 @@ test('app.js：全量 topics.json 只取一次、只补缺口不覆盖；详情�
   assert.ok(/desc-pending/.test(pending), 'refreshPending 应就地换掉 desc-pending 节点（不整页重绘）');
 });
 
-test('sw.js：预热清单含 data/topics-lite.json，且老的大文件仍然预热（离线可用）', function () {
+test('sw.js：预热清单含 data/topics-lite.json，大文件改按需（预热预算 ≤150KB）', function () {
   const m = /var DATA = \[([\s\S]*?)\];/.exec(SW);
   assert.ok(m, 'sw.js 里应有 var DATA = [...]');
   const items = m[1].match(/'(?:[^'\\]|\\.)*'/g) || [];
   assert.ok(items.indexOf("'data/topics-lite.json'") >= 0, 'DATA 里应含 data/topics-lite.json');
-  ['data/topics.json', 'data/dependencies.json', 'data/cn-curriculum-standards.json', 'data/id-aliases.json'].forEach(function (p) {
-    assert.ok(items.indexOf("'" + p + "'") >= 0, 'DATA 里仍应有 ' + p + '（离线要用）');
+  assert.ok(items.indexOf("'data/id-aliases.json'") >= 0, 'DATA 里应含 data/id-aliases.json');
+  /* 卡 t_c84bc026（用户真实设备实测）：原来这三份也预热，清单因此顶到 46 项 / 1043KB，
+   * 在 8~10KB/s 的链路上等于一次 100 秒的持续下载，和首屏抢带宽。
+   * 用户明确选择「砍干净，离线只保首屏」，它们改走运行时 staleWhileRevalidate
+   * （页面自己请求时就写进缓存，所以访问过一次之后离线照样能用）。 */
+  ['data/topics.json', 'data/dependencies.json', 'data/cn-curriculum-standards.json'].forEach(function (p) {
+    assert.strictEqual(items.indexOf("'" + p + "'"), -1, 'DATA 里不许再预热 ' + p + '（预热预算 ≤150KB，见 test_sw_preheat.js）');
   });
   /* 预热仍然逐项独立 catch、仍然不进 waitUntil */
   const warm = bodyAfter(SW, 'function warm()');

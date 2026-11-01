@@ -65,9 +65,10 @@ function section(src, kind) {
 }
 
 /* ---------------------------------------------------------------- sw.js */
-test('sw.js：VERSION 已是 v8（旧 cnm-pwa-v5 缓存靠它清掉）', function () {
-  assert.ok(/var VERSION = 'v8';/.test(SW), 'VERSION 应该是 v8');
+test('sw.js：VERSION 已是 v9（旧 cnm-pwa-v8 缓存靠它清掉；预热预算那卡把清单改小了）', function () {
+  assert.ok(/var VERSION = 'v9';/.test(SW), 'VERSION 应该是 v9');
   assert.strictEqual(SW.indexOf("VERSION = 'v5'"), -1, 'VERSION 不应再是 v5');
+  assert.strictEqual(SW.indexOf("VERSION = 'v8'"), -1, 'VERSION 不应再是 v8');
 });
 
 test('sw.js：install 段内不再出现 cache.addAll(SHELL / cache.addAll(DATA', function () {
@@ -93,13 +94,13 @@ test('sw.js：install 只预缓存 CORE，SHELL 其余与 DATA 放到不阻塞�
   const inst = section(SW, 'install');
   assert.ok(inst.indexOf('CORE') >= 0, 'install 必须只预缓存 CORE');
   assert.strictEqual(inst.indexOf('SHELL'), -1, 'install 里不应再出现 SHELL');
-  // 预热：在 activate 里调用，但不在 waitUntil 里 await
+  // 预热：在 activate 之后排队（scheduleWarm 等到首屏就绪才真跑），且不在 waitUntil 里 await
   const act = section(SW, 'activate');
-  assert.ok(/warm\(\)/.test(act), 'activate 之后应触发后台预热 warm()');
-  assert.ok(!/await\s+warm\(/.test(act), '预热不能被 await');
-  // warm() 必须在 waitUntil 的 Promise 结束之后调用（那之后就是激活已完成）
+  assert.ok(/scheduleWarm\(\)/.test(act), 'activate 之后应排队后台预热 scheduleWarm()');
+  assert.ok(!/await\s+scheduleWarm\(/.test(act), '预热不能被 await');
+  // scheduleWarm() 必须在 waitUntil 的 Promise 结束之后调用（那之后就是激活已完成）
   const afterWait = act.slice(act.indexOf('}));'));
-  assert.ok(afterWait.indexOf('warm()') >= 0, '预热不能塞进 waitUntil（会拖慢激活）');
+  assert.ok(afterWait.indexOf('scheduleWarm()') >= 0, '预热不能塞进 waitUntil（会拖慢激活）');
   const warmBody = bodyAfter(SW, 'function warm()');
   assert.ok(warmBody.indexOf('SHELL') >= 0 && warmBody.indexOf('DATA') >= 0, '预热要补 SHELL 剩余项与 DATA');
   assert.ok(/\.catch\(/.test(warmBody), '预热每一项都要独立 catch，失败只丢该项');
