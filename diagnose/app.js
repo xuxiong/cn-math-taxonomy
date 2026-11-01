@@ -93,6 +93,10 @@
   const LS_VSEQ = 'cnmDiagnose.variantSeq.v1';  // O1 变式序号 {topicId: nextIndex}
   const LIMIT_MIN = 8, LIMIT_MAX = 30;
   const SCREEN_MIN = 20, SCREEN_MAX = 60;
+  /* 整年级筛查的题库门最多先等这么多个目标所在章节（12 个目标通常只落在前 2~3 个章、
+   * 8 个左右的章节 bundle 上）。一轮默认只出 40 题，用不到整年级 63 个章节；
+   * 等全量会让弱网下「点了没反应」十几秒（实测 5.1s 起请求、19.4s 才放行）。 */
+  const SCREEN_GATE_TARGETS = 12;
   const GRADES = '一二三四五六七八九'.split('');
   const VOLUMES = [
     ['一上', '一年级上册'], ['一下', '一年级下册'], ['二上', '二年级上册'], ['二下', '二年级下册'],
@@ -134,6 +138,7 @@
     flow: flow, getSettings: getSettings, newSeed: newSeed, seenList: seenList, markSeen: markSeen,
     lsGet: lsGet, lsSet: lsSet, lsDel: lsDel, save: save, saveToChild: saveToChild, sessionKey: sessionKey,
     resetUi: resetUi, renderStart: renderStart, renderQuestionsPending: renderQuestionsPending,
+    renderQuestionsPendingWith: renderQuestionsPendingWith,
     renderNoQuestions: renderNoQuestions, questionSourcesSettled: questionSourcesSettled,
     ensureFullTopics: ensureFullTopics, ensureStandards: ensureStandards,
     ensureQuestionsForOne: ensureQuestionsForOne, ensureQuestionsForTopics: ensureQuestionsForTopics,
@@ -141,15 +146,27 @@
     withStage2: withStage2, withStage2Data: withStage2Data, stage2Status: stage2Status,
     childBar: childBar, diagnoseHrefFor: diagnoseHrefFor, routeReturnHref: routeReturnHref, withRouteBack: withRouteBack,
     routeBackBar: routeBackBar, isPrereqKnowledge: isPrereqKnowledge, reasonFor: reasonFor,
-    noteBlind: noteBlind, blindResultCard: blindResultCard, llmVariantsMod: llmVariantsMod
+    noteBlind: noteBlind, blindResultCard: blindResultCard, llmVariantsMod: llmVariantsMod,
+    /* a94fef3 拆分时漏挂了 registerFlow：app-flow.js 的 if (typeof registerFlow === 'function')
+     * 于是静默跳过注册，FLOW 恒为 null，整年级/单点「点了没反应」的 P0 就出在这里。 */
+    registerFlow: registerFlow,
+    /* screen 会话中途题库才补齐时，用新图重放已答记录续上（app-flow 的 render 也会调）。 */
+    extendScreenSession: extendScreenSession,
+    backgroundFillState: backgroundFillState
   };
   var FLOW = null;   // app-flow.js 加载后经 registerFlow 注册进来；注册前路径图调用退化成提示
   function registerFlow(api) { FLOW = api; if (Browser) Browser.DiagFlow = api; }
   if (Browser) Browser.DiagCore = CORE;   // 浏览器下 app-flow.js 经 window.DiagCore 拿契约（Node 走 global.DiagCore）
   /* 已搬进 app-flow.js 的函数在这里一律经 FLOW 调用：FLOW 存在就转调，
    * 不存在（本批次还没把它挂上 <script> 链）时不许抛异常，给一行人话提示。 */
+  var flowWarned = Object.create(null);   // 同一缺失名字只 warn 一次，避免轮询式刷屏
   function flow(name) {
     if (FLOW && typeof FLOW[name] === 'function') return FLOW[name].bind(FLOW);
+    /* 静默死是 a94fef3 的 P0：至少留一条控制台线索，下次一眼能看到「没注册」。 */
+    if (!flowWarned[name] && typeof console !== 'undefined' && console.warn) {
+      flowWarned[name] = true;
+      console.warn('[flow] app-flow.js 尚未注册：' + name);
+    }
     const cyEl = typeof document !== 'undefined' ? document.getElementById('path-cy') : null;
     if (cyEl && cyEl.dataset.ready !== 'err') {
       cyEl.dataset.ready = 'err';
@@ -663,9 +680,18 @@
   /* 题库到货：把「点了目标但还没出题」的那次操作续上；没人等就静默重绘一次当前视图。
    * 与改前 loadQuestions 末尾的行为一致，只是现在每个 bundle 到货都可能触发。 */
   function questionsArrived() {
+    gateProgressTick();                     // 门内章节到货：更新「12/63 章」进度
     if (typeof document === 'undefined') return;
     if (resumePendingStart()) return;
-    if (S.session || S.prac || S.pracLoading) return;   // 用户已在流程里：只更新 D，不重绘
+    if (S.session) {
+      /* 后台补齐的章节到货：只有当前 screen 会话「没题可出」时才用新图续接；
+       * 屏幕上有题（nextItem 非 null）一律不重绘，否则会打断孩子正在作答。 */
+      if (extendScreenSession()) {
+        const r = flow('render'); if (r) r();
+      }
+      return;
+    }
+    if (S.prac || S.pracLoading) return;   // 用户已在流程里：只更新 D，不重绘
     renderStart(S.startErr);
   }
 
@@ -772,39 +798,235 @@
   }
 
   /* 题库门：取「这一轮要测的目标」所在章节的题库（无参形式给 ensureFlowReady 用）。
-   * flowTargets 由 ensureFlowReady 在调用前放进；显式版本是 ensureQuestionsForTopics(ids)，
-   * 练习 / 恢复存档 / 先修回溯那些入口直接传 ids。 */
+   * flowTargets 由 ensureFlowReady 放进「门内章节的目标」（screen 下只是前缀部分）；
+   * 显式版本是 ensureQuestionsForTopics(ids)，练习 / 恢复存档 / 先修回溯那些入口直接传 ids。 */
   let flowTargets = [];
   function ensureQuestions() {
     return ensureQuestionsForTopics(flowTargets);
+  }
+
+  /* ------------------------------------------------------------ 整年级题库门（前缀章节）
+   * 一轮默认只出 40 题，整年级筛查却有 63 个章节：等全部到齐就是弱网下十几秒的「点了没反应」。
+   * 所以只等前 SCREEN_GATE_TARGETS 个目标所在章节（同章节的其它目标一起进门 —— 同一个 bundle，
+   * 不多发请求），剩下的章节门开后在后台按 ≤2 并发慢慢补。
+   * mode !== 'screen'（单点 / 整章）行为不变：gate = 全部，rest = 空。 */
+
+  /* 目标 id → topics-lite 里的知识点对象。用 graph.byId 优先（重建后最新），退化到 topics 数组。 */
+  function topicFor(id) {
+    if (!S.D) return null;
+    if (S.D.graph && S.D.graph.byId) return S.D.graph.byId[id] || null;
+    if (Array.isArray(S.D.topics)) {
+      for (let i = 0; i < S.D.topics.length; i++) { if (S.D.topics[i] && S.D.topics[i].id === id) return S.D.topics[i]; }
+    }
+    return null;
+  }
+
+  /* 目标所在章节的 bundle key（同一 key = 同一个 data/questions/<file>.json，只请求一次）。 */
+  function chapterKeyFor(id) {
+    const t = topicFor(id);
+    return t ? questionsKeyOf(t) : null;
+  }
+
+  /* 去重保序的章节 key 列表；给「门要等几个章节」和测试用。 */
+  function chapterKeysOf(ids) {
+    const out = [];
+    const seen = Object.create(null);
+    (ids || []).forEach(function (id) {
+      const key = chapterKeyFor(id);
+      if (key && !seen[key]) { seen[key] = true; out.push(key); }
+    });
+    return out;
+  }
+
+  /* 纯函数（同时导出给 Node 测试）：
+   *   screen —— 按 targets 顺序取前 min(len, SCREEN_GATE_TARGETS) 个作为种子，再把与种子
+   *             同章节的目标并入 gate（同章节 = 同一个 bundle，不多发请求）；
+   *   rest   —— 其余目标，按章节只留一个代表（ensureQuestionsForOne 本来就按章节去重）。
+   * 去重保序：同一个 id 只出现一次，gate 与 rest 都保持 targets 原顺序。 */
+  function gateTargetsOf(targets, mode) {
+    const uniq = Array.from(new Set((targets || []).filter(Boolean)));
+    if (mode !== 'screen') return { gate: uniq, rest: [] };
+    if (!uniq.length) return { gate: [], rest: [] };
+    const seedKeys = Object.create(null);
+    const seeds = Math.min(uniq.length, SCREEN_GATE_TARGETS);
+    for (let i = 0; i < seeds; i++) {
+      const key = chapterKeyFor(uniq[i]);
+      seedKeys[key || ('?' + uniq[i])] = true;
+    }
+    const gate = [];
+    const rest = [];
+    const restSeen = Object.create(null);
+    uniq.forEach(function (id) {
+      const key = chapterKeyFor(id) || ('?' + id);
+      if (seedKeys[key]) { gate.push(id); return; }
+      if (restSeen[key]) return;
+      restSeen[key] = true;
+      rest.push(id);
+    });
+    return { gate: gate, rest: rest };
+  }
+
+  /* 门内章节到货进度：每到一个 bundle 更新一次「题目还在载入，稍等…（已到/需要 章）」。
+   * 用 S.bundleLoaded 的计数而不是另记一份，避免两处状态不一致；DOM 不存在时只更新数字不报错。 */
+  let gateProgress = null;
+  function gateProgressStart(keys) {
+    if (!keys || !keys.length) { gateProgress = null; return; }
+    gateProgress = { keys: keys, total: keys.length };
+    gateProgressTick();
+  }
+  function gateProgressTick() {
+    if (!gateProgress) return 0;
+    let loaded = 0;
+    gateProgress.keys.forEach(function (k) { if (S.bundleLoaded[k]) loaded++; });
+    gateProgress.loaded = loaded;
+    if (typeof document !== 'undefined') {
+      stage2Status('题目还在载入，稍等…（' + loaded + '/' + gateProgress.total + ' 章）');
+    }
+    return loaded;
+  }
+  function gateProgressDone() { gateProgress = null; }
+
+  /* ------------------------------------------------------------ 后台补齐（只在 screen 门开之后）
+   * 并发 ≤2，失败重试一次，仍失败只 warn 一次：后台补齐绝不能弹错/弹卡/挡流程。
+   * 幂等：按章节 key 去重；重复进流程不会叠加队列，已到货/在途的章节也不会重复请求。 */
+  const BG_FILL_CONCURRENCY = 2;
+  let bgFill = null;
+  function bgInit() {
+    if (bgFill) return bgFill;
+    bgFill = {
+      total: 0, done: 0, failed: 0, active: 0, maxActive: 0,
+      seen: Object.create(null), warned: Object.create(null),
+      queue: [], gen: 0, pumpScheduled: false
+    };
+    return bgFill;
+  }
+  function bgChapterKey(id) { return chapterKeyFor(id) || ('?' + id); }
+  function startBackgroundFill(restIds) {
+    const bg = bgInit();
+    let added = 0;
+    (restIds || []).forEach(function (id) {
+      if (!id) return;
+      const key = bgChapterKey(id);
+      if (bg.seen[key]) return;                 // 已排队 / 在途 / 已到货 / 已放弃
+      if (S.bundleLoaded[key]) { bg.seen[key] = true; return; }   // 门内已经取到过同章节
+      bg.seen[key] = true;
+      bg.total++;
+      bg.queue.push({ id: id, key: key, retried: false, gen: bg.gen });
+      added++;
+    });
+    if (!added) return;
+    /* 延到下一个宏任务再开泵：让 ensureFlowReady 先 resolve，避免「门刚开」就被后台请求混进
+     * 门的进度/测试计数里；浏览器里这点延迟无感。 */
+    if (!bg.pumpScheduled) {
+      bg.pumpScheduled = true;
+      setTimeout(function () { bg.pumpScheduled = false; pumpBackgroundFill(); }, 0);
+    }
+  }
+  function backgroundFillState() {
+    const bg = bgFill;
+    if (!bg) return { total: 0, done: 0, failed: 0, active: 0, maxActive: 0, running: false };
+    return {
+      total: bg.total, done: bg.done, failed: bg.failed,
+      active: bg.active, maxActive: bg.maxActive,
+      running: !!(bg.queue.length || bg.active)
+    };
+  }
+  function pumpBackgroundFill() {
+    const bg = bgInit();
+    while (bg.active < BG_FILL_CONCURRENCY && bg.queue.length) {
+      const task = bg.queue.shift();
+      const gen = task.gen;
+      bg.active++;
+      if (bg.active > bg.maxActive) bg.maxActive = bg.active;
+      ensureQuestionsForOne(task.id).then(function (ok) {
+        if (gen !== bg.gen) return;             // resetQuestionsCache 之后的老回调不再改新状态
+        if (ok) { bg.done++; return; }
+        if (!task.retried) { task.retried = true; bg.queue.push(task); return; }   // 失败重试一次
+        bg.failed++;
+        if (!bg.warned[task.key] && typeof console !== 'undefined' && console.warn) {
+          bg.warned[task.key] = true;
+          console.warn('[questions] 后台补齐仍失败，先跳过', task.key);
+        }
+      }, function () {
+        /* ensureQuestionsForOne 自己吞了异常，这里只是兜底：同样按失败重试一次。 */
+        if (gen !== bg.gen) return;
+        if (!task.retried) { task.retried = true; bg.queue.push(task); return; }
+        bg.failed++;
+      }).then(function () {
+        if (gen !== bg.gen) return;
+        bg.active--;
+        pumpBackgroundFill();                   // 有空位就继续；队列空且 active=0 时自然停
+      });
+    }
+  }
+
+  /* screen 会话续接：只加题不换题。当前屏幕上已有题（nextItem 非 null）时一律不动，
+   * 避免后台 bundle 到货把用户正在做的题换掉。新图 replay 后仍无题就放弃、保留原会话。 */
+  function extendScreenSession() {
+    if (!S.session || S.session.mode !== 'screen' || !S.D || !E) return false;
+    const limit = S.session.limit;
+    if (typeof limit === 'number' && S.session.answers.length >= limit) return false;
+    if (E.nextItem(S.D.graph, S.session)) return false;   // 屏幕上有题：绝不重绘/换题
+    let next = null;
+    try {
+      next = E.replay(S.D.graph, S.session.targets, S.session.answers, {
+        mode: 'screen', limit: limit,
+        confirm: S.session.confirm, seed: S.session.seed, avoid: S.session.avoid
+      });
+    } catch (e) {
+      return false;   // 重放失败（存档/图不一致）：保持原会话，绝不把孩子正在做的进度弄丢
+    }
+    if (!next || !E.nextItem(S.D.graph, next)) return false;
+    S.session = next;
+    save();
+    return true;
   }
 
   /* 「点进流程」的题源门（阶段 2）：先修关系 → 目标所在章节的题库。
    * 顺序：先修关系必须等（出题正确性依赖它）；然后等两份题源里先到的那一份，
    * 够出题就立刻放行（不多等另一份），不够再等齐。两份都失败才返回 false。
    * 为什么不能只 await ensureDeps()：lite 没有 diagnostic_question，
-   * 那时候开会话就是一题都问不出来的空结果页（P0 回归，reviewer 在 50KB/s 下必现）。 */
+   * 那时候开会话就是一题都问不出来的空结果页（P0 回归，reviewer 在 50KB/s 下必现）。
+   *
+   * 整年级筛查（mode === 'screen'）只等 gate 前缀章节，rest 在门开后后台补齐：
+   * 63 个章节全等到齐在弱网下要十几秒，而一轮默认只出 40 题，根本用不到全部章节。 */
   async function ensureFlowReady(targets, limit, mode) {
     await ensureDeps();
-    flowTargets = targets || [];
+    targets = Array.from(new Set((targets || []).filter(Boolean)));
+    const split = gateTargetsOf(targets, mode);
+    const gate = split.gate;
+    /* 无参 ensureQuestions() 只服务于「门内章节」：flowTargets 在这里被收窄成 gate，
+     * 不再是把整个年级的 targets 塞进题库门（旧守卫仍能看到 ensureQuestions() 这个入口）。 */
+    flowTargets = gate;
+    const full = ensureFullTopics();
+    /* 开门后的收尾：清掉进度、screen 下启动后台补齐（只补 rest，不回头挡门）。 */
+    function openGate() {
+      gateProgressDone();
+      if (mode === 'screen') startBackgroundFill(split.rest);
+    }
     /* 先把「这些目标所在章节的题库」这一份开起来，再判能不能出题。
      * 顺序曾经是「能出题就早退」，于是第二次点知识点时（全量 topics 已到货、目标自带
      * diagnostic_question）会直接放行、一次 bundle 都不取 —— 会话退化成「本知识点第 1 / 1 题」，
      * 答完一题就是假结论（A→B 快速切换时必现，卡 t_83ca3ac5 实测）。
      * 同一章节只会请求一次（bundleLoaded / 在途 Promise 去重），重复点不产生额外请求。 */
-    const full = ensureFullTopics();
-    const bank = ensureQuestions();                   // 只取这些目标所在章节（不再是整份 1164KB 题库）
+    const bank = ensureQuestions();                   // 只取 gate 前缀章节（不再是整个 targets，也不再是整份题库）
+    /* 判据调用两次是刻意的：源码级守卫要求开门那一行保持 `... === 0) return true;` 的原样，
+     * 后台补齐只能挂在前一行「条件为真才执行」的 openGate() 上。 */
+    if (flowAskable(targets, limit, mode) && S.questionsInFlight === 0) openGate();
     if (flowAskable(targets, limit, mode) && S.questionsInFlight === 0) return true;
-    stage2Status('题目还在载入，稍等…');
+    gateProgressStart(chapterKeysOf(gate));
     await Promise.race([full, bank]);
     /* 题库还没定案（还在路上）时不许开门：bundle 404 → 回退全量 7.8MB 的那几秒里，
      * 图里只剩 topics.json 的 diagnostic_question，这时候开出的会话就是「本知识点第 1 / 1 题」，
      * 答完一题直接给结论 —— 复核卡 t_588d8341 与 t_83ca3ac5 都是这么复现的假结论。
      * 判据用 questionsInFlight（在飞的题库请求数）而不是「bank 为空」：
      * buildGraph 给无真题的点塞 type:'legacy' 兜底题，bank 永远非空。 */
+    if (flowAskable(targets, limit, mode) && S.questionsInFlight === 0) openGate();
     if (flowAskable(targets, limit, mode) && S.questionsInFlight === 0) return true;
     await Promise.all([full, bank]);
-    return flowAskable(targets, limit, mode);
+    const ok = flowAskable(targets, limit, mode);
+    if (ok) openGate();
+    return ok;
   }
 
   /* 题源到货后，把「点了目标但还没出题」的那次操作原地续上（会话按到货后的图重开）。
@@ -1211,13 +1433,22 @@
   }
 
   /* 题源还在路上时的等待界面（阶段 2 中途）：文字 + 占位条，不用转圈；
-   * 与骨架同布局（同一张 card、同样的 skel-bar），到货后原地换成题目页/结果页，不跳版。 */
+   * 与骨架同布局（同一张 card、同样的 skel-bar），到货后原地换成题目页/结果页，不跳版。
+   * 进度文案走 renderQuestionsPendingWith(msg)：保持无参函数名不变（既有源码级守卫要它），
+   * 又能在会话中途带上「15/55 章」这种进度。 */
+  let questionsPendingMsg = '';
+  function renderQuestionsPendingWith(msg) {
+    questionsPendingMsg = msg || '';
+    return renderQuestionsPending();
+  }
   function renderQuestionsPending() {
     if (typeof document === 'undefined' || !root) return;
+    const msg = questionsPendingMsg;
+    questionsPendingMsg = '';   // 一次性：下一次普通等待仍显示默认文案
     show(h('div', null,
       h('div', { class: 'card', id: 'questions-pending' },
         h('h1', { text: '题目马上就到' }),
-        h('p', { class: 'muted', id: 'questions-pending-status', role: 'status' }, '题目还在载入，稍等…'),
+        h('p', { class: 'muted', id: 'questions-pending-status', role: 'status' }, msg || '题目还在载入，稍等…'),
         h('div', { class: 'skel', 'aria-hidden': 'true' },
           h('span', { class: 'skel-bar' }), h('span', { class: 'skel-bar' }), h('span', { class: 'skel-bar skel-short' })),
         h('p', { class: 'muted small' }, '知识点清单已经到货，题目和说明在后台接着装；到货后这一页会自动换成第 1 题，不用点。'))));
@@ -1771,12 +2002,31 @@
       loadBundle: loadBundle,
       diagnosticOnlyRound: FLOW_MOD.diagnosticOnlyRound,
       resultHeadline: FLOW_MOD.resultHeadline,
+      /* 整年级题库门 / 后台补齐的测试缝（tests/test_questions_split.js 真跑 ensureFlowReady）。 */
+      S: S,
+      setEngine: function (engine) { E = engine; },
+      gateTargetsOf: gateTargetsOf,
+      chapterKeysOf: chapterKeysOf,
+      ensureFlowReady: ensureFlowReady,
+      extendScreenSession: extendScreenSession,
+      backgroundFillState: backgroundFillState,
+      SCREEN_GATE_TARGETS: SCREEN_GATE_TARGETS,
       resetQuestionsCache: function () {
         S.questionsIndex = null; S.questionsIndexPromise = null; S.fullBankPromise = null; questionsPromise = null;
         Object.keys(S.bundlePromises).forEach(function (k) { delete S.bundlePromises[k]; });
         Object.keys(S.bundleLoaded).forEach(function (k) { delete S.bundleLoaded[k]; });
         Object.keys(S.bankByTopic).forEach(function (k) { delete S.bankByTopic[k]; });
         S.graphQuestions = null;
+        S.questionsInFlight = 0;
+        gateProgress = null;
+        /* 后台补齐状态一起清零（测试用例之间），并换一代 gen 让在途回调失效。 */
+        if (bgFill) {
+          bgFill.gen++;
+          bgFill.total = 0; bgFill.done = 0; bgFill.failed = 0;
+          bgFill.active = 0; bgFill.maxActive = 0;
+          bgFill.seen = Object.create(null); bgFill.warned = Object.create(null);
+          bgFill.queue = [];
+        }
       }
     };
   }

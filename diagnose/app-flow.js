@@ -5,12 +5,15 @@
  * 全部代码注释用中文且说明 WHY。 */
 (function (global, factory) {
   var api = factory(global);
-  if (typeof module !== 'undefined' && module.exports) module.exports = api;
-  else {
-    global.DiagFlow = api;
-    /* 浏览器下把自己注册成 DiagFlow：app.js 的 flow('xxx') 由此转发（show→closeShare、路径图等）。 */
-    if (global.DiagCore && typeof global.DiagCore.registerFlow === 'function') global.DiagCore.registerFlow(api);
+  /* 注册失败必须出声：a94fef3 拆分时 CORE 漏挂 registerFlow，这里的 if 静默跳过，
+   * FLOW 恒为 null → 点整年级/单点全都「没反应」。Node 直测也走这里，保证
+   * require('../diagnose/app-flow.js') 后 DiagCore.flow('enter') 立刻可用。 */
+  if (global.DiagCore && typeof global.DiagCore.registerFlow === 'function') global.DiagCore.registerFlow(api);
+  else if (typeof console !== 'undefined' && console.warn) {
+    console.warn('[flow] DiagCore.registerFlow 缺失，进流程会无反应', typeof (global.DiagCore && global.DiagCore.registerFlow));
   }
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else global.DiagFlow = api;
 })(typeof self !== 'undefined' ? self : (typeof globalThis !== 'undefined' ? globalThis : this), function (global) {
   'use strict';
   var CORE = global.DiagCore;
@@ -23,12 +26,15 @@
   var markSeen = CORE.markSeen, lsGet = CORE.lsGet, lsSet = CORE.lsSet, lsDel = CORE.lsDel;
   var save = CORE.save, saveToChild = CORE.saveToChild, sessionKey = CORE.sessionKey, resetUi = CORE.resetUi;
   var renderStart = CORE.renderStart, renderQuestionsPending = CORE.renderQuestionsPending, renderNoQuestions = CORE.renderNoQuestions;
+  var renderQuestionsPendingWith = CORE.renderQuestionsPendingWith;
   var questionSourcesSettled = CORE.questionSourcesSettled, ensureFullTopics = CORE.ensureFullTopics, ensureStandards = CORE.ensureStandards;
   var ensureQuestionsForOne = CORE.ensureQuestionsForOne, ensureQuestionsForTopics = CORE.ensureQuestionsForTopics, ensureQuestionsForAnswers = CORE.ensureQuestionsForAnswers;
   var withStage2 = CORE.withStage2, withStage2Data = CORE.withStage2Data, stage2Status = CORE.stage2Status;
   var childBar = CORE.childBar, diagnoseHrefFor = CORE.diagnoseHrefFor, routeReturnHref = CORE.routeReturnHref, routeBackBar = CORE.routeBackBar;
   var isPrereqKnowledge = CORE.isPrereqKnowledge, reasonFor = CORE.reasonFor, noteBlind = CORE.noteBlind, blindResultCard = CORE.blindResultCard;
   var llmVariantsMod = CORE.llmVariantsMod;
+  /* screen 会话续接 + 后台补齐进度（都在 app.js，经 CORE 唯一一份状态）。 */
+  var extendScreenSession = CORE.extendScreenSession, backgroundFillState = CORE.backgroundFillState;
   /* 常量（都在 app.js 的 CORE 定义之前，直接引用；与核心不共享、私有在这里）。 */
   var DIFF_LABEL = CORE.DIFF_LABEL, LAZY_EXPLAIN = CORE.LAZY_EXPLAIN, LAZY_LAB = CORE.LAZY_LAB;
   var LAZY_SHARE = CORE.LAZY_SHARE, LAZY_VARIANTS = CORE.LAZY_VARIANTS, LS_PRAC = CORE.LS_PRAC, LS_VSEQ = CORE.LS_VSEQ;
@@ -188,6 +194,12 @@ function runDemo(steps) {
     }
   }
 
+/* screen 会话中途等待文案：把后台补齐进度带上（DOM 不存在时只是字符串拼接，不报错）。 */
+function screenPendingText(bg) {
+    if (!bg || !bg.total) return '题目还在载入，稍等…';
+    return '题目还在载入，稍等…（' + bg.done + '/' + bg.total + ' 章）';
+  }
+
 function render() {
     if (S.pracLoading) { renderPracticeLoading(); return; }   // O3 LLM 变式加载中
     if (S.prac) { renderQuestion(pracItem()); return; }   // T3 练习模式
@@ -203,6 +215,21 @@ function render() {
         limit: S.session.limit || null, mode: S.session.mode || 'target'
       };
       return renderQuestionsPending();
+    }
+    /* screen 中途：后台还有章节在补齐，nextItem 恰好为空也不许收敛成结果页 ——
+     * 那会把「题库没到」当成「已掌握/未测」，给孩子假结论。先尝试用新到货的图续接，
+     * 续不上就继续显示「题目还在载入」，等下一章到货再由 questionsArrived 重绘。 */
+    if (S.session.mode === 'screen') {
+      const answers = S.session.answers.length;
+      const limit = S.session.limit;
+      const bg = backgroundFillState ? backgroundFillState() : null;
+      if ((limit == null || answers < limit) && bg && bg.running) {
+        if (extendScreenSession && extendScreenSession()) {
+          const nextItem = E.nextItem(S.D.graph, S.session);
+          if (nextItem) return renderQuestion(nextItem);
+        }
+        return renderQuestionsPendingWith(screenPendingText(bg));
+      }
     }
     renderResult();
   }

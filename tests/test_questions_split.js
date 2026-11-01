@@ -31,7 +31,8 @@ const TOPICS_PATH = path.join(ROOT, 'data', 'topics.json');
 const DIR = path.join(ROOT, 'data', 'questions');
 const INDEX_PATH = path.join(ROOT, 'data', 'questions-index.json');
 const BUILD = path.join(ROOT, 'scripts', 'build-questions-split.mjs');
-const APP = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8') + '\n' + fs.readFileSync(path.join(ROOT, 'diagnose', 'app-flow.js'), 'utf8');
+const APP_SRC = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8');
+const APP = APP_SRC + '\n' + fs.readFileSync(path.join(ROOT, 'diagnose', 'app-flow.js'), 'utf8');
 const SW = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
 
 /* bundle 的 gzip 预算：卡上要求 < 10KB（实际最大 ≈6KB）。 */
@@ -579,13 +580,212 @@ async function runDegradeTests() {
   });
 }
 
+/* ------------------------------------------------------------ 7. 整年级题库门（P0：点了没反应）
+ *
+ * a94fef3 把 app.js 拆到 app-flow.js 时 CORE 漏挂 registerFlow，FLOW 恒为 null，
+ * flow('enter') 恒 null → 整年级/单点都无会话、无报错、无兜底卡。
+ * 另一个根因：ensureFlowReady 在 screen 下等全部 targets 的 63 个章节，弱网十几秒才放行。
+ * 下面这组守住：注册链路、门只等前缀章节、后台 ≤2 并发补齐（失败重试一次）、等待期不给假结论。
+ */
+const CHAPTER = require('../diagnose/chapter.js');
+const BG_WAIT_MS = 10000;
+
+function okJson(obj) { return { ok: true, status: 200, json: async function () { return obj; } }; }
+function notFound() { return { ok: false, status: 404 }; }
+function stubFetchDynamic(handler) {
+  const calls = [];
+  global.fetch = function (url) {
+    const u = String(url);
+    calls.push(u);
+    return Promise.resolve(handler(u));
+  };
+  return calls;
+}
+function waitFor(fn) {
+  const t0 = Date.now();
+  return new Promise(function (resolve, reject) {
+    (function tick() {
+      let ok = false;
+      try { ok = !!fn(); } catch (e) { reject(e); return; }
+      if (ok) return resolve();
+      if (Date.now() - t0 > BG_WAIT_MS) return reject(new Error('等待后台补齐超时'));
+      setTimeout(tick, 5);
+    })();
+  });
+}
+function keyForTopic(t) {
+  const grade = t && t.grade != null && t.grade !== '' ? String(t.grade) : '';
+  return CHAPTER.subjectOf(t) + '|' + grade + '|' + String((t && t.chapter) || '');
+}
+function setupMathGrade(grade) {
+  const ts = TOPICS.filter(function (t) { return CHAPTER.subjectOf(t) === 'math' && String(t.grade) === String(grade); });
+  APP_MOD.S.subject = 'math';
+  APP_MOD.S.D = {
+    topics: ts, deps: [], stdById: {}, tree: {}, aliases: {},
+    graph: CHAPTER.buildGraph(ts, [], null)
+  };
+  return ts;
+}
+function bundleFetcher(calls) {
+  return function (u) {
+    if (/questions-index\//.test(u)) return okJson(index);
+    if (/data\/questions\/[^/]+\.json$/.test(u)) {
+      const file = u.split('/').pop();
+      const p = path.join(DIR, file);
+      if (!fs.existsSync(p)) return notFound();
+      return okJson(JSON.parse(fs.readFileSync(p, 'utf8')));
+    }
+    return notFound();
+  };
+}
+
+async function runScreenGateTests() {
+  /* ---- ① 根因 A：registerFlow 守卫（源码级 + 行为级） ---- */
+  test('app.js：CORE 字面量里必须挂 registerFlow（a94fef3 的 P0 回归）', function () {
+    const core = bodyAfter(APP_SRC, 'var CORE = {');
+    assert.ok(/registerFlow\s*:\s*registerFlow/.test(core),
+      'CORE 漏挂 registerFlow → app-flow 的注册被静默跳过，整年级/单点点了没反应');
+  });
+
+  await testAsync('行为级：Node require app.js + app-flow.js 后 DiagCore.flow("enter") 不为 null', async function () {
+    require('../diagnose/app-flow.js');   // 已缓存也无妨：关键是注册已发生
+    assert.ok(global.DiagCore, 'app.js 应在 Node 下挂 global.DiagCore');
+    assert.strictEqual(typeof global.DiagCore.registerFlow, 'function', 'DiagCore.registerFlow 缺失');
+    const enter = global.DiagCore.flow('enter');
+    assert.strictEqual(typeof enter, 'function', 'flow("enter") 仍是 null：整年级按钮会继续点了没反应');
+  });
+
+  /* ---- ② 源码级：screen 门只等 gate 前缀章节 ---- */
+  test('app.js：screen 题源门只等 gate 前缀章节，不等整个 targets', function () {
+    const body = bodyAfter(APP, 'async function ensureFlowReady(');
+    assert.ok(body.indexOf('gateTargetsOf(') >= 0, 'ensureFlowReady 应先用 gateTargetsOf 切出前缀章节');
+    assert.strictEqual(body.indexOf('ensureQuestionsForTopics(targets)'), -1,
+      '不许对整个 targets 调题库门（弱网下 63 章要等十几秒）');
+    assert.strictEqual(body.indexOf('ensureQuestionsForTopics(flowTargets)'), -1,
+      '不许把整个 targets 塞进 flowTargets 再交给题库门');
+    assert.ok(/flowTargets\s*=\s*gate;/.test(body), 'flowTargets 必须收窄成 gate（门内章节）');
+    /* 旧守卫仍要求无参 ensureQuestions() 出现；它现在只读收窄后的 flowTargets（=gate），
+     * 所以这里额外断言 flowTargets 在它之前被赋值，防止有人把整个 targets 又放回去。 */
+    assert.ok(body.indexOf('flowTargets = gate;') < body.indexOf('const bank = ensureQuestions();'),
+      'ensureQuestions() 之前必须先把 flowTargets 收窄成 gate');
+    const m = /const SCREEN_GATE_TARGETS = (\d+);/.exec(APP_SRC);
+    assert.ok(m, '缺 SCREEN_GATE_TARGETS 常量');
+    assert.ok(parseInt(m[1], 10) <= 12, 'SCREEN_GATE_TARGETS 不得超过 12');
+  });
+
+  /* ---- ③ 行为级：门开前只请求 gate 章节 ---- */
+  await testAsync('真跑 ensureFlowReady：119 targets / 63 章节，开门前只请求 gate 章节（bundle ≤ 12）', async function () {
+    APP_MOD.resetQuestionsCache();
+    APP_MOD.setEngine(ENGINE);
+    setupMathGrade(7);
+    const ids = CHAPTER.gradeTargets(APP_MOD.S.D.graph, '七年级', 'math').ids;
+    assert.strictEqual(ids.length, 119, '七年级数学目标数应为 119，实际 ' + ids.length);
+    const split = APP_MOD.gateTargetsOf(ids, 'screen');
+    const gateKeys = APP_MOD.chapterKeysOf(split.gate);
+    const gateFiles = gateKeys.map(function (k) { return index[k]; }).sort();
+    const calls = stubFetchDynamic(bundleFetcher());
+    try {
+      const ok = await APP_MOD.ensureFlowReady(ids, null, 'screen');
+      assert.strictEqual(ok, true, '题源门应放行（gate 章节已到 + 全量 topics 失败也靠 legacy 兜底）');
+      /* backgroundFill 用 setTimeout 起泵：await 恢复时（微任务）后台还没发请求。 */
+      const requested = Array.from(new Set(bundleRequests(calls).map(function (u) { return u.split('/').pop(); }))).sort();
+      assert.deepStrictEqual(requested, gateFiles, '开门前只该请求 gate 章节的 bundle');
+      assert.ok(requested.length <= APP_MOD.SCREEN_GATE_TARGETS,
+        '开门前请求的 bundle 应 ≤ ' + APP_MOD.SCREEN_GATE_TARGETS + '，实际 ' + requested.length);
+      const chapterNos = new Set(split.gate.map(function (id) {
+        return CHAPTER.parseChapter(APP_MOD.S.D.graph.byId[id].chapter).chapterNo;
+      }));
+      assert.ok(chapterNos.size <= 3, '前 12 个目标应落在前 1~3 个章，实际 ' + chapterNos.size + ' 个');
+      assert.ok(split.rest.length > 0, '整年级应还有章节留给后台补齐');
+      assert.strictEqual(new Set(split.rest.map(function (id) { return keyForTopic(APP_MOD.S.D.graph.byId[id]); })).size,
+        split.rest.length, 'rest 应按章节只留一个代表');
+      assert.strictEqual(APP_MOD.backgroundFillState().total, split.rest.length,
+        '后台补齐 total 应等于剩余章节数');
+    } finally { restoreFetch(); APP_MOD.resetQuestionsCache(); }
+  });
+
+  /* ---- ④ 行为级：后台补齐（并发 ≤2、失败重试一次） ---- */
+  await testAsync('真跑后台补齐：门开之后补齐剩余章节，done=total、maxActive≤2、failed=0', async function () {
+    APP_MOD.resetQuestionsCache();
+    APP_MOD.setEngine(ENGINE);
+    setupMathGrade(7);
+    const ids = CHAPTER.gradeTargets(APP_MOD.S.D.graph, '七年级', 'math').ids;
+    const split = APP_MOD.gateTargetsOf(ids, 'screen');
+    const calls = stubFetchDynamic(bundleFetcher());
+    try {
+      assert.strictEqual(await APP_MOD.ensureFlowReady(ids, null, 'screen'), true);
+      await waitFor(function () { return !APP_MOD.backgroundFillState().running; });
+      const st = APP_MOD.backgroundFillState();
+      assert.strictEqual(st.total, split.rest.length, '后台补齐该覆盖全部剩余章节');
+      assert.strictEqual(st.done, st.total, '剩余章节应全部补齐');
+      assert.strictEqual(st.failed, 0, '正常数据不应有最终失败');
+      assert.ok(st.maxActive <= 2, '后台补齐并发必须 ≤ 2，实际 ' + st.maxActive);
+      assert.ok(st.maxActive >= 1, '应真的并发跑过');
+    } finally { restoreFetch(); APP_MOD.resetQuestionsCache(); }
+  });
+
+  await testAsync('真跑后台补齐：某个 bundle 首次 404、重试成功（请求次数=2、最终 done 覆盖它）', async function () {
+    APP_MOD.resetQuestionsCache();
+    APP_MOD.setEngine(ENGINE);
+    setupMathGrade(7);
+    const ids = CHAPTER.gradeTargets(APP_MOD.S.D.graph, '七年级', 'math').ids;
+    const split = APP_MOD.gateTargetsOf(ids, 'screen');
+    const tryFile = index[APP_MOD.chapterKeysOf([split.rest[0]])[0]];
+    const counts = Object.create(null);
+    const normal = bundleFetcher();
+    const calls = stubFetchDynamic(function (u) {
+      if (/data\/questions\/[^/]+\.json$/.test(u)) {
+        const file = u.split('/').pop();
+        counts[file] = (counts[file] || 0) + 1;
+        if (file === tryFile && counts[file] === 1) return notFound();   // 首次 404
+        return normal(u);
+      }
+      return normal(u);
+    });
+    try {
+      assert.strictEqual(await APP_MOD.ensureFlowReady(ids, null, 'screen'), true);
+      await waitFor(function () { return !APP_MOD.backgroundFillState().running; });
+      const st = APP_MOD.backgroundFillState();
+      assert.strictEqual(counts[tryFile], 2, '失败章节应被重试一次（请求次数 2），实际 ' + counts[tryFile]);
+      assert.strictEqual(st.done, st.total, '重试成功后最终 done 应覆盖它');
+      assert.strictEqual(st.failed, 0, '重试成功后不应计最终失败');
+    } finally { restoreFetch(); APP_MOD.resetQuestionsCache(); }
+  });
+
+  /* ---- ⑤ 不许假结论：只加载 gate 章节时，未加载章节必须仍是 untested ---- */
+  test('只加载 gate 章节：summarize 的 untested 非空、mastered 不含未加载章节、studentAdvice 不说「都掌握啦」', function () {
+    APP_MOD.resetQuestionsCache();
+    const ts = setupMathGrade(7);
+    const ids = CHAPTER.gradeTargets(APP_MOD.S.D.graph, '七年级', 'math').ids;
+    const split = APP_MOD.gateTargetsOf(ids, 'screen');
+    const gateKeys = APP_MOD.chapterKeysOf(split.gate);
+    const gateQs = [];
+    gateKeys.forEach(function (k) {
+      gateQs.push.apply(gateQs, JSON.parse(fs.readFileSync(path.join(DIR, index[k]), 'utf8')));
+    });
+    const g = CHAPTER.buildGraph(ts, [], gateQs);
+    const session = ENGINE.createSession(g, ids, { mode: 'screen', limit: 40, confirm: 3, seed: 'gate' });
+    const sum = ENGINE.summarize(g, session);
+    assert.ok(sum.untested.length > 0, '只加载了 gate 章节时一定有没测到的点');
+    const gateSet = new Set(gateKeys);
+    assert.ok(sum.untested.some(function (id) { return !gateSet.has(keyForTopic(g.byId[id])); }),
+      '未加载章节的点必须还在 untested 里');
+    assert.ok(sum.mastered.every(function (id) { return gateSet.has(keyForTopic(g.byId[id])); }),
+      '已掌握不许包含未加载章节的点（会把「题库没到」当「已掌握」）');
+    const advice = ENGINE.studentAdvice(sum, function (id) { return g.byId[id].name; });
+    assert.strictEqual(advice.indexOf('都掌握啦'), -1, '还有没测完的点时不许说「都掌握啦」：' + advice);
+  });
+}
+
 function report() {
   console.log('\n' + (failed === 0 ? '全部通过' : '存在失败') + '：' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed === 0 ? 0 : 1);
 }
 
-runDegradeTests().then(report, function (e) {
-  console.log('  FAIL 退化用例框架出错\n       ' + (e && e.stack || e));
-  failed++;
-  report();
-});
+runDegradeTests()
+  .then(runScreenGateTests)
+  .then(report, function (e) {
+    console.log('  FAIL 退化/题库门用例框架出错\n       ' + (e && e.stack || e));
+    failed++;
+    report();
+  });
