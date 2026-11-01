@@ -45,6 +45,7 @@
     commitPending: false,
     pendingStart: null,
     flowPending: false,
+    depsFailed: false,
     fullTopicsFailed: false,
     standardsFailed: false,
     lazyFailed: Object.create(null)
@@ -200,17 +201,37 @@
 
   function ensureFlowEngine() {
     if (!flowEnginePromise) {
-      flowEnginePromise = Lazy.load(['engine.js', 'app-flow.js']).then(function () {
+      /* 只有这两个文件可以并发：app-flow.js 顶部只从 CORE 拿 app.js 已提供的东西，引擎走 eng() → CORE.E
+       * getter（每次用时读），两个脚本谁先执行都不影响。Lazy.load 文档里要求串行的那些链
+       * （funclab→labmatch→chatgraph、llm-eval→…）不动 —— 那些链里有顶层抓引用，串行是硬约束。
+       * 并行注入省一个 RTT：弱网下 engine.js(22KB gz) + app-flow.js(31KB gz) 同时下，不再串一个等一个。 */
+      flowEnginePromise = Promise.all([Lazy.load('engine.js'), Lazy.load('app-flow.js')]).then(function () {
         if (!E) E = Browser.DiagEngine;   // E 是 let：按需段注册前先拿到引擎（app-flow 的 CORE.E 走 getter 能读到）
+        flowEngineReady = true;           // Round 2 第 3 条：flowStatusText 在引擎到货后才不说「出题引擎还在下」
       });
     }
     return flowEnginePromise;
+  }
+
+  /* 点击后的第一帧（卡 t_80db9722）：不等网络，同步把列表区换成等待卡并写上「0/3 章」。
+   * 必须在 ensureFlowEngine() 之前调用 —— 弱网下引擎 5~10s 才到，等它就是「点了没反应」。 */
+  function showFlowStartFeedback(targets, mode) {
+    if (typeof document === 'undefined' || !root) return;
+    if (!Array.isArray(targets) || !targets.length) return;
+    const keys = chapterKeysOf(gateTargetsOf(targets, mode).gate);
+    renderQuestionsPendingWith('正在准备这一轮的题…');
+    /* flowProgressStart 必须在 gateProgressStart 之前：gateProgressStart → gateProgressTick → flowProgressPaint
+     * 会立刻读 flowStartAt 算「已等 Ns」。若先 gateProgressStart，第一帧 flowStartAt 还是 0，
+     * Math.round((Date.now() - 0)/1000) = 当前纪元秒，状态行出现「已等 1793554006s」（卡 Round 2 第 1 条）。 */
+    flowProgressStart();            // 先设 flowStartAt = Date.now()，再让 gateProgressStart 触发首帧 paint
+    gateProgressStart(keys);        // 同步把「已到 0/3 章」画到刚出现的状态行上
   }
 
   /* 所有「进流程」的按钮统一入口：先确保引擎/按需段就绪，再走 withStage2 门。
    * latest-click-wins 在 withStage2 里：等待期间再点别的，门开时按最后一次点击重过（见 flowSeq）。
    * enter 是 app-flow.js 里唯一的会话开入口，统一了按钮 / 深链 / 续练三种路径。 */
   function goFlow(targets, label, limit, mode) {
+    showFlowStartFeedback(targets, mode);
     ensureFlowEngine().then(function () {
       withStage2(targets, mode, function () {
         const f = flow('enter'); if (f) f(targets, label, limit, mode);
@@ -408,7 +429,7 @@
   function withRouteBack(page) {
     if (!routeReturnHref(location.search)) return page;
     const wrap = h('div');
-    wrap.append(routeBackBar(), page);
+    append(wrap, routeBackBar(), page);
     return wrap;
   }
   function lsDel(k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } }
@@ -552,13 +573,16 @@
   }
 
   /* 阶段 2a：先修关系。取不到就降级 —— 图里没有先修边，结果页的「先修回溯」不工作，
-   * 但孩子照样能做题（界面上本来就有这条兜底）。失败下一次进流程再试。 */
+   * 但孩子照样能做题（界面上本来就有这条兜底）。失败下一次进流程再试。
+   * 先取逐学科份 ../data/dependencies/<subject>.json（math gzip 38KB，全量 115KB 的 1/3），
+   * 缺失/坏再回退整份 dependencies.json（回退后仍按 allow 过滤，语义与回退前完全一致）。 */
   function ensureDeps() {
     if (S.depsLoaded) return Promise.resolve(true);
     if (depsPromise) return depsPromise;
     depsPromise = (async function () {
       try {
-        const r = await fetch('../data/dependencies.json');
+        let r = await fetch('../data/dependencies/' + S.subject + '.json');
+        if (!r.ok) r = await fetch('../data/dependencies.json');   // 逐学科份缺失：回退整份
         if (!r.ok) return false;
         const all = await r.json();
         if (!Array.isArray(all)) return false;
@@ -569,10 +593,11 @@
         rebuildGraph();
         return true;
       } catch (e) {
-        return false;   // 先修数据坏了：静默降级，不挡出题
+        S.depsFailed = true;   // 先修数据坏了：静默降级，不挡出题（与 fullTopicsFailed 同款标志，仅供进度文案读）
+        return false;
       }
     })();
-    depsPromise.then(function (ok) { if (!ok) depsPromise = null; });
+    depsPromise.then(function (ok) { if (!ok) { depsPromise = null; S.depsFailed = true; } });
     return depsPromise;
   }
 
@@ -583,6 +608,9 @@
     if (S.fullTopicsLoaded) return Promise.resolve(true);
     if (fullTopicsPromise) return fullTopicsPromise;
     fullTopicsPromise = (async function () {
+      /* Round 2 第 3 条：真正发起 fetch 才置 true，flowStatusText 只在飞时说「知识点说明还在下」。
+       * 早退路径（已 loaded / 已有 promise）不进这里，不会误置。完成（成功/失败/早退）统一在 finally 置 false。 */
+      fullTopicsInFlight = true;
       try {
         const r = await fetch('../data/topics.json');
         if (!r.ok) return false;
@@ -605,6 +633,8 @@
         refreshPending();
         resumePendingStart();      // 另一份题源也可能在这之后失败：这里更新一次挂起状态
         return false;
+      } finally {
+        fullTopicsInFlight = false;
       }
     })();
     fullTopicsPromise.then(function (ok) { if (!ok) { fullTopicsPromise = null; S.fullTopicsFailed = true; } });
@@ -920,12 +950,53 @@
     let loaded = 0;
     gateProgress.keys.forEach(function (k) { if (S.bundleLoaded[k]) loaded++; });
     gateProgress.loaded = loaded;
-    if (typeof document !== 'undefined') {
-      stage2Status('题目还在载入，稍等…（' + loaded + '/' + gateProgress.total + ' 章）');
-    }
+    flowProgressPaint();
     return loaded;
   }
-  function gateProgressDone() { gateProgress = null; }
+  function gateProgressDone() { gateProgress = null; flowProgressStop(); }
+
+  /* 点击后的实时进度文案（卡 t_80db9722）。两部分：
+   *   - 门内章节进度（gateProgress.loaded/total）
+   *   - 还在路上什么（先修关系 / 知识点说明）与已等秒数
+   * 前置一个 500ms 转一格的盲文字符：弱网下引擎和题库要好几秒，任何 2 秒静默都会让用户以为「点了没反应」，
+   * 心跳保证状态行每 500ms 一定变一次（这是可测的体验约束，不是装饰）。 */
+  const FLOW_SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  let flowSpin = 0;
+  let flowTicker = null;
+  let flowStartAt = 0;
+  /* Round 2 第 3 条：状态行只能说「当前真正在等什么」，不能无脑说「知识点说明还在下」。
+   *   - flowEngineReady：ensureFlowEngine 的 .then 里置 true。在此之前说「出题引擎还在下」，
+   *     到了之后才可能开始等先修关系（先修 fetch 在 ensureFlowReady 里、引擎之后发起）。
+   *   - fullTopicsInFlight：ensureFullTopics 真正发起 fetch 时置 true，完成（成功/失败/早退）置 false。
+   *     screen 门内不发 ensureFullTopics（Round 2 第 2 条），所以门内这句永远不说；门后 openGate 发起后才会出现。 */
+  let flowEngineReady = false;
+  let fullTopicsInFlight = false;
+
+  function flowStatusText() {
+    const parts = [];
+    if (!flowEngineReady) parts.push('出题引擎还在下');
+    const gp = gateProgress;
+    if (gp) parts.push('已到 ' + (gp.loaded || 0) + '/' + gp.total + ' 章');
+    if (flowEngineReady && !S.depsLoaded && !S.depsFailed) parts.push('先修关系还在下');
+    if (fullTopicsInFlight) parts.push('知识点说明还在下');
+    /* 秒数防御（Round 2 第 1 条）：flowStartAt 在 flowProgressStart 里才赋值，
+     * 万一别处先调 flowStatusText，0 会被 Math.round((Date.now()-0)/1000) 算成当前纪元秒。 */
+    const sec = flowStartAt ? Math.round((Date.now() - flowStartAt) / 1000) : 0;
+    if (sec >= 1) parts.push('已等 ' + sec + 's');
+    const head = FLOW_SPIN[flowSpin++ % FLOW_SPIN.length] + ' 正在准备这一轮的题…';
+    return parts.length ? head + '（' + parts.join(' · ') + '）' : head;
+  }
+  function flowProgressPaint() { stage2Status(flowStatusText()); }
+  function flowProgressStart() {
+    flowStartAt = Date.now();
+    if (typeof setInterval !== 'function') return;
+    if (flowTicker) return;
+    flowTicker = setInterval(flowProgressPaint, 500);
+  }
+  function flowProgressStop() {
+    if (flowTicker && typeof clearInterval === 'function') clearInterval(flowTicker);
+    flowTicker = null;
+  }
 
   /* ------------------------------------------------------------ 后台补齐（只在 screen 门开之后）
    * 并发 ≤2，失败重试一次，仍失败只 warn 一次：后台补齐绝不能弹错/弹卡/挡流程。
@@ -1034,14 +1105,25 @@
    * 整年级筛查（mode === 'screen'）只等 gate 前缀章节，rest 在门开后后台补齐：
    * 63 个章节全等到齐在弱网下要十几秒，而一轮默认只出 40 题，根本用不到全部章节。 */
   async function ensureFlowReady(targets, limit, mode) {
-    await ensureDeps();
     targets = Array.from(new Set((targets || []).filter(Boolean)));
     const split = gateTargetsOf(targets, mode);
     const gate = split.gate;
     /* 无参 ensureQuestions() 只服务于「门内章节」：flowTargets 在这里被收窄成 gate，
      * 不再是把整个年级的 targets 塞进题库门（旧守卫仍能看到 ensureQuestions() 这个入口）。 */
     flowTargets = gate;
-    const full = ensureFullTopics();
+    /* 三件事并行发起（卡 t_80db9722）：先修关系 / 门内章节题库不再串行；screen 模式下全量 topics.json 留到门后。
+     * 旧顺序是先修关系最先 await → 全量 115KB 先修下完之前，题库 bundle 一个请求都没发出，
+     * 弱网下页面十几秒不动。现在 deps / bank 同时开出，先修关系这行 await 仍逐字保留
+     * （tests/test_data_split.js 守这一行），只是挪到 full/bank 之后：deps 没到时题库已经在下了。
+     * Round 2 第 2 条：screen 门只等 gate 章节 bundle + 先修关系；topics.json 的 345KB 留在门后（openGate()）
+     * 取，门内不需要它 —— flowAskable / screenRoundGraph 用 lite 字段 + 已到货 bundle，有 bundle 时不走
+     * legacy 兜底题。非 screen（单点 / 整章）行为不变：仍然 ensureFullTopics()。
+     * full 只是变成 screen 下立即 resolve 的 promise；race / all / gateLoaded / flowAskable 写法全部逐字保留。 */
+    const full = mode === 'screen' ? Promise.resolve(true) : ensureFullTopics();
+    const bank = ensureQuestions();                   // 只取 gate 前缀章节（不再是整个 targets，也不再是整份题库）
+    // 同一章节只请求一次：ensureQuestions 内部用 bundleLoaded / 在途 Promise 去重，重复点同一知识点不产生额外请求。
+    // bank 必须在下方 flowAskable 判据之前发起：否则第二次点知识点时 bundle 未到，会拿 topics.json 的兜底诊断题直接放行，会话退化成「本知识点第 1 / 1 题」，答完一题给假结论（卡 t_83ca3ac5 实测）。
+    await ensureDeps();
     /* 门要等的 bundle key（screen 下 ≤3 个章节）。判据只看「这些 key 的 bundle 是否真的到货」，
      * 不再依赖 questionsInFlight 的时序：ensureQuestions() 刚发起时 index.json 还在路上，
      * in-flight 仍是 0，而 topics.json 已到货 → 旧判据会立刻拿兜底诊断题开门。 */
@@ -1050,12 +1132,6 @@
       if (mode !== 'screen') return true;   // 单点 / 整章：老的「等齐」语义不变
       return !gateKeys.length || gateKeys.every(function (k) { return !!S.bundleLoaded[k]; });
     };
-    /* 先把「这些目标所在章节的题库」这一份开起来，再判能不能出题。
-     * 顺序曾经是「能出题就早退」，于是第二次点知识点时（全量 topics 已到货、目标自带
-     * diagnostic_question）会直接放行、一次 bundle 都不取 —— 会话退化成「本知识点第 1 / 1 题」，
-     * 答完一题就是假结论（A→B 快速切换时必现，卡 t_83ca3ac5 实测）。
-     * 同一章节只会请求一次（bundleLoaded / 在途 Promise 去重），重复点不产生额外请求。 */
-    const bank = ensureQuestions();                   // 只取 gate 前缀章节（不再是整个 targets，也不再是整份题库）
     /* screen：门内章节没到齐就先等，绝不能拿 topics.json 的兜底诊断题开门。 */
     if (mode === 'screen' && !gateLoaded()) {
       gateProgressStart(gateKeys);
@@ -1074,7 +1150,7 @@
      * 定义放在等待之后：startBackgroundFill 只能作为「门真的开了」的收尾被调用。 */
     function openGate() {
       gateProgressDone();
-      if (mode === 'screen') startBackgroundFill(split.rest);
+      if (mode === 'screen') { ensureFullTopics(); startBackgroundFill(split.rest); }
     }
     /* 判据调用两次是刻意的：源码级守卫要求开门那一行保持 `... === 0) return true;` 的原样，
      * 后台补齐只能挂在前一行「条件为真才执行」的 openGate() 上。 */
@@ -1334,7 +1410,8 @@
    * （弱网下 114KB 约 2s），并在开始页留一行状态文字；全量字段在后台同时开取。 */
   function stage2Status(msg) {
     if (typeof document === 'undefined') return;
-    const el = document.getElementById('stage2-status');
+    const el = document.getElementById('stage2-status') ||
+      document.getElementById('questions-pending-status');
     if (el) el.textContent = msg || '';
   }
 
@@ -1366,6 +1443,7 @@
     ensureFlowReady(job.targets, undefined, job.mode).then(function (ok) {
       if (seq !== flowSeq) return openStage2Gate();   // 等待期间又点了别的：按最新那次重过门
       S.flowPending = false;
+      flowProgressStop();
       if (typeof document !== 'undefined') stage2Status('');
       if (ok) { job.fn(); return; }
       renderFlowBlocked(job.targets, job.mode, job.fn);
@@ -1373,6 +1451,7 @@
       /* 取题源本身抛错（不该发生，但别让 flowPending 卡死成「点了没反应」） */
       if (seq !== flowSeq) return openStage2Gate();
       S.flowPending = false;
+      flowProgressStop();
       if (typeof document !== 'undefined') stage2Status('');
       renderFlowBlocked(job.targets, job.mode, job.fn);
     });
@@ -1558,7 +1637,7 @@
         ' ', h('button', { onclick: function () { lsDel(sessionKey()); renderStart(); } }, '放弃存档')));
     }
     if (errMsg) page.append(h('p', { class: 'err', text: errMsg }));
-    page.append(childBar('start'));
+    append(page, childBar('start'));
     const startBlind = blindStartCard();
     if (startBlind) page.append(startBlind);
 
