@@ -419,3 +419,15 @@ table.log select { min-height: 44px; }
   font-size: 1.2rem; line-height: 1; cursor: pointer;
 }
 @media print { .llm-banner { display: none !important; } }
+
+/* 首屏骨架（阶段 0）：数据还没到时的占位条。
+ * 只用 CSS —— 不引依赖、不加外链、不新增请求（本文件本来就在首屏链上）；
+ * 不用转圈动画，用静止占位条 + 一行状态文字。骨架与真界面共用 .card / .stage-tabs /
+ * .search-lg 的尺寸，所以阶段 1 数据到货后原地替换基本不跳动。 */
+.skel { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 4px; }
+.skel-bar {
+  display: block; height: 14px; border-radius: 7px;
+  background-color: var(--line);
+  opacity: 0.85;
+}
+.skel-bar.skel-short { width: 46%; }

@@ -8,13 +8,13 @@
  * 为什么不用 cache.addAll 一把梭整个 SHELL 列表：addAll 是全或无 ——
  * 整个列表逐项都成功才算装完，任何一项慢或 404，整个 install 就 reject，
  * SW 永远停在 installing、active 一直是 false，缓存里 0 项，离线能力全废
- * （实测 50KB/s 的手机网络下，30 个壳 + 5 份数据约 1.75MB，必然装不完 = 永远没有缓存）。
+ * （实测 50KB/s 的手机网络下，30 个壳 + 6 份数据约 1.8MB，必然装不完 = 永远没有缓存）。
  * 逐项 add + 逐项 catch，失败只丢该项，缺的下次访问时由 fetch 策略补上。
  *
  * 改了 SHELL 或 DATA 列表、或数据结构变了，就把 VERSION 加一。 */
 'use strict';
 
-var VERSION = 'v6';
+var VERSION = 'v7';
 var CACHE = 'cnm-pwa-' + VERSION;
 var SCOPE = self.registration.scope;
 
@@ -74,6 +74,7 @@ var SHELL = [
 ];
 
 var DATA = [
+  'data/topics-lite.json',
   'data/topics.json',
   'data/dependencies.json',
   'data/cn-curriculum-standards.json',

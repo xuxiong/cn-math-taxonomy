@@ -45,7 +45,27 @@
     </div>
   </nav>
 </header>
-<main id="root"><p class="loading">加载数据中……</p></main>
+<main id="root">
+  <!-- 首屏骨架（阶段 0）：HTML 里直接就画出选题界面的架子，不等任何脚本/数据。
+       结构与 app.js 的 renderStart 一致（标题 → 状态行 → 学段按钮 → 搜索框 → 说明行），
+       所以数据到货后原地替换不跳版。样式在 diagnose/style.css 的 .skel / .skel-bar。 -->
+  <div>
+    <div class="card" id="skeleton-card">
+      <h1>选择诊断目标</h1>
+      <p class="muted" id="skeleton-status" role="status">正在载入知识库…</p>
+      <div class="stage-tabs" role="tablist" aria-label="学段">
+        <button type="button" class="stage-tab" role="tab" aria-selected="false" disabled>全部</button>
+        <button type="button" class="stage-tab" role="tab" aria-selected="false" disabled>小学</button>
+        <button type="button" class="stage-tab" role="tab" aria-selected="false" disabled>初中</button>
+        <button type="button" class="stage-tab" role="tab" aria-selected="false" disabled>高中</button>
+      </div>
+      <input type="search" class="search-lg" id="search" placeholder="正在载入…" autocomplete="off" aria-label="搜索知识点" disabled>
+      <p class="muted small" id="match-count"></p>
+      <div class="skel" aria-hidden="true"><span class="skel-bar"></span><span class="skel-bar"></span><span class="skel-bar skel-short"></span></div>
+      <p class="muted small">知识点清单大约 60KB，弱网几秒；题目和说明在后台接着装，不影响你选。</p>
+    </div>
+  </div>
+</main>
 <footer class="site-footer">
   <p><a href="https://github.com/xuxiong/cn-math-taxonomy/issues/new/choose">提交 Issue</a></p>
   <p>内容许可 <a href="../LICENSE">CC BY-NC 4.0</a> · 基于 <a href="https://github.com/xiaoyang111222/cn-math-taxonomy">xiaoyang111222/cn-math-taxonomy</a> 修改</p>
