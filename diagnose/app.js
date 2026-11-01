@@ -93,10 +93,11 @@
   const LS_VSEQ = 'cnmDiagnose.variantSeq.v1';  // O1 变式序号 {topicId: nextIndex}
   const LIMIT_MIN = 8, LIMIT_MAX = 30;
   const SCREEN_MIN = 20, SCREEN_MAX = 60;
-  /* 整年级筛查的题库门最多先等这么多个目标所在章节（12 个目标通常只落在前 2~3 个章、
-   * 8 个左右的章节 bundle 上）。一轮默认只出 40 题，用不到整年级 63 个章节；
+  /* 整年级筛查的题库门只等前 3 个章节 bundle、最多 12 个目标（七年级 119 个目标分布在 63 章，
+   * 门内实际只切出 5 个目标 / 3 个 bundle）。一轮默认只出 40 题，用不到整年级 63 个章节；
    * 等全量会让弱网下「点了没反应」十几秒（实测 5.1s 起请求、19.4s 才放行）。 */
-  const SCREEN_GATE_TARGETS = 12;
+  const SCREEN_GATE_BUNDLES = 3;   // 门最多等 3 个章节 bundle（一轮 40 题用不到更多）
+  const SCREEN_GATE_TARGETS = 12;  // 门内目标数上限（卡上守卫要求）
   const GRADES = '一二三四五六七八九'.split('');
   const VOLUMES = [
     ['一上', '一年级上册'], ['一下', '一年级下册'], ['二上', '二年级上册'], ['二下', '二年级下册'],
@@ -692,6 +693,9 @@
       return;
     }
     if (S.prac || S.pracLoading) return;   // 用户已在流程里：只更新 D，不重绘
+    if (S.flowPending) return;             // 门还开着：谁也别说「回到选题页」
+    const bg = backgroundFillState ? backgroundFillState() : null;
+    if (bg && bg.running) return;          // 后台还在补：保持当前视图（骨架/等待卡），补完再重画
     renderStart(S.startErr);
   }
 
@@ -839,31 +843,50 @@
   }
 
   /* 纯函数（同时导出给 Node 测试）：
-   *   screen —— 按 targets 顺序取前 min(len, SCREEN_GATE_TARGETS) 个作为种子，再把与种子
-   *             同章节的目标并入 gate（同章节 = 同一个 bundle，不多发请求）；
+   *   screen —— 按 targets 顺序收口：目标所在章节已在门的章节列表里 → 收进 gate；
+   *             新章节且门的章节数已到 SCREEN_GATE_BUNDLES → 停止（后续目标全进 rest）；
+   *             gate 目标数到 SCREEN_GATE_TARGETS → 停止。
+   *             第一个目标没有章节 key 时退化成「取第一个目标」进门，不能空手开门
+   *             （gate=[] 会让门永远等不到东西）。
    *   rest   —— 其余目标，按章节只留一个代表（ensureQuestionsForOne 本来就按章节去重）。
    * 去重保序：同一个 id 只出现一次，gate 与 rest 都保持 targets 原顺序。 */
   function gateTargetsOf(targets, mode) {
     const uniq = Array.from(new Set((targets || []).filter(Boolean)));
     if (mode !== 'screen') return { gate: uniq, rest: [] };
     if (!uniq.length) return { gate: [], rest: [] };
-    const seedKeys = Object.create(null);
-    const seeds = Math.min(uniq.length, SCREEN_GATE_TARGETS);
-    for (let i = 0; i < seeds; i++) {
-      const key = chapterKeyFor(uniq[i]);
-      seedKeys[key || ('?' + uniq[i])] = true;
+    function restOf(list) {
+      const out = [];
+      const seen = Object.create(null);
+      list.forEach(function (id) {
+        const key = chapterKeyFor(id) || ('?' + id);
+        if (seen[key]) return;
+        seen[key] = true;
+        out.push(id);
+      });
+      return out;
     }
+    /* 第一个目标没有章节 key（图/知识点还没到）：退化只取它进门，不能 gate=[] 让门永远等不到东西。 */
+    if (!chapterKeyFor(uniq[0])) return { gate: [uniq[0]], rest: restOf(uniq.slice(1)) };
     const gate = [];
-    const rest = [];
-    const restSeen = Object.create(null);
+    const gateKeys = [];
+    const gateKeySet = Object.create(null);
+    let gateClosed = false;
     uniq.forEach(function (id) {
-      const key = chapterKeyFor(id) || ('?' + id);
-      if (seedKeys[key]) { gate.push(id); return; }
-      if (restSeen[key]) return;
-      restSeen[key] = true;
-      rest.push(id);
+      if (gateClosed) return;
+      const key = chapterKeyFor(id);
+      if (key && gateKeySet[key]) {
+        gate.push(id);
+      } else if (!key || gateKeys.length < SCREEN_GATE_BUNDLES) {
+        if (key) { gateKeySet[key] = true; gateKeys.push(key); }
+        gate.push(id);
+      } else {
+        gateClosed = true;
+        return;
+      }
+      if (gate.length >= SCREEN_GATE_TARGETS) gateClosed = true;
     });
-    return { gate: gate, rest: rest };
+    const gateIds = new Set(gate);
+    return { gate: gate, rest: restOf(uniq.filter(function (id) { return !gateIds.has(id); })) };
   }
 
   /* 门内章节到货进度：每到一个 bundle 更新一次「题目还在载入，稍等…（已到/需要 章）」。
@@ -2010,6 +2033,7 @@
       ensureFlowReady: ensureFlowReady,
       extendScreenSession: extendScreenSession,
       backgroundFillState: backgroundFillState,
+      SCREEN_GATE_BUNDLES: SCREEN_GATE_BUNDLES,
       SCREEN_GATE_TARGETS: SCREEN_GATE_TARGETS,
       resetQuestionsCache: function () {
         S.questionsIndex = null; S.questionsIndexPromise = null; S.fullBankPromise = null; questionsPromise = null;

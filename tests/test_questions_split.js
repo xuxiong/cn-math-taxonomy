@@ -32,7 +32,8 @@ const DIR = path.join(ROOT, 'data', 'questions');
 const INDEX_PATH = path.join(ROOT, 'data', 'questions-index.json');
 const BUILD = path.join(ROOT, 'scripts', 'build-questions-split.mjs');
 const APP_SRC = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8');
-const APP = APP_SRC + '\n' + fs.readFileSync(path.join(ROOT, 'diagnose', 'app-flow.js'), 'utf8');
+const FLOW_SRC = fs.readFileSync(path.join(ROOT, 'diagnose', 'app-flow.js'), 'utf8');
+const APP = APP_SRC + '\n' + FLOW_SRC;
 const SW = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
 
 /* bundle 的 gzip 预算：卡上要求 < 10KB（实际最大 ≈6KB）。 */
@@ -617,10 +618,11 @@ function keyForTopic(t) {
   const grade = t && t.grade != null && t.grade !== '' ? String(t.grade) : '';
   return CHAPTER.subjectOf(t) + '|' + grade + '|' + String((t && t.chapter) || '');
 }
-function setupMathGrade(grade) {
+function setupMathGrade(grade, mod) {
+  const M = mod || APP_MOD;
   const ts = TOPICS.filter(function (t) { return CHAPTER.subjectOf(t) === 'math' && String(t.grade) === String(grade); });
-  APP_MOD.S.subject = 'math';
-  APP_MOD.S.D = {
+  M.S.subject = 'math';
+  M.S.D = {
     topics: ts, deps: [], stdById: {}, tree: {}, aliases: {},
     graph: CHAPTER.buildGraph(ts, [], null)
   };
@@ -655,7 +657,57 @@ async function runScreenGateTests() {
     assert.strictEqual(typeof enter, 'function', 'flow("enter") 仍是 null：整年级按钮会继续点了没反应');
   });
 
-  /* ---- ② 源码级：screen 门只等 gate 前缀章节 ---- */
+  /* ---- ①b 根因 B：app-flow 不许把 CORE.E 快照成局部变量（问题 1） ---- */
+  test('app-flow.js：引擎不在首屏，不许把 CORE.E 快照成局部变量（必须每次过 eng()）', function () {
+    assert.strictEqual(/E\s*=\s*CORE\.E\b/.test(FLOW_SRC), false,
+      'E = CORE.E 会在 app-flow 先于 engine.js 加载时把 undefined 永久快照进闭包');
+    assert.ok(/function eng\(\)/.test(FLOW_SRC), '缺 eng()：每次用时必须重新读 CORE.E 这个活 getter');
+    assert.ok(FLOW_SRC.indexOf('CORE.E') >= 0, 'eng() 里必须真的返回 CORE.E');
+    const uses = FLOW_SRC.match(/eng\(\)\./g) || [];
+    assert.ok(uses.length >= 20, 'eng(). 调用次数应 ≥ 20（防止只改一半），实际 ' + uses.length);
+  });
+
+  await testAsync('行为级：app-flow 先加载、引擎后到，startSession 仍能开会话（问题 1 真身）', async function () {
+    const appPath = require.resolve('../diagnose/app.js');
+    const flowPath = require.resolve('../diagnose/app-flow.js');
+    const unhandled = [];
+    const onUnhandled = function (e) { unhandled.push(e); };
+    process.on('unhandledRejection', onUnhandled);
+    delete require.cache[appPath];
+    delete require.cache[flowPath];
+    const calls = stubFetchDynamic(bundleFetcher());
+    let mod = null;
+    try {
+      /* app.js 在 Node 分支末尾会立刻 require app-flow：此时 CORE.E 还是 undefined，
+       * 等价于浏览器里 app-flow 先于 engine.js 加载。旧代码会在这里把 undefined 快照住。 */
+      mod = require('../diagnose/app.js');
+      const flowMod = require('../diagnose/app-flow.js');
+      assert.strictEqual(mod.S.session, null);
+      mod.setEngine(ENGINE);                    // 引擎「后到」
+      setupMathGrade(7, mod);                   // 最小 S.D（topics/deps/graph）
+      const ids = CHAPTER.gradeTargets(mod.S.D.graph, '七年级', 'math').ids;
+      assert.strictEqual(await mod.ensureFlowReady(ids, null, 'screen'), true, '题库应到货并开门');
+      let thrown = null;
+      try { flowMod.startSession(ids, '七年级', 40, 'screen'); }
+      catch (e) { thrown = e; }                 // Node 无 DOM：渲染阶段的错不属于本用例
+      assert.ok(mod.S.session, 'startSession 之后 S.session 不能是 null（旧代码在这里抛 reading createSession）');
+      assert.ok(ENGINE.nextItem(mod.S.D.graph, mod.S.session), '经新引擎的会话应能拿到题');
+      assert.strictEqual(/createSession/.test((thrown && thrown.message) || ''), false,
+        '不许再出现 reading \'createSession\'：' + (thrown && thrown.message));
+      await new Promise(function (r) { setTimeout(r, 20); });
+      assert.strictEqual(unhandled.length, 0,
+        '不应有 unhandledRejection：' + (unhandled[0] && unhandled[0].message));
+    } finally {
+      restoreFetch();
+      process.removeListener('unhandledRejection', onUnhandled);
+      if (mod && mod.resetQuestionsCache) mod.resetQuestionsCache();   // 停掉这一轮的后台补齐
+      delete require.cache[appPath];
+      delete require.cache[flowPath];
+      global.DiagCore = require('../diagnose/app.js');   // 还原给后面的用例
+    }
+  });
+
+  /* ---- ② 源码级：screen 门只等 gate 章节 ---- */
   test('app.js：screen 题源门只等 gate 前缀章节，不等整个 targets', function () {
     const body = bodyAfter(APP, 'async function ensureFlowReady(');
     assert.ok(body.indexOf('gateTargetsOf(') >= 0, 'ensureFlowReady 应先用 gateTargetsOf 切出前缀章节');
@@ -671,10 +723,26 @@ async function runScreenGateTests() {
     const m = /const SCREEN_GATE_TARGETS = (\d+);/.exec(APP_SRC);
     assert.ok(m, '缺 SCREEN_GATE_TARGETS 常量');
     assert.ok(parseInt(m[1], 10) <= 12, 'SCREEN_GATE_TARGETS 不得超过 12');
+    const b = /const SCREEN_GATE_BUNDLES = (\d+);/.exec(APP_SRC);
+    assert.ok(b, '缺 SCREEN_GATE_BUNDLES 常量');
+    assert.ok(parseInt(b[1], 10) <= 3, 'SCREEN_GATE_BUNDLES 不得超过 3');
+  });
+
+  /* ---- ②b 源码级：后台补齐到货不许把页面刷回选题页（问题 3） ---- */
+  test('app.js：questionsArrived 在 renderStart 之前必须守住 flowPending 与后台补齐', function () {
+    const body = bodyAfter(APP_SRC, 'function questionsArrived(');
+    const at = body.indexOf('renderStart(');
+    assert.ok(at >= 0, 'questionsArrived 应保留 renderStart(S.startErr)');
+    const before = body.slice(0, at);
+    const fp = before.indexOf('S.flowPending');
+    const bg = before.indexOf('bg.running');
+    assert.ok(fp >= 0, 'renderStart 之前必须守 S.flowPending：门还开着时不许回到选题页');
+    assert.ok(bg >= 0, 'renderStart 之前必须守 bg.running：后台还在补时保持当前视图');
+    assert.ok(fp < bg, '两道守卫顺序：先 flowPending，再后台补齐状态');
   });
 
   /* ---- ③ 行为级：门开前只请求 gate 章节 ---- */
-  await testAsync('真跑 ensureFlowReady：119 targets / 63 章节，开门前只请求 gate 章节（bundle ≤ 12）', async function () {
+  await testAsync('真跑 ensureFlowReady：119 targets / 63 章节，开门前只请求 ≤3 个 gate 章节 bundle', async function () {
     APP_MOD.resetQuestionsCache();
     APP_MOD.setEngine(ENGINE);
     setupMathGrade(7);
@@ -690,12 +758,17 @@ async function runScreenGateTests() {
       /* backgroundFill 用 setTimeout 起泵：await 恢复时（微任务）后台还没发请求。 */
       const requested = Array.from(new Set(bundleRequests(calls).map(function (u) { return u.split('/').pop(); }))).sort();
       assert.deepStrictEqual(requested, gateFiles, '开门前只该请求 gate 章节的 bundle');
-      assert.ok(requested.length <= APP_MOD.SCREEN_GATE_TARGETS,
-        '开门前请求的 bundle 应 ≤ ' + APP_MOD.SCREEN_GATE_TARGETS + '，实际 ' + requested.length);
+      assert.ok(split.gate.length <= APP_MOD.SCREEN_GATE_TARGETS,
+        'gate 目标数应 ≤ ' + APP_MOD.SCREEN_GATE_TARGETS + '，实际 ' + split.gate.length);
+      assert.ok(gateKeys.length <= APP_MOD.SCREEN_GATE_BUNDLES,
+        'gate 章节数应 ≤ ' + APP_MOD.SCREEN_GATE_BUNDLES + '，实际 ' + gateKeys.length);
+      assert.ok(requested.length <= APP_MOD.SCREEN_GATE_BUNDLES,
+        '开门前请求的 bundle 应 ≤ ' + APP_MOD.SCREEN_GATE_BUNDLES + '，实际 ' + requested.length);
+      assert.ok(requested.length >= 1, '开门前至少应请求 gate 的第一个章节');
       const chapterNos = new Set(split.gate.map(function (id) {
         return CHAPTER.parseChapter(APP_MOD.S.D.graph.byId[id].chapter).chapterNo;
       }));
-      assert.ok(chapterNos.size <= 3, '前 12 个目标应落在前 1~3 个章，实际 ' + chapterNos.size + ' 个');
+      assert.ok(chapterNos.size <= 3, 'gate 目标应落在前 1~3 个章，实际 ' + chapterNos.size + ' 个');
       assert.ok(split.rest.length > 0, '整年级应还有章节留给后台补齐');
       assert.strictEqual(new Set(split.rest.map(function (id) { return keyForTopic(APP_MOD.S.D.graph.byId[id]); })).size,
         split.rest.length, 'rest 应按章节只留一个代表');
