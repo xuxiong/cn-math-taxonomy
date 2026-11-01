@@ -27,6 +27,15 @@ const HEAVY_FIELDS = ['description', 'mastery_criteria', 'diagnostic_question', 
 const FORBIDDEN = ['questions.json', 'data/topics.json', 'dependencies.json', 'cn-curriculum-standards'];
 const BUDGET_LIMIT = 80 * 1024;
 
+/* 每页首屏请求数上限（文档 + 同源子资源 + 首屏数据）。
+ * 字节预算管不住「把字节拆小了、把往返拆多了」：300ms RTT 下多 3 个往返 ≈ 0.9s，
+ * 而多 20KB 在 8~10KB/s 的链路上虽要 2s、但可与其它请求并行 —— 两条线都要守，否则把某个
+ * 脚本再拆成两个文件没人拦得住（用户明确要求过：超一点字节对性能影响不大，多次往返也耗时）。
+ * 口径：文档 1 + 首屏同源 <script src>（data-lazy 的运行期注入不计）+ <link rel=stylesheet>
+ *       + manifest/apple-touch-icon + BOOT_FILES 展开后的首屏数据。
+ *       数据份数按默认学科 math 计（home/diagnose 各学科同数；explore 的 physics 见「已知偏差」用例）。 */
+const REQ_CAP = { home: 13, explore: 14, diagnose: 17 };
+
 const DATA = path.join(ROOT, 'data');
 const TOPICS_PATH = path.join(DATA, 'topics.json');
 const DEPS_PATH = path.join(DATA, 'dependencies.json');
@@ -418,6 +427,14 @@ test('home.js：BOOT_FILES 清单正确，逐学科首屏 gzip ≤ 80KB，且无
   });
 });
 
+test('index.html：首页首屏请求数 ≤ 13（文档 + 6 脚本 + 2 样式 + manifest/图标 + 2 份数据）', function () {
+  const htmlPath = path.join(ROOT, 'index.html');
+  const bootFiles = expandBootFiles(extractBootFiles(HOME), 'math');
+  const n = assertReqCap('首页', htmlPath, bootFiles, REQ_CAP.home);
+  console.log('    index.html 首屏请求数 ' + n + ' / 上限 ' + REQ_CAP.home);
+  assert.strictEqual(n, REQ_CAP.home, '首页首屏请求数应按实算为 ' + REQ_CAP.home + '（口径变了请同步改这条断言）');
+});
+
 test('home.js：各学科计数器值 = 全量重算值（数据源由 stats.json 供给）', function () {
   const stats = JSON.parse(fs.readFileSync(path.join(DATA, 'stats.json'), 'utf8'));
   const rec = recomputeStats();
@@ -466,6 +483,72 @@ function expandExploreBootFiles(bootFiles, subject) {
   const files = bootFiles.map((p) => p.replace('{subject}', subject));
   if (subject === 'physics') files.push('../data/topics-lite/math.json');
   return files;
+}
+
+/* ------------------------------------------------ 请求数口径：每页首屏请求数（文档 + 同源子资源 + 首屏数据） */
+
+/* 上限常量 REQ_CAP 定义在文件顶部（BUDGET_LIMIT 旁边）——本段只放计数与断言辅助函数，
+ * 因为顶层 test(...) 是按书写顺序执行的，const 在用到之后才初始化会触发 TDZ。 */
+
+/** 从 HTML 里抽出同源子资源：scripts（跳过 data-lazy 与跨域/data:）、stylesheets、manifest/图标。 */
+function subresources(html) {
+  const scripts = [];
+  const styles = [];
+  const misc = [];
+  const sre = /<script\b([^>]*)\bsrc="([^"]+)"/g;
+  let m;
+  while ((m = sre.exec(html)) !== null) {
+    const attrs = m[1] || '';
+    const src = m[2];
+    if (/\bdata-lazy\b/.test(attrs)) continue;
+    if (/^(https?:)?\/\//.test(src) || src.indexOf('data:') === 0) continue;
+    scripts.push(src);
+  }
+  const lre = /<link\b([^>]*)>/g;
+  while ((m = lre.exec(html)) !== null) {
+    const href = /href="([^"]+)"/.exec(m[1]);
+    const rel = /rel="([^"]+)"/.exec(m[1]);
+    if (!href || !rel) continue;
+    const h = href[1];
+    if (/^(https?:)?\/\//.test(h) || h.indexOf('data:') === 0) continue;
+    if (/stylesheet/.test(rel[1])) styles.push(h);
+    else if (/manifest|icon/.test(rel[1])) misc.push(h);
+  }
+  return { scripts, styles, misc };
+}
+
+/** 一页首屏请求明细：一个请求一行，失败信息里据此指出是谁超的。
+ *  extra 可以是数组（逐个列出「列表之后才取」的模块）或数字（只计数）。 */
+function requestDetail(htmlPath, dataFiles, extra) {
+  const refs = subresources(fs.readFileSync(htmlPath, 'utf8'));
+  const rel = path.relative(ROOT, htmlPath);
+  const docLabel = rel.startsWith('..') ? htmlPath : rel;
+  const lines = ['文档      ' + docLabel];
+  refs.scripts.forEach((s) => lines.push('脚本      ' + s));
+  refs.styles.forEach((s) => lines.push('样式      ' + s));
+  refs.misc.forEach((s) => lines.push('清单/图标  ' + s));
+  dataFiles.forEach((p) => lines.push('数据      ' + p));
+  if (Array.isArray(extra)) extra.forEach((m) => lines.push('列表后    ' + m));
+  else if (extra > 0) lines.push('列表后    ×' + extra + ' 个辅助模块');
+  return lines;
+}
+
+/** 一页首屏请求数（文档算一个）：
+ *  1 + 首屏脚本 + 样式 + manifest/图标 + 首屏数据 + extra（数组取长度，数字直接用）。 */
+function pageRequests(htmlPath, dataFiles, extra) {
+  const refs = subresources(fs.readFileSync(htmlPath, 'utf8'));
+  const n = Array.isArray(extra) ? extra.length : (extra || 0);
+  return 1 + refs.scripts.length + refs.styles.length + refs.misc.length + dataFiles.length + n;
+}
+
+/** 请求数上限断言：失败信息带「实际 N / 上限 M / 超出几个 / 逐个请求明细」。 */
+function assertReqCap(label, htmlPath, dataFiles, cap, extra) {
+  const n = pageRequests(htmlPath, dataFiles, extra);
+  const detail = requestDetail(htmlPath, dataFiles, extra);
+  assert.ok(n <= cap,
+    label + ' 首屏请求数 ' + n + ' / 上限 ' + cap + '（超出 ' + (n - cap) + ' 个）\n       明细：\n         '
+      + detail.join('\n         '));
+  return n;
 }
 
 /** explore 预算检查器：给定首屏脚本 gzip + 一份 BOOT_FILES 展开文件，断言 gzip 与禁用串。 */
@@ -530,6 +613,29 @@ test('explore/app.js：BOOT_FILES 清单正确，逐学科首屏 gzip ≤ 80KB',
   assert.ok(maxGz >= 0, 'explore 首屏为空');
 });
 
+const EXPLORE_HTML_PATH = path.join(ROOT, 'explore', 'index.html');
+
+test('explore/index.html：图谱页首屏请求数 ≤ 14（文档 + 5 脚本 + 3 样式 + manifest/图标 + 3 份数据）', function () {
+  const bootFiles = expandExploreBootFiles(extractBootFiles(EXPLORE_APP), 'math')
+    .map((p) => p.replace(/^\.\.\//, ''));
+  const n = assertReqCap('图谱页', EXPLORE_HTML_PATH, bootFiles, REQ_CAP.explore);
+  console.log('    explore/index.html 首屏请求数 ' + n + ' / 上限 ' + REQ_CAP.explore);
+  assert.strictEqual(n, REQ_CAP.explore, '图谱页首屏请求数应按实算为 ' + REQ_CAP.explore + '（口径变了请同步改这条断言）');
+});
+
+test('explore：physics 多取一份 math lite（15 = 上限 14 + 1）是已知偏差，再涨一个就报红', function () {
+  /* explore/app.js load() 里 physics 额外 push 一份 '../data/topics-lite/math.json'（mathLinks 取数学名字），
+   * 所以 physics 页首屏 15 个请求 > 上限 14。**这不是放宽上限**：上限仍是 14，
+   * 只是把「已知的 +1」钉死在这里 —— 长到 +2 会立刻报红；哪天额外那份拆掉了，也应改回 ≤ 上限。 */
+  const bootFiles = expandExploreBootFiles(extractBootFiles(EXPLORE_APP), 'physics')
+    .map((p) => p.replace(/^\.\.\//, ''));
+  const n = pageRequests(EXPLORE_HTML_PATH, bootFiles);
+  console.log('    explore physics 首屏请求数 ' + n + ' / 上限 ' + REQ_CAP.explore + '（多出 data/topics-lite/math.json）');
+  assert.strictEqual(n, REQ_CAP.explore + 1,
+    'explore physics 首屏请求数应恰为上限+1（超出项：physics 额外取的 data/topics-lite/math.json），实际 ' + n
+      + '：\n         ' + requestDetail(EXPLORE_HTML_PATH, bootFiles).join('\n         '));
+});
+
 test('explore/app.js：不再首屏 fetch 全量 topics/dependencies/questions，课标只在懒加载路径出现一次', function () {
   ['../data/questions.json', '../data/topics.json', '../data/dependencies.json'].forEach((needle) => {
     assert.ok(EXPLORE_APP.indexOf(needle) < 0, 'explore/app.js 不应再 fetch 全量文件：' + needle);
@@ -560,6 +666,34 @@ test('explore 渲染库：index.html 无 vendor 脚本，app.js 用 Lazy.load �
   ['../assets/vendor/cytoscape.min.js', '../assets/vendor/dagre.min.js', '../assets/vendor/cytoscape-dagre.js'].forEach((v) => {
     assert.ok(EXPLORE_APP.indexOf(v) >= 0, 'explore/app.js 应通过 Lazy.load 引用 ' + v);
   });
+});
+
+/* ------------------------------------------------ G3. diagnose（诊断入口）首屏请求数 */
+
+const DIAG_DIR = path.join(ROOT, 'diagnose');
+const DIAG_HTML_PATH = path.join(DIAG_DIR, 'index.html');
+const DIAG_HTML = fs.readFileSync(DIAG_HTML_PATH, 'utf8');
+const DIAG_APP = fs.readFileSync(path.join(DIAG_DIR, 'app.js'), 'utf8');
+
+/** 列表画完之后才补取的辅助模块（孩子档案 / 薄弱点 / LLM 配置 / 统计 / PWA）：
+ *  它们仍然是首屏这一段要付的往返，所以算进请求数（但不进入口字节预算）。 */
+function diagDeferredModules() {
+  const calls = DIAG_APP.match(/Lazy\.load\(\[[\s\S]*?\]\)/g) || [];
+  const aux = calls.filter((c) => c.indexOf('children.js') >= 0)[0];
+  assert.ok(aux, 'diagnose/app.js 里应有「列表之后」补取辅助模块的 Lazy.load([...])');
+  const items = aux.match(/'([^']+)'/g) || [];
+  assert.ok(items.length > 0, '辅助模块清单不应为空');
+  return items.map((s) => s.slice(1, -1));
+}
+
+test('diagnose/index.html：入口首屏请求数 ≤ 17（文档 + 3 脚本 + 3 样式 + manifest/图标 + 2 份数据 + 列表后 6 个辅助模块）', function () {
+  const bootFiles = expandBootFiles(extractBootFiles(DIAG_APP), 'math')
+    .map((p) => p.replace(/^\.\.\//, ''));
+  const deferred = diagDeferredModules();
+  const n = assertReqCap('诊断入口', DIAG_HTML_PATH, bootFiles, REQ_CAP.diagnose, deferred);
+  console.log('    diagnose/index.html 首屏请求数 ' + n + ' / 上限 ' + REQ_CAP.diagnose
+    + '（其中列表之后补取 ' + deferred.length + ' 个）');
+  assert.strictEqual(n, REQ_CAP.diagnose, '诊断入口首屏请求数应按实算为 ' + REQ_CAP.diagnose + '（口径变了请同步改这条断言）');
 });
 
 /* ------------------------------------------------ H. 自检（checker 有效性） */
@@ -606,6 +740,41 @@ test('自检4：删掉某学科 dependencies 10 行，explore conservation check
   let threw = false;
   try { checkExploreConservation(lite, dirty); } catch (e) { threw = true; }
   assert.ok(threw, '删 10 行后 checkExploreConservation 必须报红');
+});
+
+test('自检5：给首页硬塞一个首屏脚本，请求数上限必须报红（防止拆碎了字节却拆多了往返）', function () {
+  const dirty = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8')
+    .replace('</head>', '<script src="assets/extra.js"></script></head>');
+  assert.ok(dirty.indexOf('assets/extra.js') >= 0, '构造的脏 HTML 里应含 assets/extra.js');
+  const bootFiles = expandBootFiles(extractBootFiles(HOME), 'math');
+  const tmp = path.join(os.tmpdir(), 'cnm-reqcap-extra-home.html');
+  fs.writeFileSync(tmp, dirty);
+  try {
+    /* 一、先证明它真的多算了一个请求（13 → 14）：若 pageRequests 漏数脚本，这里就报红 */
+    const n = pageRequests(tmp, bootFiles);
+    assert.strictEqual(n, REQ_CAP.home + 1,
+      '多塞一个首屏脚本后请求数应为 ' + (REQ_CAP.home + 1) + '，实际 ' + n);
+    /* 二、再用真上限断言跑一遍：必须抛错（上限形同虚设时不会抛 → 本自检报红） */
+    let threw = false;
+    try { assertReqCap('首页(脏)', tmp, bootFiles, REQ_CAP.home); } catch (e) { threw = true; }
+    assert.ok(threw, '首屏多一个脚本后 assertReqCap 必须报红，实际没报');
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+});
+
+test('自检6：把 engine.js 塞回诊断页首屏脚本链，首屏脚本集合断言必须报红', function () {
+  const dirty = DIAG_HTML.replace('<script src="app.js"></script>',
+    '<script src="app.js"></script>\n<script src="engine.js"></script>');
+  assert.ok(dirty !== DIAG_HTML, '诊断页 HTML 里应能找到 <script src="app.js"></script> 锚点');
+  const scripts = firstPaintScripts(dirty);
+  assert.ok(scripts.indexOf('engine.js') >= 0, '构造的脏 HTML 应含 engine.js');
+  let threw = false;
+  try {
+    assert.deepStrictEqual(scripts, ['app.js', 'chapter.js', 'lazyload.js'],
+      '诊断入口首屏脚本应只有这三件：' + scripts.join(','));
+  } catch (e) { threw = true; }
+  assert.ok(threw, 'engine.js 回到首屏后，首屏脚本集合断言必须报红，实际没报');
 });
 
 console.log('\n' + (failed === 0 ? '全部通过' : '存在失败') + '：' + passed + ' passed, ' + failed + ' failed');
