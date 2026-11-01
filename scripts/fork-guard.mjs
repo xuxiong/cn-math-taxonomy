@@ -25,7 +25,9 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /* 与 tests/test_fork_guards.js 顶部 ALLOWED_DOMAINS 保持一致 */
-const ALLOWED_DOMAINS = ['github.com', 'xuxiong.github.io', '127.0.0.1', 'localhost', 'www.w3.org'];
+/* cloud.umami.is：5 个页面各一处的匿名统计脚本，口径由 tests/test_fork_guards.js (i) 兜住
+ * （docs/fork-divergences.md 第 9 条）。本脚本只放行域名，不判断标签属性。 */
+const ALLOWED_DOMAINS = ['github.com', 'xuxiong.github.io', '127.0.0.1', 'localhost', 'www.w3.org', 'cloud.umami.is'];
 
 /* 已知的推广外链域名：页面上任何指向它们的 <a> 元素都直接删掉（含主机名的子域）。
  * 白名单外、又不在这个名单里的域名不自动删 —— 那需要人判断。 */

@@ -20,6 +20,9 @@
  *   (h) LLM 配置唯一真源 —— diagnose/llm-config.js 能 require、型号正确；
  *                          diagnose/*.js（除它）与 scripts/*.js 不得再写死网关地址/型号
  *                          （写死会静默让整层功能 fail-closed，见 docs/fork-divergences.md）
+ *   (i) 统计脚本只有 Umami 一处 —— 5 个页面各恰好 1 个 cloud.umami.is 标签，website-id 正确、
+ *                          必带 data-exclude-search 与 data-domains；全站 .html 不得再出现其它统计域名
+ *                          （少了 data-exclude-search 就等于把 ?target=cnm_235 这类题目 ID 报给第三方）
  *
  * 加白/加例外都要改本文件顶部的数组：改代码、看得见、走 review。
  *
@@ -49,6 +52,7 @@ const ALLOWED_DOMAINS = [
   '127.0.0.1',         // 本地起服务验证（scripts/serve.js）
   'localhost',         // 同上
   'www.w3.org',        // 内联 SVG 的 XML 命名空间（xmlns="http://www.w3.org/2000/svg"），不是外链
+  'cloud.umami.is',    // 匿名访问统计脚本（5 个页面各一处，见分叉清单第 9 条、守卫 (i)）
 ];
 
 /** 本文件/分叉清单必须写出被禁的字符串才能检测/说明它，扫描时跳过。 */
@@ -397,6 +401,84 @@ test('(h) 网关地址/型号字面量只允许出现在 diagnose/llm-config.js'
   assert.deepStrictEqual(offenders, [],
     '以下文件仍写死了网关地址或型号：\n  ' + offenders.join('\n  ')
     + '\n请改 diagnose/llm-config.js（配置唯一真源），不要在调用方复制字面量。');
+});
+
+/* ------------------------------------------------------------------ *
+ * (i) 统计脚本只有 Umami 一处，且口径收窄
+ *
+ * 别指望 (b) 兜住统计脚本：(b) 是逐行扫所有 http(s) URL 的（<script src> 也会被扫到），
+ * 但它只判断「域名在不在白名单」—— 一个少了 data-exclude-search 的 Umami 标签域名照样合法、
+ * (b) 照样为绿，而题目 ID 已经在往外发。所以统计口径必须由本条单独兜住。
+ * ------------------------------------------------------------------ */
+
+/** 唯一允许的统计脚本。 */
+const STATS_SCRIPT_URL = 'cloud.umami.is/script.js';
+/** Umami 站点的 website-id（真源就是 5 个页面里的标签，本测试只做比对）。 */
+const STATS_WEBSITE_ID = '1ddb50a4-8c63-4e7a-b2fb-228a59943c5e';
+/** 标签本体（属性跨行，[^>] 含换行）。 */
+const STATS_SCRIPT_TAG = /<script\b[^>]*cloud\.umami\.is\/script\.js[^>]*>/;
+
+/** 其它统计/分析脚本的域名关键词（除 cloud.umami.is 外，命中一律红）。 */
+const OTHER_ANALYTICS_HINTS = [
+  'analytics', 'gtag', 'googletagmanager', 'google-analytics', 'doubleclick',
+  'baidu', 'busuanzi', 'plausible', 'umami', 'clarity', 'matomo',
+  'statcounter', 'cnzz', '51.la', 'umeng', 'sensorsdata', 'tajs', 'hm.js',
+];
+
+/** 统计脚本标签必须带的口径属性（缺哪个都会让数据被污染/外泄）。 */
+const STATS_REQUIRED_ATTRS = [
+  ['data-website-id="' + STATS_WEBSITE_ID + '"', 'website-id 不对 → 收不到数据，或把数据发到别的站点'],
+  ['data-exclude-search', '没关 URL 查询参数 → ?target=cnm_235 这类题目 ID 被上传给第三方（孩子做到哪题）'],
+  ['data-domains="xuxiong.github.io"', '没限域名 → 本地 127.0.0.1 冒烟测试也计数，正式数据被污染'],
+];
+
+test('(i) 5 个页面各恰好 1 个 ' + STATS_SCRIPT_URL + ' 标签，且口径收窄（website-id / exclude-search / domains）', function () {
+  const problems = [];
+  for (const rel of PAGES) {
+    assert.ok(exists(rel), rel + ' 不存在了？页面清单要同步改本测试');
+    const text = read(rel);
+    const occurrences = text.split(STATS_SCRIPT_URL).length - 1;
+    if (occurrences !== 1) {
+      problems.push(rel + ' 出现 ' + occurrences + ' 次 ' + STATS_SCRIPT_URL + '，应恰好 1 次'
+        + '（见 docs/fork-divergences.md 第 9 条）');
+      continue;
+    }
+    const tag = text.match(STATS_SCRIPT_TAG);
+    assert.ok(tag, rel + ' 里 ' + STATS_SCRIPT_URL + ' 不在一个 <script> 标签里，标签结构被改了？');
+    for (const pair of STATS_REQUIRED_ATTRS) {
+      if (tag[0].indexOf(pair[0]) === -1) {
+        problems.push(rel + ' 的统计标签缺 ' + pair[0] + '：' + pair[1]
+          + '（见 docs/fork-divergences.md 第 9 条 / 守卫 (i)）');
+      }
+    }
+  }
+
+  // 全站：除 cloud.umami.is 外，不得再出现任何其它统计脚本域名
+  for (const rel of filesWithExt(['.html'])) {
+    for (const link of externalLinks(rel)) {
+      const host = String(link.host || '').toLowerCase();
+      if (host === 'cloud.umami.is') continue;
+      const hit = OTHER_ANALYTICS_HINTS.some(function (h) { return host.indexOf(h) !== -1; });
+      if (hit) {
+        problems.push(rel + ':' + link.line + ' 出现了其它统计脚本域名 ' + host
+          + '（本 fork 只允许 cloud.umami.is 一处，见 docs/fork-divergences.md 第 9 条）');
+      }
+    }
+  }
+
+  assert.ok(problems.length === 0, problems.join('\n'));
+
+  // 自检：检测器确实认得「缺属性」和「其它统计域名」，否则上面永远为绿
+  const bad = '<script src="https://' + STATS_SCRIPT_URL + '" data-website-id="' + STATS_WEBSITE_ID + '"></script>';
+  const badTag = bad.match(STATS_SCRIPT_TAG);
+  assert.ok(badTag, '标签提取器没认出 Umami 标签，检测逻辑写错了');
+  assert.ok(badTag[0].indexOf('data-exclude-search') === -1 && badTag[0].indexOf('data-domains=') === -1,
+    '缺属性的标签应被判为缺 data-exclude-search / data-domains');
+  assert.strictEqual(externalLinksIn('<script src="https://cloud.umami.is/script.js"></script>')[0].host,
+    'cloud.umami.is', '外链提取器应能取出 cloud.umami.is');
+  const otherHost = externalLinksIn('<script src="https://www.googletagmanager.com/gtag/js"></script>')[0].host;
+  assert.ok(OTHER_ANALYTICS_HINTS.some(function (h) { return otherHost.indexOf(h) !== -1; }),
+    '其它统计域名关键词没命中 ' + otherHost + '，检测逻辑写错了');
 });
 
 /* ------------------------------------------------------------------ *
