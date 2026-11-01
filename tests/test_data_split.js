@@ -264,12 +264,12 @@ test('app.js：全量 topics 取失败时给「载入失败，可刷新重试」
   assert.ok(/课标原文载入失败/.test(APP), '课标正文取失败时也应有提示，而不是一直「正在载入课标原文…」');
   /* 失败后不再自己重试（避免占位文本来回跳），但 promise 置空以便下次渲染再试 */
   const body = bodyAfter(APP, 'function ensureFullTopics()');
-  assert.ok(/if \(!ok\) \{ fullTopicsPromise = null; fullTopicsFailed = true; \}/.test(body), '失败后应清 promise 标记失败，供下次渲染重试');
+  assert.ok(/if \(!ok\) \{ (?:S\.)?fullTopicsPromise = null; (?:S\.)?fullTopicsFailed = true; \}/.test(body), '失败后应清 promise 标记失败，供下次渲染重试');
 });
 
 test('app.js：课标对照卡的结构也等全量到货，到货后整卡原地换掉（不是先画「无。」）', function () {
   const card = bodyAfter(APP, 'function standardsCard(sum)');
-  assert.ok(/!fullTopicsLoaded \?/.test(card), 'standardsCard 在全量到货前应渲染占位，而不是按空 standards 判「无。」');
+  assert.ok(/!(?:S\.)?fullTopicsLoaded \?/.test(card), 'standardsCard 在全量到货前应渲染占位，而不是按空 standards 判「无。」');
   assert.ok(/正在载入课标条目/.test(card), '占位文案缺失');
   const pending = bodyAfter(APP, 'function refreshPending()');
   assert.ok(/getElementById\('standards'\)/.test(pending), 'refreshPending 到货后应重建 #standards 卡（结构依赖全量 standards 引用）');
@@ -345,11 +345,13 @@ test('app.js：所有进流程入口都过题源门（选为目标 / 整章 / �
     ["withStage2(ch.topics.map", '「以整章为目标」入口没带目标过题源门'],
     ["withStage2(g.ids, 'screen'", '「开始整体筛查」入口没带目标过题源门'],
     ["withStage2(saved.targets, saved.mode", '「继续存档」入口没带目标过题源门'],
-    ["withStage2(session ? session.targets : null, 'target'", '「路径练习」入口没带目标过题源门'],
+    [/withStage2\((?:S\.)?session \? (?:S\.)?session\.targets : null, 'target'/, '「路径练习」入口没带目标过题源门'],
     ['withStage2Data(function () { startPractice', '「练习这题」入口应走 withStage2Data（练习不依赖诊断题库）'],
     ['await ensureFlowReady(resolved.ids, limit, resolved.mode)', '?target= / ?grade= 深链没有等题源门']
   ];
-  const missing = needles.filter(function (n) { return APP.indexOf(n[0]) < 0; }).map(function (n) { return n[1]; });
+  const missing = needles.filter(function (n) {
+    return n[0] instanceof RegExp ? !n[0].test(APP) : APP.indexOf(n[0]) < 0;
+  }).map(function (n) { return n[1]; });
   assert.deepStrictEqual(missing, [], '入口漏了题源门：' + missing.join('；'));
   /* 门本身：同时等全量 topics 与题库 */
   const gate = bodyAfter(APP, 'async function ensureFlowReady(');

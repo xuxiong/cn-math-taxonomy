@@ -465,14 +465,14 @@ test('app.js：bundle 404 分支在源码里与「index 缺 key」完全对齐�
 
 test('app.js：结果页在「只有诊断题」时不许出现「已掌握」（头条 / 统计 / 已掌握卡 / 小结四处都改）', function () {
   const rr = bodyAfter(APP, 'function renderResult()');
-  assert.ok(/const diagOnly = diagnosticOnlyRound\(D\.graph, session\);/.test(rr), '结果页要先算「本轮只有兜底诊断题」');
+  assert.ok(/const diagOnly = diagnosticOnlyRound\((?:S\.)?D\.graph, (?:S\.)?session\);/.test(rr), '结果页要先算「本轮只有兜底诊断题」');
   assert.ok(/else if \(diagOnly\) page\.append\(noBankCard\(sum\)\);/.test(rr),
     '只有兜底诊断题时不许画「接下来练什么」小结（那句「都掌握啦，真棒！」是假的）');
   assert.ok(/diagOnly \? null : stat\('ok', sum\.mastered\.length, '已掌握'\)/.test(rr),
     '只有兜底诊断题时不许显示「已掌握」统计');
   assert.ok(/if \(!diagOnly\) page\.append\(h\('details', \{ class: 'card', id: 'mastered' \}/.test(rr),
     '只有兜底诊断题时不许显示「已掌握的知识点」卡');
-  assert.ok(/const headline = resultHeadline\(sum, session, screen, diagOnly, targetsMastered\);/.test(rr),
+  assert.ok(/const headline = resultHeadline\(sum, (?:S\.)?session, screen, diagOnly, targetsMastered\);/.test(rr),
     '头条文案应走 resultHeadline（才能被 Node 直测）');
   const head = bodyAfter(APP, 'function resultHeadline(');
   assert.ok(head.indexOf("'题库没取到，本轮只做了 '") >= 0 && head.indexOf("' 道诊断题，结果不作数") >= 0,
@@ -484,29 +484,29 @@ test('app.js：结果页在「只有诊断题」时不许出现「已掌握」�
 
 test('app.js：A→B 快速切换不再被静默吞掉（latest-click-wins：门开时按最后一次点击重过）', function () {
   const body = bodyAfter(APP, 'function withStage2(');
-  const guardAt = body.indexOf('if (flowPending) return;');
+  const guardAt = body.search(/if \((?:S\.)?flowPending\) return;/);
   assert.ok(guardAt > 0, 'withStage2 应保留「门已开着就不叠第二个门」的守卫');
   assert.ok(body.indexOf('flowJob = { targets: targets, mode: mode, fn: fn }') < guardAt,
     '守卫之前必须先把这次点击记成 flowJob —— 实测缺陷就是后一次点击在守卫处被静默丢弃（B 的题库 0 次请求，最后开 A 的会话）');
   assert.ok(body.indexOf('flowSeq++') < guardAt, '守卫之前必须递增点击序号');
-  assert.ok(/if \(flowPending\) return;[\s\S]*openStage2Gate\(\)/.test(body), '门没开着时才开始取题源');
+  assert.ok(/if \((?:S\.)?flowPending\) return;[\s\S]*openStage2Gate\(\)/.test(body), '门没开着时才开始取题源');
   const gate = bodyAfter(APP, 'function openStage2Gate()');
   assert.ok(/const seq = flowSeq;/.test(gate) && /const job = flowJob;/.test(gate), '门要记住开时的序号与目标');
   assert.ok(/ensureFlowReady\(job\.targets, undefined, job\.mode\)/.test(gate), '门应等「最后一次点击」的目标所在章节');
   assert.ok(/if \(seq !== flowSeq\) return openStage2Gate\(\)/.test(gate),
     '门开时若序号已变（等待期间又点了别的），要按最新点击重过门，不许开旧目标的会话');
   assert.ok(/renderFlowBlocked\(job\.targets, job\.mode, job\.fn\)/.test(gate), '失败时仍要给可操作的重试卡（不许吞掉）');
-  const resets = (gate.match(/flowPending = false;/g) || []).length;
+  const resets = (gate.match(/(?:S\.)?flowPending = false;/g) || []).length;
   assert.strictEqual(resets, 2, '成功 / 兜底两条出口都要放开 flowPending（含取题源抛错时，当前 ' + resets + ' 条）');
 });
 
 test('app.js：题源门不许在「题库还在路上」时开门（否则 bundle 404 回退全量那几秒就是 1 题会话）', function () {
   const body = bodyAfter(APP, 'async function ensureFlowReady(');
-  assert.ok(/if \(flowAskable\(targets, limit, mode\) && questionsInFlight === 0\) return true;/.test(body),
+  assert.ok(/if \(flowAskable\(targets, limit, mode\) && (?:S\.)?questionsInFlight === 0\) return true;/.test(body),
     '过门判据必须等题库定案（在飞请求数归零）—— 实测 bundle 404 时全量 7.8MB 还没到，门就开了，' +
     '会话拿到的是 topics.json 的兜底诊断题（「本知识点第 1 / 1 题」+ 标签「诊断题」）');
   const afterRace = /await Promise\.race\(\[full, bank\]\);([\s\S]*?)await Promise\.all/.exec(body);
-  assert.ok(afterRace && afterRace[1].indexOf('questionsInFlight === 0') >= 0,
+  assert.ok(afterRace && afterRace[1].search(/(?:S\.)?questionsInFlight === 0/) >= 0,
     '这个判据要放在 race 之后的第一处开门点，不是最后兜底');
 });
 
