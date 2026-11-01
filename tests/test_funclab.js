@@ -1414,9 +1414,12 @@ test('describe：非法输入 → null（不返回空串）', function () {
 test('describe：共享标注 helper 被绘制路径与 paintModel 共用（防漂移：新标注漏更新 describe 就红）', function () {
   const fs = require('fs');
   const src = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'funclab.js'), 'utf8');
-  // 抽取绘制路径（annotate/drawShift/drawInterval）里 fillText / const label 调用的共享 helper 名
+  // 抽取绘制路径（annotate/drawShift/drawInterval）里落笔调用的共享 helper 名。
+  // t_7851d903：注释标签统一改走 drawLabel(w, text, ...)（先避让再落笔），helper 直接内联成
+  // drawLabel 的第一个实参，所以抽取模式要同时认这种调用形态。
+  // 断言本身没变：抽到的每个 helper 都必须在 paintModel 里被引用。
   const used = new Set();
-  const re = /(?:ctx\.fillText|const label =)\s*\(\s*(\w+Text)\(/g;
+  const re = /(?:ctx\.fillText\(\s*|drawLabel\(w,\s*)(\w+Text)\(/g;
   let m;
   while ((m = re.exec(src))) used.add(m[1]);
   assert.ok(used.size > 0, '应能从绘制路径抽出共享标注 helper');

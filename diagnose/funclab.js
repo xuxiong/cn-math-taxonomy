@@ -864,6 +864,206 @@
     return 'x=' + fmt(x) + ' → ' + (shown ? fmt(fValue(p, x)) : deriveText());
   }
 
+  /* ============================================================ 文字占位矩形与标签避让（t_7851d903）
+   *
+   * 画板上的刻度数字与注释标签都是 ctx.fillText 画上去的，坐标原先各自写死：y 刻度在轴右侧
+   * （X0 + 4），顶点/最值/零点/截距标签在锚点右上（VX + 8, VY - 8），互不知道对方占了多少像素，
+   * 顶点一靠近 y 轴就字压字。这里把三件事抽成可测的纯函数（node 里直接断言，不开浏览器）：
+   *
+   *   textRect(o)        一段文字实际占的像素矩形（宽度由调用方量好传进来；
+   *                      canvas 侧用 ctx.measureText，测试传固定宽度）
+   *   placeLabel(o)      在 5 个候选位置里挑第一个「不与任何既有文字矩形相交」的
+   *                      顺序固定：右上 → 左上 → 右下 → 左下 → 上方居中
+   *   leaderSegment(...) 5 个候选全被占时的短引导线（且不许穿过数据点标记）
+   *
+   * 刻度数字走同一个 textRect，于是刻度矩形与标签矩形在同一套坐标系里比较，避让才有意义。
+   */
+  const TICK_FONT_SIZE = 11;     // 刻度数字字号（与 drawing 里的 '11px sans-serif' 同值）
+  const LABEL_GAP = 4;           // 标签/刻度与锚点之间的留白
+  const TEXT_ASCENT = 0.8;       // 基线以上占字号的 0.8（11~12px sans-serif 足够保守，宁可多让一点）
+
+  /** 文字矩形：{x,y,w,h}，左上角为原点，y 向下（canvas 坐标系）
+   *  o = { x, y, width, size, align }：
+   *    x/y        fillText 的落笔点（y 是基线，与绘制时一致）
+   *    width      实测文字宽度（canvas: ctx.measureText(text).width）
+   *    size       字号（px），高度取整一个字号
+   *    align      'left' | 'right' | 'center' —— 与 fillText 的 textAlign 同义
+   *  纵向按「基线上方 0.8 字号、下方 0.2 字号」估算：数字与中文都落在里面。 */
+  function textRect(o) {
+    const opts = o || {};
+    const size = opts.size > 0 ? opts.size : TICK_FONT_SIZE;
+    const w = opts.width > 0 ? opts.width : 0;
+    const align = opts.align || 'left';
+    const shift = align === 'right' ? w : align === 'center' ? w / 2 : 0;
+    return { x: (opts.x || 0) - shift, y: (opts.y || 0) - size * TEXT_ASCENT, w: w, h: size };
+  }
+
+  /** 把矩形还原成 fillText 的落笔点（左对齐：x 取矩形左沿，y 取基线） */
+  function rectTextAnchor(rect, size) {
+    const s = size > 0 ? size : TICK_FONT_SIZE;
+    return { x: rect.x, y: rect.y + s * TEXT_ASCENT };
+  }
+
+  /** 两个矩形的相交面积（不相交返回 0；只贴边不算相交） */
+  function rectOverlapArea(a, b) {
+    if (!a || !b) return 0;
+    const dx = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+    const dy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+    if (!(dx > 0) || !(dy > 0)) return 0;
+    return dx * dy;
+  }
+
+  /** 两个矩形是否相交（有正面积重叠才算；贴边不算，避免把「刚好挨着」判成压字） */
+  function rectsOverlap(a, b) {
+    return rectOverlapArea(a, b) > 0;
+  }
+
+  /** 把矩形挪回画布内（只挪不动大小）：越界时贴边，标签比画布还宽时只能左边贴 0 */
+  function clampRectToBounds(rect, bounds) {
+    const r = { x: rect.x, y: rect.y, w: rect.w, h: rect.h };
+    if (!bounds) return r;
+    if (r.x < 0) r.x = 0;
+    if (r.x + r.w > bounds.w) r.x = Math.max(bounds.w - r.w, 0);
+    if (r.y < 0) r.y = 0;
+    if (r.y + r.h > bounds.h) r.y = Math.max(bounds.h - r.h, 0);
+    return r;
+  }
+
+  /** 候选位置（顺序即优先级）：右上 → 左上 → 右下 → 左下 → 上方居中 */
+  function labelCandidates(anchorX, anchorY, w, h, gap) {
+    const g = gap == null ? LABEL_GAP : gap;
+    return [
+      { slot: 'right-up', x: anchorX + g, y: anchorY - g - h },
+      { slot: 'left-up', x: anchorX - g - w, y: anchorY - g - h },
+      { slot: 'right-down', x: anchorX + g, y: anchorY + g },
+      { slot: 'left-down', x: anchorX - g - w, y: anchorY + g },
+      { slot: 'top-center', x: anchorX - w / 2, y: anchorY - g - h }
+    ].map(function (c) { return { slot: c.slot, rect: { x: c.x, y: c.y, w: w, h: h } }; });
+  }
+
+  /** 点是否在矩形内（含边界） */
+  function pointInRect(pt, r) {
+    return pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h;
+  }
+
+  /** 线段是否穿过矩形（端点在内或与任一边相交） */
+  function segmentHitsRect(p1, p2, r) {
+    if (pointInRect(p1, r) || pointInRect(p2, r)) return true;
+    const corners = [
+      [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }],
+      [{ x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }],
+      [{ x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }],
+      [{ x: r.x, y: r.y + r.h }, { x: r.x, y: r.y }]
+    ];
+    return corners.some(function (e) { return segmentsCross(p1, p2, e[0], e[1]); });
+  }
+
+  /** 线段相交（含共线/端点接触）：用标准转向判定，1e-9 以内视为共线 */
+  function segmentsCross(a1, a2, b1, b2) {
+    function cross(o, p, q) { return (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x); }
+    function onSeg(o, p, q) {
+      return Math.min(o.x, q.x) - 1e-9 <= p.x && p.x <= Math.max(o.x, q.x) + 1e-9 &&
+        Math.min(o.y, q.y) - 1e-9 <= p.y && p.y <= Math.max(o.y, q.y) + 1e-9;
+    }
+    const d1 = cross(b1, b2, a1), d2 = cross(b1, b2, a2);
+    const d3 = cross(a1, a2, b1), d4 = cross(a1, a2, b2);
+    if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return true;
+    if (Math.abs(d1) < 1e-9 && onSeg(b1, a1, b2)) return true;
+    if (Math.abs(d2) < 1e-9 && onSeg(b1, a2, b2)) return true;
+    if (Math.abs(d3) < 1e-9 && onSeg(a1, b1, a2)) return true;
+    if (Math.abs(d4) < 1e-9 && onSeg(a1, b2, a2)) return true;
+    return false;
+  }
+
+  /** 引导线：从锚点连到标签矩形的某条边，挑第一条不穿过数据点标记的；四条边都被挡住则返回 null
+   *  「不穿过数据点标记」是硬约束：引导线压过别处的圆点会让学生把两点读混。 */
+  function leaderSegment(rect, anchor, markers) {
+    if (!rect || !anchor) return null;
+    const marks = markers || [];
+    const targets = [
+      { x: rect.x + rect.w / 2, y: rect.y },                  // 上边中点
+      { x: rect.x, y: rect.y + rect.h / 2 },                  // 左边中点
+      { x: rect.x + rect.w, y: rect.y + rect.h / 2 },         // 右边中点
+      { x: rect.x + rect.w / 2, y: rect.y + rect.h }          // 下边中点
+    ];
+    for (let i = 0; i < targets.length; i++) {
+      const blocked = marks.some(function (mk) { return segmentHitsRect(anchor, targets[i], mk); });
+      if (!blocked) return { x1: anchor.x, y1: anchor.y, x2: targets[i].x, y2: targets[i].y };
+    }
+    return null;
+  }
+
+  /** 标签避让：按 右上→左上→右下→左下→上方居中 选第一个与 obstacles 全不相交的位置
+   *  o = { x, y, w, h, obstacles, markers, bounds, gap }
+   *     x/y     锚点（顶点/交点/根的屏幕坐标）
+   *     w/h     标签矩形尺寸（宽度来自 ctx.measureText）
+   *     bounds  { w, h } 画布尺寸：候选先夹回画布内再判相交
+   *     obstacles 已画文字的矩形（刻度 + 之前的标签）—— 压字是最要避免的事
+   *     markers   数据点标记矩形。**含锚点自身的那个标记不算障碍**：标签本来就贴着锚点画，
+   *               把「自己的圆点」当障碍会让 5 个候选全灭（历史上的假 fallback）。
+   *               其余标记算次要障碍：实在没位置时宁可压标记也不压数字。
+   *  返回 { rect, slot, fallback, overlapArea, textOverlapArea, leader }
+   *    fallback=true 表示 5 个候选全被占：此时 rect 是「压字最少」的那个，leader 是补救的引导线。 */
+  function placeLabel(o) {
+    const opts = o || {};
+    const w = opts.w > 0 ? opts.w : 0;
+    const h = opts.h > 0 ? opts.h : TICK_FONT_SIZE;
+    const anchor = { x: opts.x || 0, y: opts.y || 0 };
+    const texts = opts.obstacles || [];
+    const marks = (opts.markers || []).filter(function (mk) { return !pointInRect(anchor, mk); });
+    const cands = labelCandidates(opts.x, opts.y, w, h, opts.gap).map(function (c) {
+      const rect = clampRectToBounds(c.rect, opts.bounds);
+      const hitsText = texts.filter(function (ob) { return rectsOverlap(rect, ob); });
+      const hitsMark = marks.filter(function (ob) { return rectsOverlap(rect, ob); });
+      return {
+        slot: c.slot,
+        rect: rect,
+        textArea: hitsText.reduce(function (s, ob) { return s + rectOverlapArea(rect, ob); }, 0),
+        markArea: hitsMark.reduce(function (s, ob) { return s + rectOverlapArea(rect, ob); }, 0)
+      };
+    });
+    for (let i = 0; i < cands.length; i++) {
+      if (cands[i].textArea === 0 && cands[i].markArea === 0) {
+        return { rect: cands[i].rect, slot: cands[i].slot, fallback: false,
+          overlapArea: 0, textOverlapArea: 0, leader: null };
+      }
+    }
+    /* 全被占：先比「压了多少字」（按 1000 倍权重），再比「压了多少标记」 */
+    let best = cands[0];
+    let bestKey = Infinity;
+    cands.forEach(function (c) {
+      const key = c.textArea * 1000 + c.markArea;
+      if (key < bestKey) { bestKey = key; best = c; }
+    });
+    return {
+      rect: best.rect,
+      slot: best.slot,
+      fallback: true,
+      overlapArea: best.textArea + best.markArea,
+      textOverlapArea: best.textArea,
+      leader: leaderSegment(best.rect, anchor, opts.markers)
+    };
+  }
+
+  /** canvas 侧：量宽 + 算矩形（刻度数字与所有注释标签共用这一条路径） */
+  function measureTextRect(ctx, text, x, y, size, align) {
+    const width = ctx.measureText(String(text)).width;
+    return textRect({ x: x, y: y, width: width, size: size, align: align });
+  }
+
+  /** canvas 侧：把文字画进已定位的矩形（统一左对齐到矩形左沿，基线在矩形内 0.8 字高处） */
+  function fillTextRect(ctx, text, rect, size) {
+    const at = rectTextAnchor(rect, size);
+    ctx.textAlign = 'left';
+    ctx.fillText(String(text), at.x, at.y);
+  }
+
+  /** 数据点标记的占位矩形（圆点 + 一点余量）：避让与引导线都把它当障碍 */
+  function markerRect(x, y, r) {
+    const rad = (r == null ? 5 : r) + 2;
+    return { x: x - rad, y: y - rad, w: rad * 2, h: rad * 2 };
+  }
+
   /** 区间最值画板才画区间（与 mount 内部 intervalIntent 同口径） */
   function intervalIntentOf(lab, intent) {
     const it = intentKey(intent);
@@ -1541,7 +1741,7 @@
       }
     }
 
-    function curvesGridAndAxes(w) {
+    function curvesGridAndAxes(w, occupied) {
       ctx.strokeStyle = 'rgba(0,0,0,.08)';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -1562,21 +1762,38 @@
       if (X0 >= 0 && X0 <= w.w) { ctx.moveTo(X0, 0); ctx.lineTo(X0, w.hp); }
       ctx.stroke();
       ctx.fillStyle = '#000';
-      ctx.font = '11px sans-serif';
+      ctx.font = TICK_FONT_SIZE + 'px sans-serif';
+      /* 刻度数字也走 textRect：它们的占位矩形是注释标签避让时的障碍物（t_7851d903）。
+       * x 刻度留在轴下方（轴外侧），y 刻度统一挪到轴**左侧**（右对齐 X0 - 4），
+       * 把轴内侧那条竖带（X0+4 …）整个让给顶点/交点标签。 */
       for (let gx = Math.ceil(w.xMin); gx <= w.xMax; gx++) {
         if (gx === 0) continue;
-        ctx.fillText(String(gx), sx({ x: gx }, w) + 3, Math.min(Math.max(Y0 + 14, 12), w.hp - 2));
+        const tx = sx({ x: gx }, w) + 3;
+        const ty = Math.min(Math.max(Y0 + 14, 12), w.hp - 2);
+        const r = measureTextRect(ctx, String(gx), tx, ty, TICK_FONT_SIZE, 'left');
+        fillTextRect(ctx, String(gx), r, TICK_FONT_SIZE);
+        occupied.push(r);
       }
       for (let gy = Math.ceil(w.yMin); gy <= w.yMax; gy++) {
         if (gy === 0) continue;
         const Y = sy({ y: gy }, w);
         if (Y < 0 || Y > w.hp) continue;
-        ctx.fillText(String(gy), Math.min(Math.max(X0 + 4, 2), w.w - 20), Y - 3);
+        const label = String(gy);
+        const tw = ctx.measureText(label).width;
+        let tx = X0 - LABEL_GAP, align = 'right';
+        /* y 轴贴着画布左沿（视野几乎不含负半轴）时左侧没地方：退到画布最左，
+         * 仍然右对齐、仍然不进轴内侧竖带。 */
+        if (tx - tw < 2) { tx = 2; align = 'left'; }
+        const r = measureTextRect(ctx, label, tx, Y - 3, TICK_FONT_SIZE, align);
+        fillTextRect(ctx, label, r, TICK_FONT_SIZE);
+        occupied.push(r);
       }
     }
 
-    /** 交点标注：位置恒标（红点 + 十字准线），文字走 intersectText（describe 同源）→ 默认 (?, ?) */
-    function annotateCurves(w) {
+    /** 交点标注：位置恒标（红点 + 十字准线），文字走 intersectText（describe 同源）→ 默认 (?, ?)
+     *  文字位置由 placeLabel 决定：先右上、再左上/右下/左下/上方居中，避开刻度矩形与已画标签；
+     *  5 个候选全被占时画一条短引导线指回交点。 */
+    function annotateCurves(w, occupied, markers) {
       const pts = intersectionsOf(cs);
       pts.forEach(function (pt) {
         const X = sx({ x: pt.x }, w), Y = sy({ y: pt.y }, w);
@@ -1594,26 +1811,44 @@
 
         ctx.fillStyle = '#c0392b';
         ctx.beginPath(); ctx.arc(X, Y, 5, 0, Math.PI * 2); ctx.fill();
+        const dot = markerRect(X, Y, 5);
+        markers.push(dot);
         ctx.font = 'bold 12px sans-serif';
         const label = intersectText(pt, shown);
         const tw = ctx.measureText(label).width;
-        const lx = Math.min(Math.max(X + 8, 4), Math.max(w.w - tw - 10, 4));
-        const ly = Math.min(Math.max(Y - 9, 14), w.hp - 4);
+        const placed = placeLabel({
+          x: X, y: Y, w: tw, h: 12, obstacles: occupied, markers: markers,
+          bounds: { w: w.w, h: w.hp }
+        });
+        const rect = placed.rect;
         ctx.fillStyle = 'rgba(255,255,255,.9)';
-        ctx.fillRect(lx - 4, ly - 12, tw + 8, 17);
+        ctx.fillRect(rect.x - 4, rect.y - 3, rect.w + 8, rect.h + 6);
+        if (placed.fallback && placed.leader) {
+          ctx.save();
+          ctx.strokeStyle = '#b03a2e';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(placed.leader.x1, placed.leader.y1);
+          ctx.lineTo(placed.leader.x2, placed.leader.y2);
+          ctx.stroke();
+          ctx.restore();
+        }
         ctx.fillStyle = '#b03a2e';
-        ctx.fillText(label, lx, ly);
+        fillTextRect(ctx, label, rect, 12);
+        occupied.push(rect);
       });
     }
 
     function draw() {
       const w = curvesView();
       ctx.clearRect(0, 0, w.w, w.hp);
-      curvesGridAndAxes(w);
+      const occupied = [];   // 已画文字的占位矩形（刻度 + 标签），后画的标签避让它们
+      const markers = [];    // 数据点标记（交点红点），引导线不许穿过
+      curvesGridAndAxes(w, occupied);
       /* 颜色顺序与 describe 一致：蓝色 = 第一条，橙色 = 第二条 */
       plotShape(w, cs[0], '#2a7de1', 2.4);
       plotShape(w, cs[1], '#e67e22', 2.4);
-      annotateCurves(w);
+      annotateCurves(w, occupied, markers);
     }
 
     /* ---------------- 自检面板（与老画板同一套判定口径） ---------------- */
@@ -2003,7 +2238,7 @@
       return q.a * (x - q.h) * (x - q.h) + q.k;
     }
 
-    function gridAndAxes(w) {
+    function gridAndAxes(w, occupied) {
       ctx.strokeStyle = 'rgba(0,0,0,.08)';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -2024,14 +2259,25 @@
       if (X0 >= 0 && X0 <= w.w) { ctx.moveTo(X0, 0); ctx.lineTo(X0, w.hp); }
       ctx.stroke();
       ctx.fillStyle = '#000';
-      ctx.font = '11px sans-serif';
+      ctx.font = TICK_FONT_SIZE + 'px sans-serif';
+      /* 刻度数字走 textRect（占位矩形登记进 occupied），y 刻度画在轴**左侧**，
+       * 轴内侧那条竖带留给顶点/截距等注释标签 —— 与多曲线画板同一口径（t_7851d903）。 */
       for (let gx = Math.ceil(w.xMin); gx <= w.xMax; gx++) {
         if (gx === 0) continue;
-        ctx.fillText(String(gx), sx({ x: gx }, w) + 3, Y0 + 14);
+        const r = measureTextRect(ctx, String(gx), sx({ x: gx }, w) + 3, Y0 + 14, TICK_FONT_SIZE, 'left');
+        fillTextRect(ctx, String(gx), r, TICK_FONT_SIZE);
+        occupied.push(r);
       }
       for (let gy = Math.ceil(w.yMin); gy <= w.yMax; gy++) {
         if (gy === 0) continue;
-        ctx.fillText(String(gy), X0 + 4, sy({ y: gy }, w) - 3);
+        const label = String(gy);
+        const tw = ctx.measureText(label).width;
+        let tx = X0 - LABEL_GAP, align = 'right';
+        /* y 轴贴着画布左沿时左侧放不下：退到画布最左，仍不进轴内侧竖带 */
+        if (tx - tw < 2) { tx = 2; align = 'left'; }
+        const r = measureTextRect(ctx, label, tx, sy({ y: gy }, w) - 3, TICK_FONT_SIZE, align);
+        fillTextRect(ctx, label, r, TICK_FONT_SIZE);
+        occupied.push(r);
       }
     }
 
@@ -2070,7 +2316,7 @@
       }
     }
     /** 区间最值：标出 xMin/xMax 两条竖线与端点值（只在 range-on-interval 画板 + 区间有效时画） */
-    function drawInterval(w) {
+    function drawInterval(w, occupied, markers) {
       const xa = p.xMin, xb = p.xMax;
       if (xa == null || xb == null || !isFinite(xa) || !isFinite(xb) || !(xb > xa)) return;
       const XA = sx({ x: xa }, w), XB = sx({ x: xb }, w);
@@ -2088,16 +2334,16 @@
       ctx.stroke();
       ctx.setLineDash([]);
       // 端点：x 坐标是题面给的区间端点（已知量，照常显示），函数值要自己代入算（派生量 → ?）
-      ctx.font = 'bold 11px sans-serif';
       [xa, xb].forEach(function (x) {
         const X = sx({ x: x }, w), Y = sy({ y: fAt(p, x) }, w);
         if (X < 0 || X > w.w || Y < 0 || Y > w.hp) return;
         ctx.fillStyle = '#e67e22';
         ctx.beginPath(); ctx.arc(X, Y, 3.5, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = '#b35c00';
-        /* 端点标注文本走共享 helper（与 describe 同一来源，见模块级「画板元素清单」注释） */
-        ctx.fillText(intervalEndpointText(x, p, shown),
-          Math.min(Math.max(X + 6, 2), w.w - 60), Math.max(Y - 7, 12));
+        markers.push(markerRect(X, Y, 3.5));
+        /* 端点标注文本走共享 helper（与 describe 同一来源，见模块级「画板元素清单」注释）；
+         * 位置交给 drawLabel 避让刻度与其它标签（t_7851d903） */
+        drawLabel(w, intervalEndpointText(x, p, shown),
+          { x: X, y: Y, size: 11, color: '#b35c00', occupied: occupied, markers: markers });
       });
       ctx.restore();
     }
@@ -2111,8 +2357,45 @@
       return !!(noteLab === 'quadratic-range-on-interval' || intent === '在给定区间上的最大值' || intent === '在给定区间上的最小值');
     }
 
-    /** 类型相关标注 + 教学说明（二次函数的说明文案由 intent 决定，见 noteText） */
-    function annotate(w) {
+    /** 统一的注释标签落地（t_7851d903）：先避让（刻度矩形 + 已画标签 + 数据点标记）再落笔，
+     *  5 个候选都被占时画一条短引导线指回锚点；落笔后把自己的矩形登记进 occupied。
+     *  o = { x, y, size, color, bold, bg, gap, occupied, markers } */
+    function drawLabel(w, text, o) {
+      const opt = o || {};
+      const size = opt.size || 12;
+      ctx.font = (opt.bold === false ? '' : 'bold ') + size + 'px sans-serif';
+      const tw = ctx.measureText(text).width;
+      const placed = placeLabel({
+        x: opt.x, y: opt.y, w: tw, h: size,
+        obstacles: opt.occupied || [],
+        markers: opt.markers || [],
+        bounds: { w: w.w, h: w.hp },
+        gap: opt.gap
+      });
+      const rect = placed.rect;
+      if (opt.bg) {
+        ctx.fillStyle = opt.bg;
+        ctx.fillRect(rect.x - 4, rect.y - 3, rect.w + 8, rect.h + 6);
+      }
+      if (placed.fallback && placed.leader) {
+        ctx.save();
+        ctx.strokeStyle = opt.color || '#333';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(placed.leader.x1, placed.leader.y1);
+        ctx.lineTo(placed.leader.x2, placed.leader.y2);
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.fillStyle = opt.color || '#333';
+      fillTextRect(ctx, text, rect, size);
+      if (opt.occupied) opt.occupied.push(rect);
+      return placed;
+    }
+
+    /** 类型相关标注 + 教学说明（二次函数的说明文案由 intent 决定，见 noteText）
+     *  occupied：本帧已画文字的矩形（刻度 + 之前画过的标签）；markers：数据点标记 */
+    function annotate(w, occupied, markers) {
       if (type === 'quadratic') {
         // 对称轴虚线：一直都在（它是抛物线的固有结构），讲「对称轴」时改成粗实线强调
         const axisIntent = intent === '对称轴';
@@ -2144,27 +2427,21 @@
         }
         ctx.fillStyle = '#c0392b';
         ctx.beginPath(); ctx.arc(VX, VY, vertIntent ? 6 : 4.5, 0, Math.PI * 2); ctx.fill();
+        markers.push(markerRect(VX, VY, vertIntent ? 6 : 4.5));
         /* 顶点坐标是派生量（答案）：位置照画，数值留问号；学生点「我算好了」答对后才画真值。
-         * 文字走共享 helper vertexText（与 describe 同一来源）。 */
-        ctx.fillText(vertexText(p, shown), VX + 8, VY - 8);
+         * 文字走共享 helper vertexText（与 describe 同一来源）；位置走 drawLabel 避让 y 刻度。 */
+        drawLabel(w, vertexText(p, shown), { x: VX, y: VY, size: 11, bold: false, color: '#c0392b',
+          occupied: occupied, markers: markers });
         // 对称轴位置同样是派生量：讲对称轴的题把线画粗强调，但轴上不写 x = h
         if (intent === '对称轴') {
-          ctx.save();
-          ctx.font = 'bold 11px sans-serif';
-          ctx.fillStyle = '#34495e';
           const HX0 = sx({ x: p.h }, w);
-          ctx.fillText(axisText(p, shown),
-            Math.min(Math.max(HX0 + 6, 4), w.w - 80), 14);
-          ctx.restore();
+          drawLabel(w, axisText(p, shown), { x: HX0, y: 26, size: 11, color: '#34495e',
+            occupied: occupied, markers: markers });
         }
         // 最值题再加一行「最小值/最大值 = ?」的提示（数值是答案，学生自己算）
         if (intent === '最小值' || intent === '最大值') {
-          ctx.save();
-          ctx.font = 'bold 12px sans-serif';
-          ctx.fillStyle = '#b03a2e';
-          ctx.fillText(extremeText(intent, p, shown),
-            Math.min(Math.max(VX + 8, 4), w.w - 90), Math.max(VY + 16, 14));
-          ctx.restore();
+          drawLabel(w, extremeText(intent, p, shown), { x: VX, y: VY, size: 12, color: '#b03a2e',
+            occupied: occupied, markers: markers });
         }
         // 零点（绿点）：只画点，**文案不在这里决定** —— 问顶点的题上不能出现「就是方程的两个根」
         // P 卡：交点坐标是派生量，标位置 + (?, 0)；学生答对后再画真值
@@ -2176,13 +2453,12 @@
             if (X < 0 || X > w.w) return;
             ctx.fillStyle = '#2ecc71';
             ctx.beginPath(); ctx.arc(X, Y, 4, 0, Math.PI * 2); ctx.fill();
-            ctx.fillStyle = '#1e8449';
-            ctx.font = 'bold 11px sans-serif';
-            ctx.fillText(rootText(x, shown),
-              Math.min(Math.max(X + 6, 2), w.w - 46), Math.min(Math.max(Y + 16, 12), w.hp - 4));
+            markers.push(markerRect(X, Y, 4));
+            drawLabel(w, rootText(x, shown), { x: X, y: Y, size: 11, color: '#1e8449',
+              occupied: occupied, markers: markers });
           });
         }
-        if (intervalIntent()) drawInterval(w);
+        if (intervalIntent()) drawInterval(w, occupied, markers);
         // 文案已在 mount 时按 intent 生成；这里只处理拖动滑块后「交点个数」的事实描述变化
         // —— 仍然只在讲根/零点时才提根，讲顶点/最值的题永远不提。
         if (rootsIntent()) {
@@ -2206,13 +2482,17 @@
         const BY = sy({ y: p.b }, w), BX = sx({ x: 0 }, w);
         ctx.fillStyle = '#c0392b';
         ctx.beginPath(); ctx.arc(BX, BY, 4.5, 0, Math.PI * 2); ctx.fill();
-        ctx.fillText(interceptYText(p, shown), BX + 8, BY - 8);
+        markers.push(markerRect(BX, BY, 4.5));
+        drawLabel(w, interceptYText(p, shown), { x: BX, y: BY, size: 11, bold: false, color: '#c0392b',
+          occupied: occupied, markers: markers });
         if (p.k !== 0) {
           const xInt = -p.b / p.k;
           const IX = sx({ x: xInt }, w), IY = sy({ y: 0 }, w);
           ctx.fillStyle = '#2ecc71';
           ctx.beginPath(); ctx.arc(IX, IY, 4.5, 0, Math.PI * 2); ctx.fill();
-          ctx.fillText(interceptXText(xInt, shown), IX + 8, IY + 14);
+          markers.push(markerRect(IX, IY, 4.5));
+          drawLabel(w, interceptXText(xInt, shown), { x: IX, y: IY, size: 11, bold: false, color: '#2ecc71',
+            occupied: occupied, markers: markers });
         }
       } else {
         // inverse：双曲线两支 + 渐近线虚线（文案同样由 intent 生成）
@@ -2226,7 +2506,7 @@
       return { x: pp.h, y: pp.k };
     }
     /** 带箭头的平移向量 + 位移量标注（「←2, ↓3」），数值由两顶点坐标差算出 */
-    function drawShift(w, from, to) {
+    function drawShift(w, from, to, occupied, markers) {
       const dx = to.x - from.x, dy = to.y - from.y;
       if (!isFinite(dx) || !isFinite(dy)) return;
       if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return;    // 没有位移就不画箭头
@@ -2251,24 +2531,21 @@
       // 位移量标注：x 方向 "←2 / →2"，y 方向 "↓3 / ↑3"（屏幕 y 向下为正，所以 y 减用 ↓）
       // P 卡：平移量是从题面「向左/向下平移几格」读出的已知量（题型由措辞识别，不是算出来的），
       // 学生对过箭头方向后仍按原值显示 —— 拖动滑块改变位移时才改成 ?（那时已是学生在自己试）。
-      // 文字走共享 helper shiftText（与 describe 同一来源）。
-      const label = shiftText(dx, dy, shown);
-      const mx = (X1 + X2) / 2, my = (Y1 + Y2) / 2;
-      ctx.font = 'bold 12px sans-serif';
-      const tw = ctx.measureText(label).width;
-      const lx = Math.min(Math.max(mx + 8, 4), w.w - tw - 10);
-      const ly = Math.max(my - 8, 14);
-      ctx.fillStyle = 'rgba(255,255,255,.88)';
-      ctx.fillRect(lx - 4, ly - 12, tw + 8, 17);
-      ctx.fillStyle = '#b35c00';
-      ctx.fillText(label, lx, ly);
+      // 文字走共享 helper shiftText（与 describe 同一来源）；位置同样走 drawLabel 避让（t_7851d903）。
+      {
+        const mx = (X1 + X2) / 2, my = (Y1 + Y2) / 2;
+        drawLabel(w, shiftText(dx, dy, shown), { x: mx + 8, y: my - 8, size: 12, color: '#b35c00',
+          bg: 'rgba(255,255,255,.88)', occupied: occupied, markers: markers });
+      }
       ctx.restore();
     }
 
     function draw() {
       const w = view();
       ctx.clearRect(0, 0, w.w, w.hp);
-      gridAndAxes(w);
+      const occupied = [];   // 已画文字的占位矩形（刻度 + 标签）
+      const markers = [];    // 数据点标记（顶点/零点/截距），标签与引导线都避让
+      gridAndAxes(w, occupied);
       if (type === 'inverse') {
         // 渐近线虚线（坐标轴本就实线，这里补 x=0 竖虚线警示）
         ctx.save();
@@ -2284,8 +2561,8 @@
       // 原曲线先画（灰色细虚线），目标曲线压在上面（实线主色）—— 变化关系一眼看见
       if (base) plotShape(w, base, { color: 'rgba(120,120,120,.85)', width: 1.6, dash: [6, 5] });
       plotShape(w, p, { color: '#2a7de1', width: 2.4 });
-      annotate(w);
-      if (base) drawShift(w, anchorOf(base), anchorOf(p));
+      annotate(w, occupied, markers);
+      if (base) drawShift(w, anchorOf(base), anchorOf(p), occupied, markers);
     }
 
     /* ---------------- 自检面板（「我算好了」才显形） ----------------
@@ -2472,6 +2749,13 @@
     /* t_1d3fe77a：多曲线画板（two-curves-intersect）的纯函数，供测试与审计脚本复用 */
     curvesOf: curvesOf, intersectionsOf: intersectionsOf, intersectText: intersectText,
     fAtCurve: fAtCurve, curvesFromPrompt: curvesFromPrompt,
+    /* t_7851d903：文字占位矩形与标签避让（纯函数，刻度数字与所有注释标签共用同一套） */
+    textRect: textRect, rectTextAnchor: rectTextAnchor,
+    rectsOverlap: rectsOverlap, rectOverlapArea: rectOverlapArea,
+    clampRectToBounds: clampRectToBounds, labelCandidates: labelCandidates,
+    placeLabel: placeLabel, leaderSegment: leaderSegment,
+    segmentsCross: segmentsCross, segmentHitsRect: segmentHitsRect, markerRect: markerRect,
+    TICK_FONT_SIZE: TICK_FONT_SIZE, LABEL_GAP: LABEL_GAP, TEXT_ASCENT: TEXT_ASCENT,
     /** 某类画板（quadratic/linear/inverse）的能力清单子集（匹配层只喂相关画板，减少 LLM 误选） */
     capabilitiesFor: function (type) {
       const out = {};
