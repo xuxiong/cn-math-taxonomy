@@ -81,23 +81,17 @@
   } catch (e) { /* 引导横幅失败不影响主流程 */ }
 })();
 </script>
-<script src="../assets/vendor/cytoscape.min.js"></script>
-<script src="../assets/vendor/dagre.min.js"></script>
-<script src="../assets/vendor/cytoscape-dagre.js"></script>
 <script src="engine.js"></script>
 <script src="../assets/children.js"></script>
 <script src="../assets/blindspots.js"></script>
-<script src="variants.js"></script>
-<script src="llm-eval.js"></script>
-<script src="llm-gateway.js"></script>
-<script src="llm-variants.js"></script>
-<script src="explain.js"></script>
-<script src="funclab.js"></script>
-<script src="chatgraph.js"></script>
-<script src="labmatch.js"></script>
-<script src="geomlab.js"></script>
-<script src="../assets/vendor/qrcode.js"></script>
-<script src="share.js"></script>
+<!-- lazyload.js 必须在 app.js 之前：app.js 里的使用点靠 window.Lazy 按需注入。
+     下面这些模块不进首屏链（首屏脚本 403KB → ≈85KB），由 app.js 用到时才 Lazy.load：
+       explain.js                                   进讲解面板
+       funclab.js / geomlab.js / labmatch.js / chatgraph.js   挂画板、追问带图
+       variants.js / llm-eval.js / llm-gateway.js / llm-variants.js  点「练习」
+       ../assets/vendor/qrcode.js / share.js        生成分享图
+       ../assets/vendor/cytoscape.min.js / dagre.min.js / cytoscape-dagre.js  画先修路径图 -->
+<script src="lazyload.js"></script>
 <script src="app.js"></script>
 <script src="../assets/stats-config.js"></script>
 <script src="../assets/stats.js"></script>
