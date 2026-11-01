@@ -27,7 +27,7 @@ const { execFileSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 const TOPICS_PATH = path.join(ROOT, 'data', 'topics.json');
 const LITE_PATH = path.join(ROOT, 'data', 'topics-lite.json');
-const APP = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8');
+const APP = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8') + '\n' + fs.readFileSync(path.join(ROOT, 'diagnose', 'app-flow.js'), 'utf8');
 const SW = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
 const HTML = fs.readFileSync(path.join(ROOT, 'diagnose', 'index.html'), 'utf8');
 
@@ -341,9 +341,9 @@ test('app.js：所有进流程入口都过题源门（选为目标 / 整章 / �
   /* 老签名 withStage2(function ...) 一处都不许留：那种写法拿不到目标，判断不了题源 */
   assert.strictEqual(APP.indexOf('withStage2(function'), -1, '还有 withStage2(function…) 老签名（不带目标）');
   const needles = [
-    ["withStage2([x.t.id], 'target'", '「选为目标」入口没带目标过题源门'],
-    ["withStage2(ch.topics.map", '「以整章为目标」入口没带目标过题源门'],
-    ["withStage2(g.ids, 'screen'", '「开始整体筛查」入口没带目标过题源门'],
+    ["goFlow([x.t.id], x.t.name)", '「选为目标」入口没带目标过题源门'],
+    ["goFlow(ch.topics.map", '「以整章为目标」入口没带目标过题源门'],
+    ["goFlow(g.ids,", '「开始整体筛查」入口没带目标过题源门'],
     ["withStage2(saved.targets, saved.mode", '「继续存档」入口没带目标过题源门'],
     [/withStage2\((?:S\.)?session \? (?:S\.)?session\.targets : null, 'target'/, '「路径练习」入口没带目标过题源门'],
     ['withStage2Data(function () { startPractice', '「练习这题」入口应走 withStage2Data（练习不依赖诊断题库）'],

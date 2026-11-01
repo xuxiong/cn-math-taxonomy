@@ -31,7 +31,7 @@ const TOPICS_PATH = path.join(ROOT, 'data', 'topics.json');
 const DIR = path.join(ROOT, 'data', 'questions');
 const INDEX_PATH = path.join(ROOT, 'data', 'questions-index.json');
 const BUILD = path.join(ROOT, 'scripts', 'build-questions-split.mjs');
-const APP = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8');
+const APP = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8') + '\n' + fs.readFileSync(path.join(ROOT, 'diagnose', 'app-flow.js'), 'utf8');
 const SW = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
 
 /* bundle 的 gzip 预算：卡上要求 < 10KB（实际最大 ≈6KB）。 */

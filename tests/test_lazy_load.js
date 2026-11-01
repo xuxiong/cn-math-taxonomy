@@ -23,7 +23,7 @@ const vm = require('vm');
 const ROOT = path.resolve(__dirname, '..');
 const HTML = fs.readFileSync(path.join(ROOT, 'diagnose', 'index.html'), 'utf8');
 const LAZY_SRC = fs.readFileSync(path.join(ROOT, 'diagnose', 'lazyload.js'), 'utf8');
-const APP_RAW = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8');
+const APP_RAW = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8') + '\n' + fs.readFileSync(path.join(ROOT, 'diagnose', 'app-flow.js'), 'utf8');
 const SW = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
 
 /* 14 个被移出首屏链的脚本（路径按 index.html 里的写法） */

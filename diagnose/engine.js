@@ -38,50 +38,11 @@
 
   const DIFF_RANK = { basic: 0, standard: 1, challenge: 2, advanced: 2 };
 
-  function qNum(q) { const m = /_q(\d+)$/.exec(q.id); return m ? parseInt(m[1], 10) : 0; }
-
-  function buildGraph(topics, deps, questions) {
-    const byId = Object.create(null);
-    const index = Object.create(null);
-    topics.forEach(function (t, i) { byId[t.id] = t; index[t.id] = i; });
-    const prereqs = Object.create(null);
-    const dependents = Object.create(null);
-    topics.forEach(function (t) { prereqs[t.id] = []; dependents[t.id] = []; });
-    const seen = Object.create(null);
-    deps.forEach(function (d) {
-      if (!byId[d.topicId] || !byId[d.prerequisiteId]) return;
-      const k = d.topicId + '<' + d.prerequisiteId;
-      if (seen[k]) return;
-      seen[k] = true;
-      const strength = d.strength === 'soft' ? 'soft' : 'hard';
-      prereqs[d.topicId].push({ id: d.prerequisiteId, strength: strength, reason: d.reason });
-      dependents[d.prerequisiteId].push({ id: d.topicId, strength: strength });
-    });
-    // 先修按 hard 优先、再 soft，同级按 topics 文件顺序，保证出题次序确定
-    const rank = function (e) { return (e.strength === 'hard' ? 0 : 1) * 1e6 + index[e.id]; };
-    Object.keys(prereqs).forEach(function (id) {
-      prereqs[id].sort(function (a, b) { return rank(a) - rank(b); });
-      dependents[id].sort(function (a, b) { return index[a.id] - index[b.id]; });
-    });
-    // 题库：每个知识点的题目，按题号排序；没有题库（或某知识点没有题）时回退到 diagnostic_question
-    const bank = Object.create(null);
-    topics.forEach(function (t) { bank[t.id] = []; });
-    let fromFile = 0;
-    (Array.isArray(questions) ? questions : []).forEach(function (q) {
-      if (q && bank[q.topicId] && !byId[q.topicId].external) { bank[q.topicId].push(q); fromFile++; }
-    });
-    topics.forEach(function (t) {
-      const dq = t.diagnostic_question;
-      if (!t.external && !bank[t.id].length && dq && dq.question) {
-        bank[t.id].push({ id: t.id + '_q1', topicId: t.id, difficulty: 'standard', type: 'legacy', prompt: dq.question, answer: dq.answer, explanation: '' });
-      }
-    });
-    Object.keys(bank).forEach(function (id) { bank[id].sort(function (a, b) { return qNum(a) - qNum(b); }); });
-    return {
-      topics: topics, byId: byId, index: index, prereqs: prereqs, dependents: dependents, bank: bank,
-      hasBank: fromFile > 0, _anc: Object.create(null)
-    };
-  }
+  /* 题号 / 建图 / 年级范围 / 题量常量都在首屏层 chapter.js（首屏列表与年级卡片要用，
+   * 不该为首绘去下 23KB 的 engine.gz）。这里 alias 同一份实现，行为零变更。 */
+  const qNum = CnmChapter.qNum;
+  const buildGraph = CnmChapter.buildGraph;
+  const gradeTargets = CnmChapter.gradeTargets;
 
   /** 严格祖先集合（不含自身），带缓存。 */
   function ancestorSet(graph, id) {
@@ -249,8 +210,8 @@
   /* ------------------------------------------------------------------ 会话 */
 
   const RESULTS = { correct: 1, wrong: 1, skip: 1 };
-  const DEFAULT_LIMIT = 16;
-  const SCREEN_LIMIT = 40;
+  const DEFAULT_LIMIT = CnmChapter.DEFAULT_LIMIT;
+  const SCREEN_LIMIT = CnmChapter.SCREEN_LIMIT;
 
   /** 引擎内部：任意 ≥1 的确认题数（测试可用 1；界面仍走 clampConfirm）。 */
   function normalizeConfirm(n) {
@@ -668,65 +629,6 @@
   /* 首屏纯函数 parseChapter / subjectOf 已拆到 chapter.js（见该文件 WHY，首屏只用到它俩，
    * 单独成 ≤2KB 小文件省 23.9KB engine.gz）。engine 顶部经 CnmChapter 注入了同名局部常量，
    * 下面用到 subjectOf / parseChapter 的地方行为与拆分前完全一致。 */
-
-  /**
-   * 整年级 / 整册的知识点：'一年级' = 一上 + 一下，'七上' = 七年级上册。
-   * 高中不拆上下册：'高一' / '高一必修' = 必修第一册，'高二' / '高二必修' = 必修第二册。
-   * '选必一' / '选择性必修第一册'、选必二、选必三 = 选择性必修三册。
-   * 高中英语用「必修一」「必修二」「必修三」「选必四」，不占用数学的「高一」「高二」。
-   * subject 默认 math，避免三上、四上和选必一把英语和数学混在一起。
-   * 不带 subject 时「必修一」没有数学知识点，返回 null。
-   * 返回 {ids, volumes, label}（ids 按 topics 文件顺序，只含正式知识点）；不认识的写法返回 null。
-   */
-  function gradeTargets(graph, scope, subject) {
-    const subj = subject == null || subject === '' ? 'math' : subject;
-    const key = String(scope == null ? '' : scope).trim();
-    const books = {
-      '高一': ['高一', '高一（必修第一册）'],
-      '高一必修': ['高一', '高一（必修第一册）'],
-      '高二': ['高二', '高二（必修第二册）'],
-      '高二必修': ['高二', '高二（必修第二册）'],
-      '选必一': ['选必一', '选必一（选择性必修第一册）'],
-      '选择性必修第一册': ['选必一', '选必一（选择性必修第一册）'],
-      '选必二': ['选必二', '选必二（选择性必修第二册）'],
-      '选择性必修第二册': ['选必二', '选必二（选择性必修第二册）'],
-      '选必三': ['选必三', '选必三（选择性必修第三册）'],
-      '选择性必修第三册': ['选必三', '选必三（选择性必修第三册）'],
-      '必修一': ['必修一', '必修一（必修第一册）'],
-      '必修第一册': ['必修一', '必修一（必修第一册）'],
-      '必修二': ['必修二', '必修二（必修第二册）'],
-      '必修第二册': ['必修二', '必修二（必修第二册）'],
-      '必修三': ['必修三', '必修三（必修第三册）'],
-      '必修第三册': ['必修三', '必修三（必修第三册）'],
-      '选必四': ['选必四', '选必四（选择性必修第四册）'],
-      '选择性必修第四册': ['选必四', '选必四（选择性必修第四册）']
-    };
-    let volumes = null;
-    let label = '';
-    if (books[key]) {
-      volumes = [books[key][0]];
-      label = books[key][1];
-    } else {
-      const g = /^([一二三四五六七八九])年级$/.exec(key);
-      const v = /^([一二三四五六七八九])([上下])$/.exec(key);
-      const whole = /^([一二三四五六七八九])全$/.exec(key);
-      if (g) {
-        volumes = [g[1] + '上', g[1] + '下'];
-        if (g[1] === '九') volumes.push('九全');
-        label = g[1] + '年级';
-      } else if (whole) {
-        volumes = [whole[1] + '全'];
-        label = whole[1] + '年级全一册';
-      } else if (v) { volumes = [key]; label = v[1] + '年级' + (v[2] === '上' ? '上册' : '下册'); }
-    }
-    if (!volumes) return null;
-    const ids = graph.topics.filter(function (t) {
-      if (t.external) return false;
-      if (subj !== 'all' && subjectOf(t) !== subj) return false;
-      return volumes.indexOf(parseChapter(t.chapter).volume) >= 0;
-    }).map(function (t) { return t.id; });
-    return ids.length ? { ids: ids, volumes: volumes, label: label } : null;
-  }
 
   /**
    * 按章汇总：范围内每章的 掌握 / 不稳 / 薄弱 / 未测 数量和薄弱、不稳的知识点 id。

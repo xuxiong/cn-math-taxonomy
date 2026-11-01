@@ -696,9 +696,9 @@ test('跳转地址：diagnose/index.html?target=<id>&from=route（复用现有 ?
 });
 
 test('diagnose 的 ?target= 确实能开 session：resolveTargets 认得这个参数（读源码断言，不测 DOM）', () => {
-  const src = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8');
+  const src = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8') + '\n' + fs.readFileSync(path.join(ROOT, 'diagnose', 'app-flow.js'), 'utf8');
   assert.ok(/params\.get\('target'\)/.test(src), 'app.js 必须读 ?target=');
-  assert.ok(/startSession\(resolved\.ids/.test(src), 'resolved 出来的 ids 要进 startSession');
+  assert.ok(/flow\('enter'\)/.test(src) && /en\(resolved\.ids/.test(src), 'resolved 出来的 ids 要进会话开入口（flow enter）');
   assert.ok(/function startSession\(targets, label, limit, mode\)/.test(src));
 });
 
@@ -709,7 +709,7 @@ test('diagnose 页面：带 from=route 才出现「← 回到作业分析」，�
   assert.strictEqual(DIAG_APP.routeReturnHref('?from=other'), null);
   assert.strictEqual(DIAG_APP.routeReturnHref(''), null);
   assert.strictEqual(DIAG_APP.routeReturnHref(null), null);
-  const src = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8');
+  const src = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8') + '\n' + fs.readFileSync(path.join(ROOT, 'diagnose', 'app-flow.js'), 'utf8');
   assert.ok(src.includes('← 回到作业分析'), '返回入口的文案');
   assert.ok(/show\(withRouteBack\(page\)\)/.test(src), '三个主视图都要挂返回入口');
 });

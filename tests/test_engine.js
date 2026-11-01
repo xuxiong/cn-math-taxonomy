@@ -1850,7 +1850,7 @@ function stripNullSafeSpans(s) {
 }
 
 test('app.js：题面卡片不用原生 append 吃三目里的 null（讲解/自评首屏那行 "null"）', () => {
-  const appSrc = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'app.js'), 'utf8');
+  const appSrc = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'app.js'), 'utf8') + '\n' + fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'app-flow.js'), 'utf8');
   const calls = cardAppendArgTexts(appSrc);
   assert.ok(calls.length >= 8, 'card.append 调用点只找到 ' + calls.length + ' 处，源码结构变了就更新本测试');
   const bad = [];
