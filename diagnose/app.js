@@ -51,6 +51,7 @@
   let subject = 'math';
   let startQuery = '';
   let startStage = '';
+  let startErr = null;     // 开始页的错误提示（题库后台到货后的静默重绘不能把它抹掉）
   let chapterOpen = false;
   let gradeSel = '七';     // 开始页「按年级整体诊断」：年级
   let volSel = '';         // '' 整年级 / '上' / '下'
@@ -277,26 +278,48 @@
   }
 
   /* ------------------------------------------------------------ 数据 */
+  /* 首屏数据（阶段 1）：只等这四份（并行，约 520KB）。题库不在首屏链上，见 loadQuestions()。 */
   async function loadData() {
     const urls = ['../data/topics.json', '../data/dependencies.json', '../data/cn-curriculum-standards.json', '../data/id-aliases.json'];
     const rs = await Promise.all(urls.map(function (u) { return fetch(u); }));
     rs.forEach(function (r, i) { if (!r.ok) throw new Error(urls[i] + ' → HTTP ' + r.status); });
     const js = await Promise.all(rs.map(function (r) { return r.json(); }));
-    // 题库可选：缺失（404）或损坏时回退到 topics.json 的 diagnostic_question
-    let questions = null;
-    try {
-      const qr = await fetch('../data/questions.json');
-      if (qr.ok) questions = await qr.json();
-    } catch (e) { questions = null; }
     const topics = js[0].filter(function (t) { return E.subjectOf(t) === subject; });
     const allow = {};
     topics.forEach(function (t) { allow[t.id] = true; });
     const deps = js[1].filter(function (d) { return allow[d.topicId] && allow[d.prerequisiteId]; });
-    if (questions) questions = questions.filter(function (q) { return allow[q.topicId]; });
     const stdById = {};
     js[2].items.forEach(function (x) { stdById[x.id] = x; });
-    const graph = E.buildGraph(topics, deps, questions);
+    // 题库还没有：buildGraph 会为每个知识点回退到 topics.json 的 diagnostic_question
+    const graph = E.buildGraph(topics, deps, null);
     D = { topics: topics, deps: deps, stdById: stdById, graph: graph, tree: buildTree(topics), aliases: (js[3] && js[3].aliases) || {} };
+    loadQuestions();   // 阶段 2：后台加载，不 await —— 首屏立刻能渲染
+  }
+
+  /* 阶段 2：题库后台加载（约 1.27MB gzip / 7.5MB 原文，弱网下几十秒），绝不阻塞首屏。
+   * 注意：这里的 await 只在本函数内部 —— loadData 调用它时不等（见上面的 loadData），
+   * 所以首屏渲染只取决于阶段 1 那四份。
+   * 到货后用同一份 topics / deps 重建图，然后：
+   *   - 用户还没进诊断流程（首页 / 图谱 / 选题列表）→ 静默重绘一次当前视图
+   *   - 已经进了诊断 / 讲解 / 自评（session / prac 非空）→ 只更新 D，不重绘，
+   *     不能把用户正在看的那一页刷掉（会话是纯数据，换图不会坏）
+   * 404 / 解析失败 → questions 保持 null，走 topics.json 的 diagnostic_question 回退，静默。 */
+  async function loadQuestions() {
+    let questions = null;
+    try {
+      const r = await fetch('../data/questions.json');
+      if (r.ok) questions = await r.json();          // 404：保持 questions = null
+      if (!D || !Array.isArray(questions)) { questions = null; return; }   // 空/坏 JSON：同样当没有题库
+      const allow = {};
+      D.topics.forEach(function (t) { allow[t.id] = true; });
+      questions = questions.filter(function (q) { return q && allow[q.topicId]; });
+      D.graph = E.buildGraph(D.topics, D.deps, questions);
+      if (typeof document === 'undefined') return;
+      if (session || prac || pracLoading) return;    // 用户已在流程里：只更新 D，不重绘
+      renderStart(startErr);                         // 首页 / 图谱 / 选题列表：静默重绘
+    } catch (e) {
+      questions = null;   // 题库损坏：静默当作没有题库（首屏阶段 1 早就渲染完了，不受影响）
+    }
   }
 
   function buildTree(topics) {
@@ -800,6 +823,7 @@
   }
 
   function renderStart(errMsg) {
+    startErr = errMsg || null;
     const page = h('div');
     const saved = lsGet(sessionKey());
     if (saved && saved.targets && D.graph.byId[saved.targets[0]]) {
