@@ -19,7 +19,7 @@
   var nameOf = CORE.nameOf, clipLabel = CORE.clipLabel, labelLimit = CORE.labelLimit, theme = CORE.theme;
   var lazyFail = CORE.lazyFail, LAZY_PATH = CORE.LAZY_PATH, PATH_FOLD_AT = CORE.PATH_FOLD_AT, STATUS_LABEL = CORE.STATUS_LABEL;
   var append = CORE.append, figureEl = CORE.figureEl, show = CORE.show, root = CORE.root;
-  var flow = CORE.flow, getSettings = CORE.getSettings, newSeed = CORE.newSeed, seenList = CORE.seenList;
+  var flow = CORE.flow, withRouteBack = CORE.withRouteBack, getSettings = CORE.getSettings, newSeed = CORE.newSeed, seenList = CORE.seenList;
   var markSeen = CORE.markSeen, lsGet = CORE.lsGet, lsSet = CORE.lsSet, lsDel = CORE.lsDel;
   var save = CORE.save, saveToChild = CORE.saveToChild, sessionKey = CORE.sessionKey, resetUi = CORE.resetUi;
   var renderStart = CORE.renderStart, renderQuestionsPending = CORE.renderQuestionsPending, renderNoQuestions = CORE.renderNoQuestions;
@@ -205,13 +205,6 @@ function render() {
       return renderQuestionsPending();
     }
     renderResult();
-  }
-
-function withRouteBack(page) {
-    if (!routeReturnHref(location.search)) return page;
-    const wrap = h('div');
-    wrap.append(routeBackBar(), page);
-    return wrap;
   }
 
 function pracItem() {

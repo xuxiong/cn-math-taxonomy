@@ -139,7 +139,7 @@
     ensureQuestionsForOne: ensureQuestionsForOne, ensureQuestionsForTopics: ensureQuestionsForTopics,
     ensureQuestionsForAnswers: ensureQuestionsForAnswers,
     withStage2: withStage2, withStage2Data: withStage2Data, stage2Status: stage2Status,
-    childBar: childBar, diagnoseHrefFor: diagnoseHrefFor, routeReturnHref: routeReturnHref,
+    childBar: childBar, diagnoseHrefFor: diagnoseHrefFor, routeReturnHref: routeReturnHref, withRouteBack: withRouteBack,
     routeBackBar: routeBackBar, isPrereqKnowledge: isPrereqKnowledge, reasonFor: reasonFor,
     noteBlind: noteBlind, blindResultCard: blindResultCard, llmVariantsMod: llmVariantsMod
   };
@@ -161,6 +161,24 @@
   /* 引擎与按需段不在首屏 <script> 链上（见 index.html）：首次进流程 / 深链 / 恢复前补载。
    * 幂等：同一次页面只 Lazy.load 一次，后续调用复用同一个 Promise（同 src 去重）。 */
   let flowEnginePromise = null;
+  /* 首屏之外的辅助模块（孩子档案 / 薄弱点 / 统计 / PWA / 模型横幅）推迟到列表画完之后再取：
+   * 用户第一次交互立刻取，否则 2s 后取。注意不能用 requestIdleCallback —— 主线程在网络等待期间
+   * 本来就是空的，idle 回调会立刻触发，等于照旧抢带宽。慢链路上这 40KB 级辅助件会把
+   * 「可搜索列表」推后几秒，所以必须等列表之后。 */
+  function whenIdle(fn) {
+    let done = false;
+    function run() {
+      if (done) return;
+      done = true;
+      ['pointerdown', 'keydown', 'focusin'].forEach(function (ev) { document.removeEventListener(ev, run, true); });
+      clearTimeout(timer);
+      try { fn(); } catch (e) { /* 辅助模块失败不影响主流程 */ }
+    }
+    ['pointerdown', 'keydown', 'focusin'].forEach(function (ev) { document.addEventListener(ev, run, true); });
+    let timer = 0;
+    timer = setTimeout(run, 2000);
+  }
+
   function ensureFlowEngine() {
     if (!flowEnginePromise) {
       flowEnginePromise = Lazy.load(['engine.js', 'app-flow.js']).then(function () {
@@ -365,6 +383,14 @@
   function routeBackBar() {
     return h('div', { class: 'route-back no-print', id: 'route-back' },
       h('a', { href: routeReturnHref(location.search), id: 'route-back-link' }, '← 回到作业分析'));
+  }
+  /* 作业分析回来时在页首加一条返回条。首屏 renderStart 也要用，所以留在核心层；
+   * 按需段（app-flow.js）经 CORE.withRouteBack 用同一份实现。 */
+  function withRouteBack(page) {
+    if (!routeReturnHref(location.search)) return page;
+    const wrap = h('div');
+    wrap.append(routeBackBar(), page);
+    return wrap;
   }
   function lsDel(k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } }
   function nameOf(id) { const t = S.D.graph.byId[id]; return t ? t.name : id; }
@@ -1619,10 +1645,9 @@
     S.subject = detectSubject();
     applySubjectChrome();
     renderSkeleton();                       // 阶段 0：0ms，不等任何 fetch，先给出可看的界面
-    /* 引擎与按需段（engine.js + app-flow.js）不在首屏 <script> 链上，也不再阻挡首屏：
-     * 首屏列表/年级卡片只用 chapter.js 的纯函数与 topics-lite，所以这里只「开始」补载，
-     * 不 await。真正要出题/出图（深链、点目标、点年级）时再等它（见下面 resolved 分支与 goFlow）。 */
-    const engineReady = ensureFlowEngine().catch(function () { /* Lazy 已记 lazyFailed；调用点会走 renderFlowBlocked */ });
+    /* 引擎与按需段（engine.js + app-flow.js）不在首屏 <script> 链上，也不随首屏下载：
+     * 首屏列表/年级卡片只用 chapter.js 的纯函数 + topics-lite，所以这里完全不碰它们。
+     * 真正要出题/出图时（点目标、点年级、深链）才由 goFlow / ensureFlowReady 补载。 */
     try { await loadData(); } catch (e) {
       clearRoot();
       root.append(h('div', { class: 'card' }, h('h2', { class: 'err', text: '数据加载失败' }),
@@ -1633,9 +1658,9 @@
     renderStart();                          // 阶段 1：知识库清单（topics-lite）到货，选题界面可用
     const params = new URLSearchParams(location.search);
     /* 深链（?target= / ?chapter= / ?grade=）要先出题，而 resolveTargets / 出题都在按需段里，
-     * 所以只有这几种 URL 才等 engineReady；普通访问不等（首屏因此可以比 engine.gz 先到）。 */
+     * 所以只有这几种 URL 才补载并等 engine/flow；普通访问完全不下载它们。 */
     if (params.get('target') || params.get('chapter') || params.get('grade') || params.get('volume') || params.get('demo')) {
-      await engineReady;
+      await ensureFlowEngine().catch(function () { /* 失败交给下面的 flow() 空实现 + 重试卡 */ });
     }
     let resolved = null;
     const rTargets = flow('resolveTargets');
@@ -1666,15 +1691,18 @@
       const en = flow('enter'); if (en) en(resolved.ids, resolved.label, limit, resolved.mode);
       return;
     }
-    /* 其余辅助模块不在首屏链上（见 index.html）：首屏列表画完 / 深链处理完后按依赖顺序补载。
+    /* 其余辅助模块不在首屏链上（见 index.html），也不占首屏带宽：等列表画完、页面空下来再补载。
      * children.js 提供 CC（孩子档案）、blindspots.js 提供 CnmBlind（薄弱点）、
      * llm-config.js 提供 LLMConfig（讲解/画板网关）、stats/stats-config/pwa 提供统计与安装。
-     * 到货后若无进行中的会话就重绘首页，把 childBar / 薄弱点卡补上（CC 是 let，到货后刷新引用）。 */
-    Lazy.load(['../assets/children.js', '../assets/blindspots.js', 'llm-config.js', '../assets/stats-config.js', '../assets/stats.js', '../assets/pwa.js']).then(function () {
-      CC = Browser.CnmChildren;   // children.js 到货后刷新缓存引用
-      if (!S.session && !S.prac && !S.pracLoading) renderStart();
-      maybeLLMBanner();
-    }, function () { /* 辅助模块缺失/加载失败不影响主流程 */ });
+     * 慢链路上这些加起来还有 40KB 级，提前抢带宽会把「可搜索列表」推后几秒，所以走 whenIdle：
+     * 空闲时（或用户第一次交互时）再取，到货后若无进行中的会话就重绘首页，把 childBar / 薄弱点卡补上。 */
+    whenIdle(function () {
+      Lazy.load(['../assets/children.js', '../assets/blindspots.js', 'llm-config.js', '../assets/stats-config.js', '../assets/stats.js', '../assets/pwa.js']).then(function () {
+        CC = Browser.CnmChildren;   // children.js 到货后刷新缓存引用
+        if (!S.session && !S.prac && !S.pracLoading) renderStart();
+        maybeLLMBanner();
+      }, function () { /* 辅助模块缺失/加载失败不影响主流程 */ });
+    });
     /* 没有深链参数：上面的 renderStart() 已经把选题界面画好了，不再重绘一次（避免闪一下） */
   }
 
