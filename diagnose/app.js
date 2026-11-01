@@ -4,8 +4,31 @@
   /* Node 直测纯函数时会没有 window（测试只 require 本文件取 routeReturnHref，不跑界面） */
   const Browser = typeof window !== 'undefined' ? window : {};
   const E = Browser.DiagEngine;
-  const V = Browser.DiagVariants;
-  const LLMV = Browser.DiagLLMVariants;  /* O3 LLM 变式出题 */
+  /* ---- 首屏脚本按需加载（A+B）----
+   * 下面这些模块不在 index.html 的 <script> 链上（首屏脚本 403KB → ≈85KB），
+   * 用到时才由 Lazy.load 按依赖顺序注入。依赖顺序只写在这里，调用点不要自己拼列表。
+   * 每个使用点都先 Lazy.load 再调用；Lazy 内部按 src 去重，重复调用零成本。 */
+  const LAZY_EXPLAIN = ['explain.js'];                                       // LLM 讲解（依赖首屏的 llm-config.js）
+  const LAZY_LAB = ['funclab.js', 'geomlab.js', 'labmatch.js', 'chatgraph.js'];  // 画板 + 追问图校验（labmatch/chatgraph 依赖 funclab）
+  const LAZY_SHARE = ['../assets/vendor/qrcode.js', 'share.js'];             // 分享图（share 依赖 qrcode）
+  const LAZY_PATH = [                                                        // 先修路径图（dagre 依赖 cytoscape）
+    '../assets/vendor/cytoscape.min.js',
+    '../assets/vendor/dagre.min.js',
+    '../assets/vendor/cytoscape-dagre.js'
+  ];
+  const LAZY_VARIANTS = ['variants.js', 'llm-eval.js', 'llm-gateway.js', 'llm-variants.js'];  // 练习（llm-* 依赖链）
+  /* 懒加载永远失败一次就够：同一次页面访问不反复重试，用户下次操作/刷新再试。
+   * 失败只会让对应功能走已有的降级分支，绝不把错误抛给首屏。 */
+  const lazyFailed = Object.create(null);
+  function lazyFail(name) {
+    return function (err) {
+      lazyFailed[name] = true;
+      if (typeof console !== 'undefined' && console.warn) console.warn('[lazy] ' + name + ' 加载失败：', err);
+    };
+  }
+  /* 变式模块是懒加载的：模块顶层不能抓引用（抓到的一定是 undefined），用到时现取。 */
+  function variantsMod() { return Browser.DiagVariants; }
+  function llmVariantsMod() { return Browser.DiagLLMVariants; }
   const LS_SESSION = 'cnmDiagnose.session.v2';
   const LS_SESSION_EN = 'cneDiagnose.session.v2';
   const LS_SESSION_PHY = 'cnpDiagnose.session.v2';
@@ -599,6 +622,26 @@
   function pathPracticeExists() { return !!(pracPath && pracPath.queue && pracPath.queue.length); }
 
   function startPractice(topicId) {
+    /* 练习模块（variants.js + llm-* 三件）不在首屏链上：第一次点「练习」才按需加载。
+     * 加载期间复用已有的「正在准备题目」页；失败明确告诉学生，不静默降级成空练习。 */
+    if (!variantsMod()) {
+      if (lazyFailed.variants) { alert('练习题组件没有加载出来，请刷新页面重试。'); return; }
+      pracLoading = { topicId: topicId };
+      resetUi();
+      render();
+      Browser.Lazy.load(LAZY_VARIANTS).then(function () {
+        pracLoading = null;
+        startPractice(topicId);
+      }, function (err) {
+        lazyFail('variants')(err);
+        pracLoading = null;
+        alert('练习题组件没有加载出来，请检查网络后重试。');
+        render();
+      });
+      return;
+    }
+    var V = variantsMod();
+    var LLMV = llmVariantsMod();
     var bankPicks = E.pickPracticeQuestions(D.graph, topicId, PRACTICE_N, seenList());
     var seqMap = variantSeqMap();
     var startIndex = seqMap[topicId] || 0;
@@ -1308,7 +1351,12 @@
     const t = D.graph.byId[id];
     const steps = (ui.aiSteps && ui.aiSteps.length === 3) ? ui.aiSteps : E.socraticSteps(t, q);
     const show = ui.explainStep || 0;      // 0=prompt 1=hint 2=reveal
-    if (ui.aiState === 'idle' && !ui.aiRequested) {
+    /* 讲解模块（explain.js）不在首屏链上：第一次进讲解面板才加载，到货后重渲染一次。
+     * 没到货时下面用 window.Explain 守卫，先显示静态三步讲解 —— 学生看不到空白。 */
+    if (!window.Explain && !lazyFailed.explain) {
+      Lazy.load(LAZY_EXPLAIN).then(function () { renderQuestion(item); }, lazyFail('explain'));
+    }
+    if (window.Explain && ui.aiState === 'idle' && !ui.aiRequested) {
       ui.aiRequested = true;
       ui.aiState = 'loading';
       const tick = ++explainTick;
@@ -1352,6 +1400,11 @@
        * M 卡：能不能挂、挂哪个画板、讲哪一句话，都由 LLM 语义匹配决定（diagnose/labmatch.js）；
        * 匹配失败/被拒绝/参数校验不过 → 不挂图（无正则保底，见卡面决策 2）。
        * 画板文案与绘制方式仍由 funclab.js 按 intent 决定，LLM 不参与"怎么画"。 */
+      /* 画板四件（funclab/geomlab/labmatch/chatgraph）同样不在首屏链上：进讲解面板才加载。
+       * 没到货就整块跳过（下面的 window.Funclab / window.Labmatch 守卫保留），讲解照常。 */
+      if (!window.Funclab && !lazyFailed.lab) {
+        Lazy.load(LAZY_LAB).then(function () { renderQuestion(item); }, lazyFail('lab'));
+      }
       try {
         const lab = window.Funclab && window.Funclab.labForScene(t && t.id, q && q.prompt, { itemId: q && q.id });
         /* 学生自己点过「画图给我看」：结果已经定了（ui.labAsk 非 null），这里只呈现，不再请求 LLM。
@@ -1374,6 +1427,8 @@
             renderLabAsk(box, item);
           }
         } else if (lab && window.Labmatch) {
+          /* 上面的 Lazy.load(LAZY_LAB) 已保证这批模块到货；此处再 ensure 一次（Lazy 去重，零请求） */
+          Lazy.load(LAZY_LAB);
           /* 先用空槽占位再异步填：不阻塞讲解面板渲染，也不留空画板容器（不挂时整槽移除） */
           window.Labmatch.resolve({ prompt: q && q.prompt, lab: lab, itemId: q && q.id })
             .then(function (cfg) {
@@ -1392,8 +1447,10 @@
             .catch(function () { if (slot.parentNode) slot.remove(); renderLabAsk(box, item); });
         } else if (!lab && window.Geomlab) {
           /* 几何画板：函数画板没候选时回退尝试（三角形/圆/相似）。
+           * 库已由上面的 Lazy.load(LAZY_LAB) 注入；此处 ensure 幂等。
            * answer/choices 必须传 —— 送分门禁靠它判断「答案是否只是题面数值的复制」，
            * 缺了会 fail-closed 不挂（见 geomlab.gate 的 answer-unknown）。 */
+          Lazy.load(LAZY_LAB);
           const glab = window.Geomlab.labFor(t && t.id, q && q.prompt, {
             itemId: q && q.id, topic: t, answer: q && q.answer, choices: q && q.choices
           });
@@ -1431,6 +1488,11 @@
     const q = item.question;
     const t = D.graph.byId[item.topicId];
     const hist = h('div', { class: 'ask-hist', id: 'ask-hist' });
+    /* 追问气泡里可能带 LLM 给的图（Funclab 画）：渲染气泡前先 ensure 画板库；
+     * 没到货就这几条气泡不带图（下面的 window.Funclab 守卫保留），不影响文字回答。 */
+    if (!window.Funclab && !lazyFailed.lab) {
+      Lazy.load(LAZY_LAB).then(function () { renderQuestion(item); }, lazyFail('lab'));
+    }
     (ui.askHistory || []).forEach(function (entry) {
       const rowEl = h('div', { class: 'ask-item' },
         h('div', { class: 'ask-q' }, '你：' + entry.q),
@@ -1454,6 +1516,15 @@
       hist.append(rowEl);
     });
     function sendAsk() {
+      /* 讲解模块懒加载：理论上首帧就到了；没到货就等加载完自动重发这一次提问（输入框内容还在） */
+      if (!window.Explain) {
+        if (!lazyFailed.explain) Lazy.load(LAZY_EXPLAIN).then(sendAsk, lazyFail('explain'));
+        return;
+      }
+      if (!window.ChatGraph && !lazyFailed.chat) {
+        /* 追问回答里的图校验要 chatgraph.js；没到货这条回答就不带图（原有降级） */
+        Lazy.load(LAZY_LAB).then(null, lazyFail('chat'));
+      }
       const inp = document.getElementById('ask-input');
       const text = (inp && inp.value || '').trim();
       if (!text || ui.askPending) return;
@@ -1534,6 +1605,22 @@
 
   function askForLab(item) {
     if (ui.labAsk) return;   // 已在请求中 / 已有结论
+    /* 画板库懒加载：没到货先注入，到货后重新走一遍「画图给我看」；失败按「画图功能暂时用不了」降级 */
+    if (!window.Funclab || !window.Labmatch) {
+      if (!lazyFailed.lab) {
+        Lazy.load(LAZY_LAB).then(function () { askForLab(item); }, function (err) {
+          lazyFail('lab')(err);
+          ui.labAsk = 'offline';
+          ui.labAskMsg = 'lazy-load-failed';
+          renderQuestion(item);
+        });
+      } else {
+        ui.labAsk = 'offline';
+        ui.labAskMsg = 'lazy-load-failed';
+        renderQuestion(item);
+      }
+      return;
+    }
     const q = item.question;
     const t = D.graph.byId[item.topicId];
     const lab = window.Funclab && window.Funclab.labForScene(t && t.id, q && q.prompt, { itemId: q && q.id });
@@ -1553,7 +1640,8 @@
           return;
         }
         /* mount 抛异常会被外层 try/catch 静默吃掉（表现是「图不出现但不报错」），
-         * 所以先确认拿到实例再写 ui.labCfg / ui.labDesc。 */
+         * 所以先确认拿到实例再写 ui.labCfg / ui.labDesc。库由上面的 Lazy.load(LAZY_LAB) 保证。 */
+        Lazy.load(LAZY_LAB);
         let inst = null;
         try { inst = window.Funclab.mount(cfg); } catch (err) { console.warn('[explain] 学生要的画板挂载失败：', err); }
         if (!inst) { ui.labAsk = 'none'; ui.labAskMsg = 'mount-failed'; renderQuestion(item); return; }
@@ -1649,8 +1737,13 @@
   }
   function openShare() {
     if (!window.ShareCard) {
-      var host0 = document.getElementById('summary');
-      if (host0) host0.append(h('p', { id: 'share-error', class: 'err', text: '分享图没有生成：组件没有加载' }));
+      /* 分享图（qrcode 12K + share 3K）不在首屏链上：第一次点「生成分享图」才注入，注入完成后再走一遍。
+       * 失败保留原来的「组件没有加载」提示，不静默成功。 */
+      Lazy.load(LAZY_SHARE).then(function () { openShare(); }, function (err) {
+        lazyFail('share')(err);
+        var host1 = document.getElementById('summary');
+        if (host1) host1.append(h('p', { id: 'share-error', class: 'err', text: '分享图没有生成：组件没有加载' }));
+      });
       return;
     }
     var token = ++shareToken;
@@ -2117,6 +2210,10 @@
     tip.style.top = y + 'px';
   }
   function ensureDagre() {
+    /* 图形库是懒加载的（首屏不带 186KB）：调用点先 Lazy.load(LAZY_PATH)；
+     * 这里再 ensure 一次是幂等的（同 src 复用同一个 Promise，不会重复注入），
+     * 万一还没到货就抛错，由 mountPathGraph 的 catch 降级成一行提示。 */
+    Lazy.load(LAZY_PATH);
     if (!window.cytoscape || !window.dagre || !window.cytoscapeDagre) throw new Error('图形库没有加载');
     if (!ensureDagre.ready) { window.cytoscape.use(window.cytoscapeDagre); ensureDagre.ready = true; }
   }
@@ -2130,6 +2227,15 @@
     const lay = E.layout(D.graph, session, sum);
     requestAnimationFrame(function () {
       if (token !== pathToken || !document.body.contains(cyEl)) return;
+      /* 首屏不带 cytoscape/dagre：临画前才注入（3 个文件按依赖顺序串行），
+       * 注入完成后重新挂一次；失败就退到下面的「图形库没有加载」一行提示。 */
+      if (!window.cytoscape && !lazyFailed.path) {
+        Lazy.load(LAZY_PATH).then(function () {
+          if (token !== pathToken || !document.body.contains(cyEl)) return;
+          mountPathGraph(sum);
+        }, lazyFail('path'));
+        return;
+      }
       try {
         ensureDagre();
         const colors = theme();
