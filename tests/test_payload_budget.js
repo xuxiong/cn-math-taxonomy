@@ -35,6 +35,8 @@ const QI_PATH = path.join(DATA, 'questions-index.json');
 const STD_PATH = path.join(DATA, 'cn-curriculum-standards.json');
 const HOME = fs.readFileSync(path.join(ROOT, 'assets', 'home.js'), 'utf8');
 const INDEX_HTML = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+const EXPLORE_APP = fs.readFileSync(path.join(ROOT, 'explore', 'app.js'), 'utf8');
+const EXPLORE_HTML = fs.readFileSync(path.join(ROOT, 'explore', 'index.html'), 'utf8');
 
 let passed = 0;
 let failed = 0;
@@ -360,14 +362,16 @@ function gzipBytes(filePath) {
   return zlib.gzipSync(fs.readFileSync(filePath)).length;
 }
 
-/** 首屏脚本集合（index.html 里非 defer / data-lazy 的同源 <script src>）。 */
+/** 首屏脚本集合（index.html 里同源的 <script src>，defer 也计入——defer 仍在开机就下载，
+ *  同样占首屏带宽。只有带 data-lazy（页面运行期才注入的脚本）的不计）。
+ *  8-10KB/s 链路：任何同源 <script src> 都是首绘的一部分，没有豁免。 */
 function firstPaintScripts(html) {
   const out = [];
   const re = /<script\b([^>]*)\bsrc="([^"]+)"/g;
   let m;
   while ((m = re.exec(html)) !== null) {
     const attrs = m[1] || '';
-    if (/\bdefer\b/.test(attrs) || /\bdata-lazy\b/.test(attrs)) continue;
+    if (/\bdata-lazy\b/.test(attrs)) continue;
     const src = m[2];
     if (/^(https?:)?\/\//.test(src) || src.indexOf('data:') === 0) continue;
     out.push(src);
@@ -388,10 +392,11 @@ function checkBudget(scriptGz, expandedFiles) {
   assert.ok(total <= BUDGET_LIMIT, '首屏 gzip ' + total + 'B 超过预算 ' + BUDGET_LIMIT + 'B（' + (total / 1024).toFixed(1) + 'KB）');
 }
 
-test('index.html：非 defer 的同源首屏脚本恰好是 children/blindspots/home 三件', function () {
+test('index.html：同源首屏脚本恰好是 children/blindspots/home/stats-config/stats/pwa 六件（defer 也计入）', function () {
   const scripts = firstPaintScripts(INDEX_HTML);
-  assert.deepStrictEqual(scripts, ['assets/blindspots.js', 'assets/children.js', 'assets/home.js'],
-    '首屏脚本集合应为这三个，新增首屏脚本必须过预算关：' + scripts.join(','));
+  assert.deepStrictEqual(scripts,
+    ['assets/blindspots.js', 'assets/children.js', 'assets/home.js', 'assets/pwa.js', 'assets/stats-config.js', 'assets/stats.js'],
+    '首屏脚本集合应为这六个，新增首屏脚本必须过预算关：' + scripts.join(','));
 });
 
 test('home.js：BOOT_FILES 清单正确，逐学科首屏 gzip ≤ 80KB，且无禁用子串', function () {
@@ -440,6 +445,123 @@ test('home.js：各学科每张年级卡的条数（lite 分组）与全量一�
   });
 });
 
+/* ------------------------------------------------ G2. explore（知识图谱）首屏预算 */
+
+const EXPLORE_SCRIPTS = firstPaintScripts(EXPLORE_HTML);
+const EXPLORE_SCRIPT_GZ = EXPLORE_SCRIPTS.reduce((sum, s) => sum + gzipBytes(exploreAssetPath(s)), 0);
+
+/** explore 的 BOOT_FILES 用的是相对 explore/ 的 '../data/...'，这里归一成 data/ 再取 gzip。 */
+function dataPath(p) {
+  return path.join(ROOT, p.replace(/^\.\.\//, ''));
+}
+
+/** explore/index.html 的脚本 src：'../assets/...' 相对站点根，'app.js' 相对 explore/ 目录。 */
+function exploreAssetPath(s) {
+  if (s.indexOf('../') === 0) return path.join(ROOT, s.slice(3));
+  return path.join(ROOT, 'explore', s);
+}
+
+/** 展开 explore BOOT_FILES：物理额外补一份数学 lite（mathLinks 名字用）。 */
+function expandExploreBootFiles(bootFiles, subject) {
+  const files = bootFiles.map((p) => p.replace('{subject}', subject));
+  if (subject === 'physics') files.push('../data/topics-lite/math.json');
+  return files;
+}
+
+/** explore 预算检查器：给定首屏脚本 gzip + 一份 BOOT_FILES 展开文件，断言 gzip 与禁用串。 */
+function checkExploreBudget(bootFiles, scriptGz, subject) {
+  let total = scriptGz;
+  expandExploreBootFiles(bootFiles, subject).forEach((p) => {
+    FORBIDDEN.forEach((needle) => {
+      assert.ok(p.indexOf(needle) < 0, 'explore 首屏数据引用了禁用的数据文件：' + p);
+    });
+    assert.ok(p.startsWith('../data/'), 'explore BOOT_FILES 只能含 ../data/ 下的同源文件：' + p);
+    total += gzipBytes(dataPath(p));
+  });
+  assert.ok(total <= BUDGET_LIMIT, subject + ' explore 首屏 gzip ' + total + 'B 超过预算 ' + BUDGET_LIMIT + 'B（' + (total / 1024).toFixed(1) + 'KB）');
+  return total;
+}
+
+/** explore 守恒检查器：逐学科 lite 条数=全量过滤；边按 app 的 allow 过滤后=全量过滤；总数固定。 */
+function checkExploreConservation(liteBySubject, depsBySubject) {
+  const topics = JSON.parse(fs.readFileSync(TOPICS_PATH, 'utf8'));
+  const depsAll = JSON.parse(fs.readFileSync(DEPS_PATH, 'utf8'));
+  const byId = new Map();
+  topics.forEach((t) => { if (t && t.id) byId.set(t.id, t); });
+  let nodes = 0;
+  let edges = 0;
+  SUBJECTS.forEach((s) => {
+    const lite = liteBySubject[s];
+    assert.ok(Array.isArray(lite), '缺学科 ' + s + ' 的 lite 数组');
+    const fullCount = topics.filter((t) => subjectOf(t) === s).length;
+    assert.strictEqual(lite.length, fullCount, s + ' explore lite 条数 ' + lite.length + ' ≠ 全量过滤 ' + fullCount);
+    nodes += lite.length;
+    /* 复刻 explore/app.js 的 load()：allow = 本学科全部 lite id，边两端都命中才算。 */
+    const allow = {};
+    lite.forEach((t) => { allow[t.id] = true; });
+    const arr = depsBySubject[s];
+    assert.ok(Array.isArray(arr), '缺学科 ' + s + ' 的边数组');
+    const appDeps = arr.filter((e) => allow[e.topicId] && allow[e.prerequisiteId]);
+    const expect = filterBySubject(depsAll, s, byId).filter((e) => allow[e.topicId] && allow[e.prerequisiteId]);
+    assert.deepStrictEqual(appDeps, expect, s + ' explore 边（allow 过滤后）应等于全量过滤结果');
+    edges += appDeps.length;
+  });
+  assert.strictEqual(nodes, 2997, 'explore 各学科 lite 节点和应为 2997，实际 ' + nodes);
+  assert.strictEqual(edges, 4456, 'explore 各学科边和应为 4456，实际 ' + edges);
+}
+
+test('explore/index.html：同源首屏脚本恰好是 app/stats-config/stats/pwa/lazyload 五件（无渲染库 vendor）', function () {
+  assert.deepStrictEqual(EXPLORE_SCRIPTS,
+    ['../assets/pwa.js', '../assets/stats-config.js', '../assets/stats.js', '../diagnose/lazyload.js', 'app.js'],
+    'explore 首屏脚本应为这五个，渲染库必须移除：' + EXPLORE_SCRIPTS.join(','));
+});
+
+test('explore/app.js：BOOT_FILES 清单正确，逐学科首屏 gzip ≤ 80KB', function () {
+  const bootFiles = extractBootFiles(EXPLORE_APP);
+  assert.deepStrictEqual(bootFiles,
+    ['../data/topics-lite/{subject}.json', '../data/dependencies/{subject}.json', '../data/id-aliases.json'],
+    'explore BOOT_FILES 应为 topics-lite + dependencies + id-aliases（保留 {subject} 字面量）');
+  let maxGz = -1;
+  SUBJECTS.forEach((s) => {
+    const total = checkExploreBudget(bootFiles, EXPLORE_SCRIPT_GZ, s);
+    if (total > maxGz) maxGz = total;
+    console.log('    explore ' + s.padEnd(9) + ' 首屏 gzip ' + (total / 1024).toFixed(1) + ' KB');
+  });
+  assert.ok(maxGz >= 0, 'explore 首屏为空');
+});
+
+test('explore/app.js：不再首屏 fetch 全量 topics/dependencies/questions，课标只在懒加载路径出现一次', function () {
+  ['../data/questions.json', '../data/topics.json', '../data/dependencies.json'].forEach((needle) => {
+    assert.ok(EXPLORE_APP.indexOf(needle) < 0, 'explore/app.js 不应再 fetch 全量文件：' + needle);
+  });
+  const stdRefs = EXPLORE_APP.split('../data/cn-curriculum-standards.json').length - 1;
+  assert.strictEqual(stdRefs, 1, '课标文件应在 app.js 只出现一次（懒加载路径），实际 ' + stdRefs);
+  extractBootFiles(EXPLORE_APP).forEach((p) => {
+    assert.ok(p.indexOf('cn-curriculum-standards') < 0, '课标不应在 BOOT_FILES 里：' + p);
+  });
+});
+
+test('explore 守恒：逐学科 lite 条数=全量过滤，边（allow 过滤后）=全量过滤，总数 2997/4456', function () {
+  const lite = {};
+  const dep = {};
+  SUBJECTS.forEach((s) => {
+    lite[s] = JSON.parse(fs.readFileSync(path.join(DATA, 'topics-lite', s + '.json'), 'utf8'));
+    dep[s] = JSON.parse(fs.readFileSync(path.join(DATA, 'dependencies', s + '.json'), 'utf8'));
+  });
+  checkExploreConservation(lite, dep);
+});
+
+test('explore 渲染库：index.html 无 vendor 脚本，app.js 用 Lazy.load 懒加载三个 vendor', function () {
+  ['assets/vendor/cytoscape.min.js', 'assets/vendor/dagre.min.js', 'assets/vendor/cytoscape-dagre.js'].forEach((v) => {
+    assert.ok(EXPLORE_HTML.indexOf(v) < 0, 'explore/index.html 不应再直接引用 ' + v);
+  });
+  assert.ok(EXPLORE_HTML.indexOf('../diagnose/lazyload.js') >= 0, 'explore/index.html 应引入 ../diagnose/lazyload.js');
+  assert.ok(/Lazy\.load\(\s*\[/.test(EXPLORE_APP), 'explore/app.js 应调用 Lazy.load 数组形式');
+  ['../assets/vendor/cytoscape.min.js', '../assets/vendor/dagre.min.js', '../assets/vendor/cytoscape-dagre.js'].forEach((v) => {
+    assert.ok(EXPLORE_APP.indexOf(v) >= 0, 'explore/app.js 应通过 Lazy.load 引用 ' + v);
+  });
+});
+
 /* ------------------------------------------------ H. 自检（checker 有效性） */
 
 test('自检1：把 questions.json 注入 BOOT_FILES，预算 + 禁用串 checker 必须报红', function () {
@@ -462,6 +584,28 @@ test('自检2：删掉某学科 lite 10 行，conservation checker 必须报红'
   let threw = false;
   try { checkLiteConservation(dirty); } catch (e) { threw = true; }
   assert.ok(threw, '删 10 行后 checkLiteConservation 必须报红');
+});
+
+test('自检3：把 questions.json 注入 explore BOOT_FILES，预算 checker 必须报红', function () {
+  const bootFiles = extractBootFiles(EXPLORE_APP);
+  const dirty = bootFiles.concat(['../data/questions.json']);
+  let threw = false;
+  try { checkExploreBudget(dirty, EXPLORE_SCRIPT_GZ, 'math'); } catch (e) { threw = true; }
+  assert.ok(threw, '注入 questions.json 后 checkExploreBudget 必须抛错');
+});
+
+test('自检4：删掉某学科 dependencies 10 行，explore conservation checker 必须报红', function () {
+  const lite = {};
+  const dep = {};
+  SUBJECTS.forEach((s) => {
+    lite[s] = JSON.parse(fs.readFileSync(path.join(DATA, 'topics-lite', s + '.json'), 'utf8'));
+    dep[s] = JSON.parse(fs.readFileSync(path.join(DATA, 'dependencies', s + '.json'), 'utf8'));
+  });
+  const dirty = {};
+  SUBJECTS.forEach((s) => { dirty[s] = s === 'math' ? dep[s].slice(10) : dep[s]; });
+  let threw = false;
+  try { checkExploreConservation(lite, dirty); } catch (e) { threw = true; }
+  assert.ok(threw, '删 10 行后 checkExploreConservation 必须报红');
 });
 
 console.log('\n' + (failed === 0 ? '全部通过' : '存在失败') + '：' + passed + ' passed, ' + failed + ' failed');

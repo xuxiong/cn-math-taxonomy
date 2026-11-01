@@ -23,6 +23,12 @@
   var pre = new Map();
   var post = new Map();
   var stdById = new Map();
+  var stdLoaded = false;
+  var stdLoadPromise = null;
+  var detailIndexCache = {};
+  var detailBundleCache = {};
+  var questionBundleCache = {};
+  var libsPromise = null;
   var mathNames = {};
   var selected = null;
   var currentAlias = null;
@@ -40,6 +46,10 @@
   var dagreReady = false;
   var FOLD_AT = 40;
   var questionsByTopic = new Map();
+  /* 首屏机器清单：只列首屏前 fetch 的同源数据文件。tests/test_payload_budget.js 会按此
+   * 逐学科核 gzip 预算（≤80KB，8-10KB/s 链路约 8s）。{subject} 保留为字面量，
+   * 物理额外还要一份数学的 lite 行做 mathLinks 的名字，见 load()。 */
+  var BOOT_FILES = ['../data/topics-lite/{subject}.json', '../data/dependencies/{subject}.json', '../data/id-aliases.json'];
 
   function $(id) { return document.getElementById(id); }
 
@@ -100,6 +110,119 @@
     });
     nodes.push(box);
     return nodes;
+  }
+
+  /* ------------------------------------------------ 详情重字段 / 样题 / 课标 的按需加载
+   * 首屏只带 topics-lite（无 description 等重字段）。点开详情先立刻渲染 lite 面板（年级 /
+   * 领域 / 类型 / 章节 / 先修 / 被依赖），再按 (学科,年级,章节) 从 topics-detail/<slug>.json
+   * 拉回重字段合并进内存对象；样题和课标正文再各自按需拉。任何失败都静默，保留 lite 面板，
+   * 绝不退回到全量文件。 */
+
+  /** 详情索引：<subject>|<grade>|<chapter> → <slug>.json。每次页面加载只请求一次，内存缓存。 */
+  function ensureDetailIndex() {
+    if (detailIndexCache[subject]) return detailIndexCache[subject];
+    detailIndexCache[subject] = fetch('../data/questions-index/' + subject + '.json').then(function (response) {
+      if (!response.ok) throw new Error('题库索引 ' + response.status);
+      return response.json();
+    });
+    return detailIndexCache[subject];
+  }
+
+  /** 由 lite 行算 (学科,年级,章节) 的索引 key（与 build-questions-split 的 keyOf 同构）。 */
+  function topicBundleKey(topic) {
+    return subject + '|' + String(topic.grade) + '|' + String((topic && topic.chapter) || '');
+  }
+
+  /** 取某 (学科,年级,章节) 的重字段 bundle，按 slug 缓存。 */
+  function fetchDetailBundle(slug) {
+    if (!detailBundleCache[slug]) {
+      detailBundleCache[slug] = fetch('../data/topics-detail/' + slug).then(function (response) {
+        if (!response.ok) throw new Error('详情 ' + response.status);
+        return response.json();
+      });
+    }
+    return detailBundleCache[slug];
+  }
+
+  /** 取某 (学科,年级,章节) 的样题 bundle，按 slug 缓存。 */
+  function fetchQuestionsBundle(slug) {
+    if (!questionBundleCache[slug]) {
+      questionBundleCache[slug] = fetch('../data/questions/' + slug).then(function (response) {
+        if (!response.ok) throw new Error('样题 ' + response.status);
+        return response.json();
+      });
+    }
+    return questionBundleCache[slug];
+  }
+
+  /** 课标正文：只有详情确实有 standards 条目时才拉，每次页面加载最多一次。 */
+  function ensureStandards() {
+    if (stdLoadPromise) return stdLoadPromise;
+    stdLoadPromise = fetch('../data/cn-curriculum-standards.json')
+      .then(function (response) {
+        if (!response.ok) throw new Error('课标 ' + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        (data.items || []).forEach(function (item) { stdById.set(item.id, item); });
+        stdLoaded = true;
+      })
+      .catch(function () { stdLoadPromise = null; }); /* 失败静默：保留其余面板，下次详情再试 */
+    return stdLoadPromise;
+  }
+
+  /** 把样题 bundle 里属于该知识点的那几题放进 questionsByTopic（topicId → 数组），到了就重绘。 */
+  function loadQuestionsFor(topic) {
+    if (!topic || questionsByTopic.has(topic.id)) return;
+    questionsByTopic.set(topic.id, []); /* 先占位，避免重复请求；sampleFigureNodes 读到空数组 */
+    ensureDetailIndex().then(function (index) {
+      var slug = index[topicBundleKey(topic)];
+      if (!slug) return;
+      return fetchQuestionsBundle(slug).then(function (rows) {
+        var mine = [];
+        (rows || []).forEach(function (q) { if (q && q.topicId === topic.id) mine.push(q); });
+        questionsByTopic.set(topic.id, mine);
+        renderDetail();
+      });
+    }).catch(function () { /* 样题读不到，面板仍可用 */ });
+  }
+
+  /** 详情重字段按需合并：拉到重字段/样题/课标都就位后，整块重绘一次。 */
+  function ensureDetail(topic) {
+    if (!topic || topic.__detail) return;
+    ensureDetailIndex().then(function (index) {
+      var slug = index[topicBundleKey(topic)];
+      if (!slug) return;
+      return fetchDetailBundle(slug).then(function (entries) {
+        var heavy = null;
+        for (var i = 0; i < entries.length; i++) {
+          if (entries[i].id === topic.id) { heavy = entries[i]; break; }
+        }
+        if (!heavy) return;
+        topic.__detail = true;
+        ['description', 'mastery_criteria', 'diagnostic_question', 'standards', 'root_reason', 'mathLinks'].forEach(function (field) {
+          if (field in heavy) topic[field] = heavy[field];
+        });
+        if (Array.isArray(topic.standards) && topic.standards.length) return ensureStandards();
+      });
+    }).then(function () {
+      if (topic && topic.__detail) { renderDetail(); loadQuestionsFor(topic); }
+    }).catch(function () { /* 任何失败都静默，保留 lite 面板 */ });
+  }
+
+  /** 渲染库（cytoscape + dagre + 布局）按需加载：用 explore 页已有的 Lazy.load 注入。 */
+  function ensureRenderLibs() {
+    if (libsPromise) return libsPromise;
+    if (window.cytoscape && window.dagre && window.cytoscapeDagre) {
+      libsPromise = Promise.resolve();
+    } else {
+      libsPromise = Lazy.load(['../assets/vendor/cytoscape.min.js', '../assets/vendor/dagre.min.js', '../assets/vendor/cytoscape-dagre.js'])
+        .then(function () {
+          window.cytoscape.use(window.cytoscapeDagre);
+          dagreReady = true;
+        });
+    }
+    return libsPromise;
   }
 
   function stageKind(grade) {
@@ -286,7 +409,9 @@
     if (grade && String(topic.grade) !== grade) return false;
     if (domain && topic.domain !== domain) return false;
     if (query) {
-      var blob = (topic.name + '\n' + topic.description + '\n' + (topic.chapter || '') + '\n' + topic.id + '\n' + topic.domain).toLowerCase();
+      /* 搜索不再索引描述正文：lite 行不含 description，若带上来每学科要多约 330KB gz
+       * 的正文（8-10KB/s 链路近 3s），而详情面板在 ensureDetail 到达后仍会展示完整描述。 */
+      var blob = (topic.name + '\n' + (topic.chapter || '') + '\n' + topic.id + '\n' + topic.domain).toLowerCase();
       if (blob.indexOf(query) < 0 && !aliasHitIds.has(topic.id)) return false;
     }
     return true;
@@ -445,15 +570,19 @@
         el('ul', { class: 'plain' }, topic.mastery_criteria.map(function (item) { return el('li', { text: item }); }))));
     }
 
-    var standards = topic.standards || [];
-    var standardNodes = standards.length ? standards.map(function (entry) {
-      var item = stdById.get(entry.id);
-      return el('div', { class: 'std' },
-        el('div', { class: 'std-id' }, el('code', { text: entry.id }), ' · ' + (entry.confidence === 'exact' ? '直接对应' : '推断对应')),
-        el('p', { text: item ? item.text : '（课标文件中找不到该条目）' }),
-        entry.note ? el('p', { class: 'muted', text: '说明：' + entry.note }) : null);
-    }) : [el('p', { class: 'muted', text: '没有对应的课标条目。' })];
-    parts.push(el('section', null, el('h2', { text: '课标条目' }), standardNodes));
+    /* 课标区块：lite 阶段 topic.standards 还是 undefined（重字段要等 ensureDetail 拉回）。
+     * 此时整块先不渲染，避免误报「没有对应的课标条目」；ensureDetail 合并完再重绘。 */
+    if (topic.standards !== undefined) {
+      var standards = topic.standards || [];
+      var standardNodes = standards.length ? standards.map(function (entry) {
+        var item = stdById.get(entry.id);
+        return el('div', { class: 'std' },
+          el('div', { class: 'std-id' }, el('code', { text: entry.id }), ' · ' + (entry.confidence === 'exact' ? '直接对应' : '推断对应')),
+          el('p', { text: item ? item.text : (stdLoaded ? '（课标文件中找不到该条目）' : '（课标正文暂未加载）') }),
+          entry.note ? el('p', { class: 'muted', text: '说明：' + entry.note }) : null);
+      }) : [el('p', { class: 'muted', text: '没有对应的课标条目。' })];
+      parts.push(el('section', null, el('h2', { text: '课标条目' }), standardNodes));
+    }
 
     if (topic.mathLinks && topic.mathLinks.length) {
       parts.push(el('section', null,
@@ -490,6 +619,7 @@
 
     box.replaceChildren.apply(box, parts);
     document.title = topic.name + ' · 知识图谱';
+    if (topic && !topic.__detail) ensureDetail(topic);
   }
 
   function upstream(id, depth) {
@@ -546,15 +676,6 @@
     if (y + tipH > stageRect.height - 4) y = Math.max(4, stageRect.height - tipH - 4);
     tip.style.left = left + 'px';
     tip.style.top = y + 'px';
-  }
-
-  function ensureDagre() {
-    if (dagreReady) return;
-    if (!window.cytoscape || !window.dagre || !window.cytoscapeDagre) {
-      throw new Error('图形库没有加载');
-    }
-    window.cytoscape.use(window.cytoscapeDagre);
-    dagreReady = true;
   }
 
   function topicElement(id, colors) {
@@ -729,8 +850,13 @@
     var kick = heavy ? function (fn) { setTimeout(fn, 40); } : requestAnimationFrame;
     kick(function () {
       if (token !== graphToken) return;
-      try {
-        ensureDagre();
+      if (!window.cytoscape || !window.dagre || !window.cytoscapeDagre) {
+        // 首绘前渲染库还没下：先给一行提示（慢网约 180KB，可能十几秒），列表/详情不受影响
+        meta.textContent = '正在加载渲染库…（首次约 180KB，慢网需十几秒）';
+      }
+      ensureRenderLibs().then(function () {
+        if (token !== graphToken) return;
+        try {
         if (cyEl.clientHeight < 40) cyEl.style.minHeight = '420px';
         var colors = theme();
         var narrow = labelLimit() <= 8;
@@ -812,10 +938,15 @@
           });
         });
         layout.run();
-      } catch (error) {
+        } catch (error) {
+          cyEl.dataset.ready = 'err';
+          meta.textContent = '图没有画出来：' + (error && error.message ? error.message : error);
+        }
+      }, function (error) {
+        if (token !== graphToken) return;
         cyEl.dataset.ready = 'err';
-        meta.textContent = '图没有画出来：' + (error && error.message ? error.message : error);
-      }
+        meta.textContent = '渲染库加载失败：' + (error && error.message ? error.message : error) + '。可稍后重试。';
+      });
     });
   }
 
@@ -1232,39 +1363,29 @@
     }
   }
 
-  async function loadQuestions() {
-    questionsByTopic = new Map();
-    try {
-      var response = await fetch('../data/questions.json');
-      if (!response.ok) return;
-      var rows = await response.json();
-      if (!Array.isArray(rows)) return;
-      rows.forEach(function (q) {
-        if (!q || !q.topicId) return;
-        var bucket = questionsByTopic.get(q.topicId);
-        if (!bucket) questionsByTopic.set(q.topicId, bucket = []);
-        bucket.push(q);
-      });
-    } catch (e) { /* 题库读不到时，样题只显示原来的文字 */ }
-  }
-
   async function load() {
-    var files = ['topics.json', 'dependencies.json', 'id-aliases.json', 'cn-curriculum-standards.json'];
-    var responses = await Promise.all(files.map(function (file) { return fetch('../data/' + file); }));
+    /* 首屏只取 BOOT_FILES 展开后的三份：当前学科 topics-lite（轻量行）+ 当前学科先修边
+     * + 旧编号别名表。物理额外再取一份数学 lite 做 mathLinks 的名字。
+     * 8-10KB/s 链路下这几份加起来 ≤80KB gz（见 tests/test_payload_budget.js），不再首屏拉
+     * topics.json(337KB gz) / dependencies.json(112KB) / cn-curriculum-standards(45KB) /
+     * questions.json(1246KB)，它们都改到详情面板按需加载。 */
+    var files = BOOT_FILES.map(function (p) { return p.replace('{subject}', subject); });
+    if (subject === 'physics') files.push('../data/topics-lite/math.json');
+    var responses = await Promise.all(files.map(function (file) { return fetch(file); }));
     responses.forEach(function (response, responseIndex) {
       if (!response.ok) throw new Error(files[responseIndex] + ' HTTP ' + response.status);
     });
     var json = await Promise.all(responses.map(function (response) { return response.json(); }));
-    topics = json[0].filter(function (topic) { return topicSubject(topic) === subject; });
+    /* 展开顺序固定：files[0]=本学科 lite，files[1]=本学科边，files[2]=别名；物理 files[3]=数学 lite */
+    topics = json[0];
     mathNames = {};
     if (subject === 'physics') {
-      json[0].forEach(function (topic) { if (topicSubject(topic) === 'math') mathNames[topic.id] = topic.name; });
+      json[3].forEach(function (topic) { mathNames[topic.id] = topic.name; });
     }
     var allow = {};
     topics.forEach(function (topic) { allow[topic.id] = true; });
     deps = json[1].filter(function (edge) { return allow[edge.topicId] && allow[edge.prerequisiteId]; });
     aliases = (json[2] && json[2].aliases) || {};
-    (json[3].items || []).forEach(function (item) { stdById.set(item.id, item); });
     topics.forEach(function (topic, topicIndex) {
       byId.set(topic.id, topic);
       indexOf.set(topic.id, topicIndex);
@@ -1292,7 +1413,7 @@
   syncDepthButtons();
   applyQuery();
   bind();
-  load().then(function () { return loadQuestions(); }).then(function () {
+  load().then(function () {
     fillDomain();
     syncControls();
     renderList();
