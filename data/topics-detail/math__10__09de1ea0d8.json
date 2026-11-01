@@ -1,0 +1,1 @@
+[{"id":"cnm_h038","description":"能把单价、路程等简单数量关系写成函数，并求值。","mastery_criteria":["能指出自变量和函数值","能用解析式回答具体问题"],"diagnostic_question":{"question":"每本笔记本 4 元，买 x 本的金额 f(x)=4x。买 6 本多少元？","answer":"24"},"standards":[{"id":"cms-2017:H.FUN.11","confidence":"inferred","note":"本章先用一次、二次对应做简单应用，完整的模型选择在函数应用。待核。"}]}]

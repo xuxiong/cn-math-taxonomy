@@ -1,0 +1,1 @@
+[{"id":"cnm_030","description":"观察数列或图形序列，归纳第 n 项的代数式。","mastery_criteria":["能写出简单规律的通项","能用代数式预测第 n 项的值"],"diagnostic_question":{"question":"数列 3，5，7，9，… 的第 n 项是多少？","answer":"2n+1"},"standards":[{"id":"cms-2022:4.NA.15","confidence":"inferred","note":"用代数式表示规律属于“分析数量关系并用代数式表示”的延伸"}]}]

@@ -1,0 +1,1 @@
+[{"id":"cnp_004","description":"会用刻度尺和停表（或传感器）测量物体运动的平均速度，知道实验原理是 v = s/t，能分析斜面上小车前后半程的速度变化。","mastery_criteria":["能说出测平均速度的原理和器材","会根据测量数据计算各段的平均速度","知道小车沿斜面下滑时速度越来越大"],"diagnostic_question":{"question":"测量小车沿斜面下滑的平均速度，实验原理是什么？","answer":"v = s/t"},"standards":[{"id":"cps-2022:4.1.5","confidence":"exact"},{"id":"cps-2022:2.2.2","confidence":"inferred"}]}]

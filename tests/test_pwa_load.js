@@ -125,7 +125,7 @@ test('app.js：loadData 的首屏链里不出现题库（源码级守卫，无 D
   assert.strictEqual(body.indexOf('questions.json'), -1, 'loadData 里不许再出现 questions.json');
   assert.ok(!/await[^\n]*questions/.test(body), 'loadData 里不许 await 题库');
   assert.ok(/loadQuestions\(\);/.test(body), 'loadData 末尾应调用 loadQuestions()（不 await）');
-  assert.ok(/E\.buildGraph\(topics, deps, null\)/.test(body), '首屏图应先用 buildGraph(topics, deps, null) 回退到 diagnostic_question');
+  assert.ok(/Ch\.buildGraph\(topics, deps, null\)/.test(body), '首屏图应先用 buildGraph(topics, deps, null) 回退到 diagnostic_question');
 });
 
 test('app.js：题库后台到货后重建 D.graph，用户进了流程就不重绘', function () {
@@ -134,9 +134,9 @@ test('app.js：题库后台到货后重建 D.graph，用户进了流程就不重
   assert.ok(!/await\s+loadQuestions\(/.test(loadBody), 'loadData 不许 await loadQuestions()');
   const body = bodyAfter(APP, 'async function loadQuestions()');
   assert.ok(/await fetch\('\.\.\/data\/questions\.json'\)/.test(body), 'loadQuestions 才去取题库');
-  assert.ok(/D\.graph = E\.buildGraph\(D\.topics, D\.deps, questions\)/.test(body), '到货后要用 buildGraph 重建 D.graph');
-  assert.ok(/if \(session \|\| prac \|\| pracLoading\) return;/.test(body), '已进入诊断/讲解/自评时不许重绘');
-  assert.ok(/renderStart\(startErr\)/.test(body), '未进入流程时应静默重绘一次当前视图（并保住开始页错误提示）');
+  assert.ok(/(?:S\.)?D\.graph = Ch\.buildGraph\((?:S\.)?D\.topics, (?:S\.)?D\.deps, questions\)/.test(body), '到货后要用 buildGraph 重建 D.graph');
+  assert.ok(/if \((?:S\.)?session \|\| (?:S\.)?prac \|\| (?:S\.)?pracLoading\) return;/.test(body), '已进入诊断/讲解/自评时不许重绘');
+  assert.ok(/renderStart\((?:S\.)?startErr\)/.test(body), '未进入流程时应静默重绘一次当前视图（并保住开始页错误提示）');
 });
 
 test('app.js：题库失败的回退路径仍在（questions = null + 首屏照常渲染）', function () {

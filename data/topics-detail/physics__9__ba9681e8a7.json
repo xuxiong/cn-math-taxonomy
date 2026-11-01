@@ -1,0 +1,1 @@
+[{"id":"cnp_064","description":"探究并了解串联电路中电流处处相等，并联电路中干路电流等于各支路电流之和。","mastery_criteria":["知道串联电路电流处处相等","知道并联电路干路电流等于各支路电流之和","能用规律求未知电流"],"diagnostic_question":{"question":"两只不同的灯泡串联，通过它们的电流有什么关系？","answer":"相等"},"standards":[{"id":"cps-2022:3.4.4","confidence":"exact"},{"id":"cps-2022:4.2.11","confidence":"exact"}]}]

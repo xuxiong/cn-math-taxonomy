@@ -1,0 +1,1 @@
+[{"id":"cnp_039","description":"了解活塞式抽水机利用大气压把水抽上来的原理，动手制作简易抽水机，知道它能把水抽高的高度受大气压限制。","mastery_criteria":["能说出活塞式抽水机的工作原理","知道在 1 个标准大气压下抽水高度约为 10 m"],"diagnostic_question":{"question":"活塞式抽水机是利用什么把水抽上来的？","answer":"大气压"},"standards":[{"id":"cps-2022:5.2.2","confidence":"exact"},{"id":"cps-2022:2.2.8","confidence":"inferred"}]}]

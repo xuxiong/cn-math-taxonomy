@@ -1,0 +1,1 @@
+[{"id":"cnp_043","description":"知道物体的浮沉条件（比较 F浮 与 G，或 ρ物 与 ρ液），知道漂浮时 F浮 = G，了解轮船、潜水艇、气球、密度计的原理。","mastery_criteria":["能用浮力与重力或密度比较判断浮沉","知道漂浮、悬浮时 F浮 = G","能说出潜水艇靠改变自身重力实现浮沉"],"diagnostic_question":{"question":"实心物体的密度小于液体密度时，放入液体中最终会怎样？","answer":"漂浮"},"standards":[{"id":"cps-2022:2.2.9","confidence":"exact"}]}]

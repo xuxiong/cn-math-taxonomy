@@ -1,0 +1,1 @@
+[{"id":"cnm_219","description":"只含一个未知数、未知数最高次数为 2 的整式方程叫一元二次方程，一般形式 ax²+bx+c=0（a≠0）。","mastery_criteria":["能判断一元二次方程","能指出二次项系数、一次项系数和常数项"],"diagnostic_question":{"question":"x²-5x+6=0 的二次项系数、一次项系数、常数项分别是什么？","answer":"1，-5，6"},"standards":[{"id":"cms-2022:4.NA.27","confidence":"inferred","note":"一元二次方程的概念是解法的前提，课标未单列"}]}]

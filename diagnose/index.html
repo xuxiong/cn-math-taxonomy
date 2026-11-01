@@ -62,7 +62,7 @@
       <input type="search" class="search-lg" id="search" placeholder="正在载入…" autocomplete="off" aria-label="搜索知识点" disabled>
       <p class="muted small" id="match-count"></p>
       <div class="skel" aria-hidden="true"><span class="skel-bar"></span><span class="skel-bar"></span><span class="skel-bar skel-short"></span></div>
-      <p class="muted small">知识点清单大约 60KB，弱网几秒；题目和说明在后台接着装，不影响你选。</p>
+      <p class="muted small">知识点清单按学科约十几 KB，弱网几秒；题目和说明在后台接着装，不影响你选。</p>
     </div>
   </div>
 </main>
@@ -70,52 +70,21 @@
   <p><a href="https://github.com/xuxiong/cn-math-taxonomy/issues/new/choose">提交 Issue</a></p>
   <p>内容许可 <a href="../LICENSE">CC BY-NC 4.0</a> · 基于 <a href="https://github.com/xiaoyang111222/cn-math-taxonomy">xiaoyang111222/cn-math-taxonomy</a> 修改</p>
 </footer>
-<script src="llm-config.js"></script>
-<script>
-/* 未配置模型时的引导横幅：只在非 localhost 的静态部署（如 GitHub Pages）出现。
- * llm-config.js 已先加载；localStorage 里已有完整 {base,model,key} 时不显示。 */
-(function () {
-  try {
-    if (typeof LLMConfig === 'undefined' || !LLMConfig) return;
-    if (LLMConfig.isConfigured()) return;
-    if (typeof location === 'undefined' || !location) return;
-    var host = location.hostname;
-    if (host === '127.0.0.1' || host === 'localhost') return;
-    var main = document.getElementById('root');
-    if (!main || !main.parentNode) return;
-    var bar = document.createElement('div');
-    bar.className = 'banner llm-banner no-print';
-    bar.setAttribute('role', 'status');
-    var a = document.createElement('a');
-    a.href = 'settings.html';
-    a.textContent = '还没设置模型 → 点这里设置';
-    var close = document.createElement('button');
-    close.type = 'button';
-    close.className = 'llm-banner-close';
-    close.setAttribute('aria-label', '关闭提示');
-    close.textContent = '×';
-    close.onclick = function () { if (bar.parentNode) bar.parentNode.removeChild(bar); };
-    bar.appendChild(a);
-    bar.appendChild(close);
-    main.parentNode.insertBefore(bar, main);
-  } catch (e) { /* 引导横幅失败不影响主流程 */ }
-})();
-</script>
-<script src="engine.js"></script>
-<script src="../assets/children.js"></script>
-<script src="../assets/blindspots.js"></script>
-<!-- lazyload.js 必须在 app.js 之前：app.js 里的使用点靠 window.Lazy 按需注入。
-     下面这些模块不进首屏链（首屏脚本 403KB → ≈85KB），由 app.js 用到时才 Lazy.load：
-       explain.js                                   进讲解面板
-       funclab.js / geomlab.js / labmatch.js / chatgraph.js   挂画板、追问带图
-       variants.js / llm-eval.js / llm-gateway.js / llm-variants.js  点「练习」
-       ../assets/vendor/qrcode.js / share.js        生成分享图
-       ../assets/vendor/cytoscape.min.js / dagre.min.js / cytoscape-dagre.js  画先修路径图 -->
+<!-- 首屏脚本链（预算 45KB 级）：只留「骨架 + 搜索 + 知识点列表 + 进入流程的入口」必需的三件。
+       chapter.js      首屏纯函数层（parseChapter/subjectOf/buildGraph/gradeTargets + 题量常量）
+       lazyload.js     必须在本文件之后、app.js 之前：app.js 的按需加载全靠 window.Lazy
+       app.js          骨架 / 列表 / 题源门（按需段在 app-flow.js，见下）
+     其余全部不在首屏链上，由 app.js 用 Lazy.load 按需注入：
+       engine.js                     真正要出题 / 出图时才载（首屏列表不依赖它）
+       app-flow.js                    出题 / 结果 / 分享 / 练习 / 路径图（engine.js 之后）
+       ../assets/children.js / blindspots.js     孩子档案栏、薄弱点卡（首屏之后补）
+       llm-config.js / explain.js / funclab.js / geomlab.js / labmatch.js / chatgraph.js
+       variants.js / llm-eval.js / llm-gateway.js / llm-variants.js
+       ../assets/vendor/{cytoscape,dagre,cytoscape-dagre}.min.js、qrcode.js / share.js
+       ../assets/stats-config.js / stats.js / pwa.js   统计与安装提示 -->
+<script src="chapter.js"></script>
 <script src="lazyload.js"></script>
 <script src="app.js"></script>
-<script src="../assets/stats-config.js"></script>
-<script src="../assets/stats.js"></script>
-<script src="../assets/pwa.js"></script>
 <!-- 匿名访问统计（Umami，不采集 URL 参数）见 docs/fork-divergences.md 第 9 条 -->
 <script defer src="https://cloud.umami.is/script.js"
         data-website-id="1ddb50a4-8c63-4e7a-b2fb-228a59943c5e"

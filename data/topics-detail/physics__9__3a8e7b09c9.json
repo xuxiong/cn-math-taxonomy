@@ -1,0 +1,1 @@
+[{"id":"cnp_069","description":"运用电路连接和变阻器知识设计并制作简易调光台灯，分析滑片位置与灯泡亮度的关系，注意用电安全。","mastery_criteria":["能画出调光台灯的电路图（灯与变阻器串联）","能分析滑片移动时灯泡亮度变化"],"diagnostic_question":{"question":"简易调光台灯中，灯泡和滑动变阻器应怎样连接？","answer":"串联"},"standards":[{"id":"cps-2022:5.1.1","confidence":"exact"},{"id":"cps-2022:3.4.4","confidence":"inferred"}]}]

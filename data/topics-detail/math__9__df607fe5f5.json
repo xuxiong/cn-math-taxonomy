@@ -1,0 +1,1 @@
+[{"id":"cnm_226","description":"若 x₁、x₂ 是 ax²+bx+c=0 的两根，则 x₁+x₂=-b/a，x₁x₂=c/a（课标仅要求“了解”，见例67）。","mastery_criteria":["能由求根公式推出关系","能用于求对称式的值"],"diagnostic_question":{"question":"x²-5x+6=0 两根之和与积分别是多少？","answer":"5；6"},"standards":[{"id":"cms-2022:4.NA.29","confidence":"exact"}]}]

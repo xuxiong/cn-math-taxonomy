@@ -1,0 +1,1 @@
+[{"id":"cnm_089","description":"把一个方程变形用一个未知数表示另一个，代入另一个方程消元，转化为一元一次方程。","mastery_criteria":["能选择便于代入的方程","能正确求出方程组的解"],"diagnostic_question":{"question":"解 {y=2x, x+y=9}。","answer":"x=3，y=6"},"standards":[{"id":"cms-2022:4.NA.25","confidence":"exact"}]}]

@@ -1,0 +1,1 @@
+[{"id":"cnp_051","description":"知道定滑轮不省力但能改变力的方向，动滑轮能省一半力但费距离；会分析滑轮组的承重绳子段数，F = (G物 + G动)/n，s = nh。","mastery_criteria":["能说出定滑轮、动滑轮的特点","会数滑轮组承担物重的绳子段数 n","会用 F = (G + G动)/n 和 s = nh 计算"],"diagnostic_question":{"question":"旗杆顶部的滑轮是什么滑轮？它有什么作用？","answer":"定滑轮，改变力的方向"},"standards":[{"id":"cps-2022:2.2.6","confidence":"exact"}]}]

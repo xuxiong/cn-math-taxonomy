@@ -1,0 +1,1 @@
+[{"id":"cnp_042","description":"知道阿基米德原理：浸在液体中的物体受到向上的浮力，大小等于它排开液体所受的重力，F浮 = G排 = ρ液 g V排。","mastery_criteria":["能说出阿基米德原理","会用 F浮 = ρ液 g V排 计算","知道 V排 与物体体积的关系（浸没时相等）"],"diagnostic_question":{"question":"根据阿基米德原理，物体受到的浮力大小等于什么？","answer":"它排开的液体所受的重力"},"standards":[{"id":"cps-2022:2.2.9","confidence":"exact"}]}]

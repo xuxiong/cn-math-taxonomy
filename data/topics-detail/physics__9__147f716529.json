@@ -1,0 +1,1 @@
+[{"id":"cnp_068","description":"知道滑动变阻器通过改变接入电路中电阻丝的长度来改变电阻，会正确连接（一上一下）并判断滑片移动时电阻的变化；了解其在电路中的作用。","mastery_criteria":["知道滑动变阻器的原理","会“一上一下”连接并判断电阻变化","知道闭合开关前滑片应处于最大阻值处"],"diagnostic_question":{"question":"滑动变阻器是通过改变什么来改变电阻的？","answer":"接入电路中电阻丝的长度"},"standards":[{"id":"cps-2022:3.4.2","confidence":"inferred"},{"id":"cps-2022:3.4.4","confidence":"inferred"}]}]

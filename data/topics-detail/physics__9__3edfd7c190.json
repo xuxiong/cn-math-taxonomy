@@ -1,0 +1,1 @@
+[{"id":"cnp_080","description":"综合家庭电路组成、安全用电和电功率知识，为房间设计电路：确定用电器连接方式、开关和插座位置，估算总功率并选择合适的导线和保险装置。","mastery_criteria":["能设计各用电器并联、开关控制火线的电路","能根据总功率估算干路电流并选择器材"],"diagnostic_question":{"question":"某房间同时使用 1100 W 的空调和 220 W 的电视，干路电流是多少 A？（电压 220 V，只填数值）","answer":"6"},"standards":[{"id":"cps-2022:5.1.2","confidence":"exact"},{"id":"cps-2022:3.4.7","confidence":"exact"}]}]

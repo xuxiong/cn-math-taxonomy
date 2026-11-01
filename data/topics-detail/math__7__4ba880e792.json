@@ -1,0 +1,1 @@
+[{"id":"cnm_029","description":"把字母的取值代入代数式并按运算顺序计算，注意负数代入要加括号。","mastery_criteria":["能正确代入求值","能处理负数和分数的代入"],"diagnostic_question":{"question":"当 a=-2 时，求 3a²-a。","answer":"14"},"standards":[{"id":"cms-2022:4.NA.16","confidence":"exact"}]}]

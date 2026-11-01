@@ -1,0 +1,1 @@
+[{"id":"cnm_160","description":"分式相乘分子乘分子、分母乘分母；除以分式等于乘它的倒数，乘除后要约分。","mastery_criteria":["能完成分式乘除","结果化为最简"],"diagnostic_question":{"question":"计算 (a/b)÷(a²/b²)。","answer":"b/a"},"standards":[{"id":"cms-2022:4.NA.21","confidence":"exact"}]}]

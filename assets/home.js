@@ -1,6 +1,13 @@
-/* 首页：统计和年级入口都从 data/*.json 计算，不写死数量。 */
+/* 首页：统计和年级入口。首屏只取 data/stats.json + 当前学科的 data/topics-lite/<subject>.json，
+ * 不再整包拉 topics/dependencies/questions/课标（合计 gzip 约 1650KB，8-10KB/s 下首屏 30s+）。
+ * 拆分后首屏数据只剩 stats(约0.26KB gz) + 当前学科 lite(约1.3-16KB gz)，见 scripts/build-payload-split.mjs。 */
 (function () {
   'use strict';
+
+  /* 首屏机器清单：只列首屏前 fetch 的同源数据文件。tests/test_payload_budget.js 会按此
+   * 逐学科展开 {subject} 断言 gzip 预算 ≤80KB。新增首屏文件必须先加进这里、守住预算。 */
+  var BOOT_FILES = ['data/stats.json', 'data/topics-lite/{subject}.json'];
+
   var raw = location.hash.replace(/^#/, '');
   try { raw = decodeURIComponent(raw); } catch (e) { /* 保持原样 */ }
   if (/^(?:cnm|cne|cnp|cnc|cns|cnd|cnh|cng)_[A-Za-z0-9]+$/.test(raw)) return;
@@ -139,16 +146,32 @@
     box.textContent = message;
   }
 
+  /* 计数器兜底：缺/NaN/undefined 一律显示 —，绝不渲染空白或 undefined。 */
+  function dash(v) {
+    return (v === null || v === undefined || isNaN(v)) ? '—' : String(v);
+  }
 
-  function renderBlindHome(allTopics) {
+  function renderCounters(stats, lite) {
+    var per = (stats && stats.subjects && stats.subjects[subject]) || (stats && stats.total) || {};
+    var topics = per.topics != null ? per.topics : (lite && lite.length);
+    setText('n-topics', dash(topics));
+    setText('n-edges', dash(per.edges));
+    setText('n-questions', dash(per.questions));
+    setText('n-standards', dash(per.standards));
+  }
+
+  function renderBlindHome(lite) {
     var box = document.getElementById('blind-home');
     var list = document.getElementById('blind-home-list');
     var actions = document.getElementById('blind-home-actions');
     if (!box || !list || !actions || !window.CnmBlind) return;
+    /* 名称映射改用 lite 行：id+name 已含首屏所需；盲区表缺字段时优雅降级，不抛异常。 */
     var nameOf = {};
-    (allTopics || []).forEach(function (t) { nameOf[t.id] = t.name; });
-    var rows = window.CnmBlind.list({ subject: subject, limit: 8 });
-    if (!rows.length) {
+    (lite || []).forEach(function (t) { if (t && t.id) nameOf[t.id] = t.name; });
+    var rows;
+    try { rows = window.CnmBlind.list({ subject: subject, limit: 8 }); }
+    catch (e) { box.hidden = true; list.replaceChildren(); actions.replaceChildren(); return; }
+    if (!rows || !rows.length) {
       box.hidden = true;
       list.replaceChildren();
       actions.replaceChildren();
@@ -189,68 +212,14 @@
     }
   }
 
-  Promise.all([
-    fetch('data/topics.json'),
-    fetch('data/dependencies.json'),
-    fetch('data/questions.json'),
-    fetch('data/cn-curriculum-standards.json')
-  ]).then(function (responses) {
-    responses.forEach(function (response, index) {
-      if (!response.ok) throw new Error('HTTP ' + response.status);
-    });
-    return Promise.all(responses.map(function (response) { return response.json(); }));
-  }).then(function (data) {
-    var allTopics = data[0];
-    var topics = data[0];
-    var deps = data[1];
-    var questions = data[2];
-    var standards = data[3];
-    if (!Array.isArray(topics) || !Array.isArray(deps) || !Array.isArray(questions)) {
-      throw new Error('数据格式无法识别');
-    }
-    var items = standards && Array.isArray(standards.items) ? standards.items : [];
-    function subjectOfId(id) {
-      id = String(id || '');
-      if (id.indexOf('cne_') === 0) return 'english';
-      if (id.indexOf('cnp_') === 0) return 'physics';
-      if (id.indexOf('cnc_') === 0) return 'chinese';
-      if (id.indexOf('cns_') === 0) return 'science';
-      if (id.indexOf('cnd_') === 0) return 'morality';
-      if (id.indexOf('cnh_') === 0) return 'history';
-      if (id.indexOf('cng_') === 0) return 'geography';
-      return 'math';
-    }
-    function subjectOfStd(id) {
-      id = String(id || '');
-      if (id.indexOf('ces-') === 0) return 'english';
-      if (id.indexOf('cps-') === 0) return 'physics';
-      if (id.indexOf('ccs-') === 0) return 'chinese';
-      if (id.indexOf('css-') === 0) return 'science';
-      if (id.indexOf('cds-') === 0) return 'morality';
-      if (id.indexOf('chs-') === 0) return 'history';
-      if (id.indexOf('cgs-') === 0) return 'geography';
-      return 'math';
-    }
-    var wantEnglish = subject === 'english';
-    var wantPhysics = subject === 'physics';
-    var wantChinese = subject === 'chinese' || subject === 'science' || subject === 'morality';
-    var wantHistory = subject === 'history';
-    var wantGeography = subject === 'geography';
-    topics = topics.filter(function (topic) { return (topic.subject || subjectOfId(topic.id)) === subject; });
-    deps = deps.filter(function (edge) { return subjectOfId(edge.topicId) === subject; });
-    questions = questions.filter(function (question) { return subjectOfId(question.topicId) === subject; });
-    items = items.filter(function (item) { return subjectOfStd(item.id) === subject; });
-    setText('n-topics', String(topics.length));
-    setText('n-edges', String(deps.length));
-    setText('n-questions', String(questions.length));
-    setText('n-standards', String(items.length));
-
+  function renderGrades(lite) {
     var grades = document.getElementById('grades');
     if (!grades) return;
     grades.replaceChildren();
     grades.removeAttribute('aria-busy');
+    /* 每张卡只数当前学科的 lite 行，按 grade/semester 分组 —— 与拆前 topics.json 的数法逐张一致。 */
     function addCard(g, stageName, title, klass, splitText, href) {
-      var list = topics.filter(function (topic) { return topic.grade === g; });
+      var list = lite.filter(function (topic) { return topic.grade === g; });
       var link = document.createElement('a');
       link.className = 'grade-card ' + klass;
       link.href = href;
@@ -268,10 +237,15 @@
       link.append(stage, name, count, split);
       grades.append(link);
     }
+    var wantEnglish = subject === 'english';
+    var wantPhysics = subject === 'physics';
+    var wantChinese = subject === 'chinese' || subject === 'science' || subject === 'morality';
+    var wantHistory = subject === 'history';
+    var wantGeography = subject === 'geography';
     var from = wantPhysics ? 8 : (wantEnglish ? 3 : (wantHistory || wantGeography ? 7 : 1));
     var to = wantChinese ? 6 : (wantGeography ? 8 : 9);
     for (var g = from; g <= to; g++) {
-      var list = topics.filter(function (topic) { return topic.grade === g; });
+      var list = lite.filter(function (topic) { return topic.grade === g; });
       var up = list.filter(function (topic) { return topic.semester === '上'; }).length;
       var down = list.filter(function (topic) { return topic.semester === '下'; }).length;
       var whole = list.filter(function (topic) { return topic.semester === '全'; }).length;
@@ -307,8 +281,34 @@
       addCard(13, '高中', '选必二', 'is-senior', '选择性必修第二册', 'explore/?grade=13');
       addCard(14, '高中', '选必三', 'is-senior', '选择性必修第三册', 'explore/?grade=14');
     }
-    renderBlindHome(allTopics);
+  }
+
+  /* 首屏只取两份：stats.json（各学科计数） + 当前学科 topics-lite（年级卡 + 盲区名称）。
+   * 同一份 Promise 链，任一失败走统一 fail()，计数器回退为 —；fetch 本身在 8-10KB/s 下
+   * 比整包 topics/deps/questions/课标省下约 1630KB gz（≈160s 首次绘制）。 */
+  Promise.all([
+    fetch('data/stats.json'),
+    fetch('data/topics-lite/' + subject + '.json')
+  ]).then(function (responses) {
+    responses.forEach(function (response, index) {
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+    });
+    return Promise.all(responses.map(function (response) { return response.json(); }));
+  }).then(function (data) {
+    var stats = data[0];
+    var lite = data[1];
+    if (!Array.isArray(lite)) throw new Error('数据格式无法识别');
+    renderCounters(stats, lite);
+    renderGrades(lite);
+    renderBlindHome(lite);
   }).catch(function (error) {
-    fail('数据没有加载成功（' + (error && error.message ? error.message : error) + '）。请在项目根目录运行 python3 -m http.server 8000，再用浏览器打开，不要直接双击 html 文件。');
+    /* 首屏数据没到：计数器和年级卡都给占位，不空白；错误条提示重试路径（刷新即重拉）。 */
+    setText('n-topics', '—');
+    setText('n-edges', '—');
+    setText('n-questions', '—');
+    setText('n-standards', '—');
+    var grades = document.getElementById('grades');
+    if (grades) { grades.replaceChildren(); grades.removeAttribute('aria-busy'); }
+    fail('数据没有加载成功（' + (error && error.message ? error.message : error) + '）。请刷新重试；若持续失败，请在项目根目录运行 python3 -m http.server 8000，再用浏览器打开。');
   });
 })();

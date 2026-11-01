@@ -1,0 +1,1 @@
+[{"id":"cnm_p131","description":"会用假设法解决简单的鸡兔同笼问题：先假设全是鸡，再根据腿数调整。","mastery_criteria":["能说出先假设全部是鸡","能根据多出的腿数求出兔的只数"],"diagnostic_question":{"question":"鸡兔同笼用的是什么方法？","answer":"假设全部是鸡，再调整"},"standards":[{"id":"cms-2022:2.NA.10","confidence":"inferred","note":"鸡兔同笼已由四下迁入新版四上，排在复习与关联之后（川观/闪电新闻与2026秋教辅）；dzkbw 单元表未单列，待核。"}]}]

@@ -1,0 +1,1 @@
+[{"id":"cnm_084","description":"建立坐标系，用坐标表示点、线段和多边形，并求线段长及图形面积。","mastery_criteria":["能求平行于坐标轴的线段长","能用坐标求简单图形面积"],"diagnostic_question":{"question":"A(1,2)、B(1,6)，求 AB 的长。","answer":"4"},"standards":[{"id":"cms-2022:4.GG.87","confidence":"exact"}]}]

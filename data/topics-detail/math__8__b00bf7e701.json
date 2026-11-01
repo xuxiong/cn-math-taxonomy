@@ -1,0 +1,1 @@
+[{"id":"cnm_217","description":"把数据分组后用组中值估计平均数，体会分组对信息的保留与损失。","mastery_criteria":["能用组中值估计平均数","能说明估计的局限"],"diagnostic_question":{"question":"分组数据如何估计平均数？","answer":"每组组中值乘该组频数，求和后除以总频数"},"standards":[{"id":"cms-2022:4.SP.07","confidence":"inferred","note":"分组数据估计平均数基于频数分布与加权平均数，课标未单列"},{"id":"cms-2022:4.SP.04","confidence":"inferred","note":"分组数据估计平均数基于频数分布与加权平均数，课标未单列"}]}]

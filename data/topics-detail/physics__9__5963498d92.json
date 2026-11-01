@@ -1,0 +1,1 @@
+[{"id":"cnp_075","description":"知道电功率表示电流做功的快慢，P = W/t = UI；知道额定电压、额定功率和实际功率；会进行简单计算。","mastery_criteria":["会用 P = UI、P = W/t 计算","能区分额定功率和实际功率","会根据铭牌计算电流或电阻"],"diagnostic_question":{"question":"一盏灯两端电压 220 V，通过的电流为 0.2 A，它的电功率是多少 W？（只填数值）","answer":"44"},"standards":[{"id":"cps-2022:3.4.5","confidence":"exact"}]}]

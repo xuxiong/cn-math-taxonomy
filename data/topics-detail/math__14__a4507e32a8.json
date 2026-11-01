@@ -1,0 +1,1 @@
+[{"id":"cnm_h271","description":"用成对数据建立回归模型：提出问题、整理数据、估计直线，再用残差或新数据检验预测。","mastery_criteria":["能用已给直线做一次预测","能比较两个模型的残差平方和"],"diagnostic_question":{"question":"已经建立的直线是 y=3x+2。x=5 时，预测值是多少？","answer":"17"},"standards":[{"id":"cms-2017:H.MI.03","confidence":"inferred","note":"好多电子课本写成「数学模型 建立统计模型进行预测」，教师之家目录未单列。活动类型标为数学建模。待核。"}]}]

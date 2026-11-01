@@ -1,0 +1,1 @@
+[{"id":"cnm_243","description":"收集高铁运行数据，探究路程、速度、时间等量之间的函数关系。","mastery_criteria":["能整理数据并建立函数模型","能解释模型的合理性"],"diagnostic_question":{"question":"高铁速度 300 km/h，行驶路程 s km 所需时间 t 的关系？","answer":"t=s/300"},"standards":[{"id":"cms-2022:4.IP.01","confidence":"exact"}]}]

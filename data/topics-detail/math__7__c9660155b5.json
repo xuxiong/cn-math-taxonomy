@@ -1,0 +1,1 @@
+[{"id":"cnm_024","description":"认识二进制等进位制，探究不同进位制间的转换及其应用。","mastery_criteria":["能把二进制数化为十进制","能说明“逢二进一”的计数规则"],"diagnostic_question":{"question":"把二进制数 101 化为十进制数。","answer":"5"},"standards":[{"id":"cms-2022:4.IP.02","confidence":"inferred","note":"教材探究活动，课标未列进位制；仅作为数学探究活动挂靠"}]}]

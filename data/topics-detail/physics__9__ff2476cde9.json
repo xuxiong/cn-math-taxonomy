@@ -1,0 +1,1 @@
+[{"id":"cnp_065","description":"知道电压是形成电流的原因，单位伏特（V），记住一节干电池 1.5 V、家庭电路 220 V；会使用电压表：并联在被测电路两端，正进负出。","mastery_criteria":["知道常见电压值","知道电压表要并联","会进行电压单位换算"],"diagnostic_question":{"question":"我国家庭电路的电压是多少？","answer":"220 V"},"standards":[{"id":"cps-2022:3.4.2","confidence":"exact"},{"id":"cps-2022:3.4.3","confidence":"exact"},{"id":"cps-2022:4.1.8","confidence":"exact"}]}]
