@@ -641,6 +641,40 @@ function bundleFetcher(calls) {
   };
 }
 
+/* 门内章节的 bundle 先挂住不 resolve（模拟弱网），其余数据立刻返回；
+ * released 里收每次被挂住的请求，调用 release() 才算到货。 */
+function gateHoldFetcher(gateFiles, released) {
+  return function (u) {
+    if (/data\/topics\.json$/.test(u)) return okJson(TOPICS);
+    if (/data\/dependencies\.json$/.test(u)) return okJson([]);
+    if (/questions-index\//.test(u)) return okJson(index);
+    if (/data\/questions\/[^/]+\.json$/.test(u)) {
+      const file = u.split('/').pop();
+      if (gateFiles[file]) {
+        return new Promise(function (resolve) {
+          released.push({
+            file: file,
+            release: function () {
+              const p = path.join(DIR, file);
+              resolve(fs.existsSync(p) ? okJson(JSON.parse(fs.readFileSync(p, 'utf8'))) : notFound());
+            }
+          });
+        });
+      }
+      const p = path.join(DIR, file);
+      if (!fs.existsSync(p)) return notFound();
+      return okJson(JSON.parse(fs.readFileSync(p, 'utf8')));
+    }
+    return notFound();
+  };
+}
+function gateFileSet(gateKeys) {
+  const out = Object.create(null);
+  gateKeys.forEach(function (k) { if (index[k]) out[index[k]] = true; });
+  return out;
+}
+function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
 async function runScreenGateTests() {
   /* ---- ① 根因 A：registerFlow 守卫（源码级 + 行为级） ---- */
   test('app.js：CORE 字面量里必须挂 registerFlow（a94fef3 的 P0 回归）', function () {
@@ -847,6 +881,100 @@ async function runScreenGateTests() {
       '已掌握不许包含未加载章节的点（会把「题库没到」当「已掌握」）');
     const advice = ENGINE.studentAdvice(sum, function (id) { return g.byId[id].name; });
     assert.strictEqual(advice.indexOf('都掌握啦'), -1, '还有没测完的点时不许说「都掌握啦」：' + advice);
+  });
+
+  /* ---- ⑥ 门内章节没到齐就不许开门（修「57ms 就开会话、开出一堆 legacy 诊断题」） ---- */
+  await testAsync('真跑 ensureFlowReady：gate 章节 bundle 挂住时 300ms 仍不 resolve，放行后才 resolve 为 true 且只请求 ≤3 章', async function () {
+    APP_MOD.resetQuestionsCache();
+    APP_MOD.setEngine(ENGINE);
+    setupMathGrade(7);
+    const ids = CHAPTER.gradeTargets(APP_MOD.S.D.graph, '七年级', 'math').ids;
+    assert.strictEqual(ids.length, 119, '七年级数学目标数应为 119，实际 ' + ids.length);
+    const split = APP_MOD.gateTargetsOf(ids, 'screen');
+    const gateKeys = APP_MOD.chapterKeysOf(split.gate);
+    const gateFiles = gateFileSet(gateKeys);
+    assert.ok(gateKeys.length >= 1, 'gate 至少应有 1 个章节');
+    const released = [];
+    const calls = stubFetchDynamic(gateHoldFetcher(gateFiles, released));
+    let settled = false;
+    const p = APP_MOD.ensureFlowReady(ids, null, 'screen').then(function (v) {
+      settled = true;
+      return v;
+    });
+    try {
+      const SENTINEL = {};
+      const raced = await Promise.race([
+        p.then(function () { return 'resolved'; }),
+        sleep(300).then(function () { return SENTINEL; })
+      ]);
+      assert.strictEqual(raced, SENTINEL,
+        'gate bundle 还没到齐就 resolve 了（旧缺陷：topics.json 的兜底诊断题被当成「能出题」，57ms 开门）');
+      assert.strictEqual(settled, false, '门内章节挂住时 ensureFlowReady 不许定案');
+      const gateReqs = bundleRequests(calls).filter(function (u) { return gateFiles[u.split('/').pop()]; });
+      assert.ok(gateReqs.length >= 1, '应已发起 gate 章节的 bundle 请求，实际 ' + gateReqs.length);
+      assert.ok(gateReqs.length <= APP_MOD.SCREEN_GATE_BUNDLES,
+        '门内只该请求 ≤' + APP_MOD.SCREEN_GATE_BUNDLES + ' 个章节 bundle，实际 ' + gateReqs.length);
+      assert.ok(released.length >= 1, 'gate 章节请求应被挂住（模拟弱网），实际 ' + released.length);
+      released.forEach(function (r) { r.release(); });
+      assert.strictEqual(await p, true, 'gate 章节到货后题源门应放行');
+      assert.strictEqual(settled, true);
+      const gateFileReqs = Array.from(new Set(bundleRequests(calls)
+        .map(function (u) { return u.split('/').pop(); })
+        .filter(function (f) { return gateFiles[f]; })));
+      assert.ok(gateFileReqs.length <= APP_MOD.SCREEN_GATE_BUNDLES,
+        '门内请求的 bundle 章节数应 ≤' + APP_MOD.SCREEN_GATE_BUNDLES + '，实际 ' + gateFileReqs.length);
+    } finally {
+      released.forEach(function (r) { try { r.release(); } catch (e) {} });
+      restoreFetch();
+      APP_MOD.resetQuestionsCache();
+    }
+  });
+
+  await testAsync('真跑 ensureFlowReady：gate 章节未到齐时 startBackgroundFill 不启动；到齐后 total>0 且 maxActive≤2', async function () {
+    APP_MOD.resetQuestionsCache();
+    APP_MOD.setEngine(ENGINE);
+    setupMathGrade(7);
+    const ids = CHAPTER.gradeTargets(APP_MOD.S.D.graph, '七年级', 'math').ids;
+    const split = APP_MOD.gateTargetsOf(ids, 'screen');
+    const gateKeys = APP_MOD.chapterKeysOf(split.gate);
+    const gateFiles = gateFileSet(gateKeys);
+    const released = [];
+    const calls = stubFetchDynamic(gateHoldFetcher(gateFiles, released));
+    const p = APP_MOD.ensureFlowReady(ids, null, 'screen');
+    try {
+      await sleep(300);
+      assert.strictEqual(APP_MOD.backgroundFillState().total, 0,
+        '门内章节没到齐就开了后台补齐（会在 69ms 起把 60 个章节 bundle 一口气排开）');
+      assert.strictEqual(APP_MOD.backgroundFillState().running, false, '门没开时后台补齐不许在跑');
+      assert.ok(released.length >= 1, 'gate 章节请求应被挂住');
+      released.forEach(function (r) { r.release(); });
+      assert.strictEqual(await p, true);
+      await waitFor(function () { return APP_MOD.backgroundFillState().total > 0; });
+      const st = APP_MOD.backgroundFillState();
+      assert.ok(st.total > 0, '门开之后应启动后台补齐，实际 total=' + st.total);
+      assert.ok(st.total <= split.rest.length, '后台补齐不许超出 rest 章节数');
+      await waitFor(function () { return !APP_MOD.backgroundFillState().running; });
+      assert.ok(APP_MOD.backgroundFillState().maxActive <= 2,
+        '后台补齐并发必须 ≤ 2，实际 ' + APP_MOD.backgroundFillState().maxActive);
+      assert.ok(APP_MOD.backgroundFillState().maxActive >= 1, '后台补齐应真的跑过');
+    } finally {
+      released.forEach(function (r) { try { r.release(); } catch (e) {} });
+      restoreFetch();
+      APP_MOD.resetQuestionsCache();
+    }
+  });
+
+  test('app.js：ensureFlowReady 里 startBackgroundFill 只能在 gateLoaded() 等待之后，且判据逐 key 读 bundleLoaded', function () {
+    const body = bodyAfter(APP, 'async function ensureFlowReady(');
+    const waitAt = body.indexOf('!gateLoaded()');
+    assert.ok(waitAt >= 0, 'screen 门必须先判 gateLoaded() 再等（否则 57ms 就走兜底题开门）');
+    const raceAt = body.indexOf('await Promise.race([full, bank]);', waitAt);
+    assert.ok(raceAt > waitAt, 'gateLoaded() 判据之后必须真的等待题库');
+    const bgAt = body.indexOf('startBackgroundFill(');
+    assert.ok(bgAt > raceAt,
+      'startBackgroundFill 出现在 gateLoaded() 等待之前（门没开就把后台补齐排开）');
+    assert.ok(/gateKeys\.every\(/.test(body), 'gateLoaded 必须是逐 key 判据（gateKeys.every）');
+    assert.ok(/S\.bundleLoaded/.test(body), 'gateLoaded 必须读 S.bundleLoaded（bundle 真的到货才算到齐）');
   });
 }
 

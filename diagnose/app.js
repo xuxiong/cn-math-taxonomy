@@ -1022,17 +1022,37 @@
      * 不再是把整个年级的 targets 塞进题库门（旧守卫仍能看到 ensureQuestions() 这个入口）。 */
     flowTargets = gate;
     const full = ensureFullTopics();
-    /* 开门后的收尾：清掉进度、screen 下启动后台补齐（只补 rest，不回头挡门）。 */
-    function openGate() {
-      gateProgressDone();
-      if (mode === 'screen') startBackgroundFill(split.rest);
-    }
+    /* 门要等的 bundle key（screen 下 ≤3 个章节）。判据只看「这些 key 的 bundle 是否真的到货」，
+     * 不再依赖 questionsInFlight 的时序：ensureQuestions() 刚发起时 index.json 还在路上，
+     * in-flight 仍是 0，而 topics.json 已到货 → 旧判据会立刻拿兜底诊断题开门。 */
+    const gateKeys = chapterKeysOf(gate);
+    const gateLoaded = function () {
+      if (mode !== 'screen') return true;   // 单点 / 整章：老的「等齐」语义不变
+      return !gateKeys.length || gateKeys.every(function (k) { return !!S.bundleLoaded[k]; });
+    };
     /* 先把「这些目标所在章节的题库」这一份开起来，再判能不能出题。
      * 顺序曾经是「能出题就早退」，于是第二次点知识点时（全量 topics 已到货、目标自带
      * diagnostic_question）会直接放行、一次 bundle 都不取 —— 会话退化成「本知识点第 1 / 1 题」，
      * 答完一题就是假结论（A→B 快速切换时必现，卡 t_83ca3ac5 实测）。
      * 同一章节只会请求一次（bundleLoaded / 在途 Promise 去重），重复点不产生额外请求。 */
     const bank = ensureQuestions();                   // 只取 gate 前缀章节（不再是整个 targets，也不再是整份题库）
+    /* screen：门内章节没到齐就先等，绝不能拿 topics.json 的兜底诊断题开门。 */
+    if (mode === 'screen' && !gateLoaded()) {
+      gateProgressStart(gateKeys);
+      await Promise.race([full, bank]);
+      if (!gateLoaded()) {
+        /* 题库已定案（在飞请求归零）但门内章节还没到齐：刷新一次进度，继续等 bundle。
+         * 门开不开只看 gateLoaded()，这里的 questionsInFlight 不再单独放行。 */
+        if (S.questionsInFlight === 0) gateProgressTick();
+        await Promise.all([full, bank]);
+      }
+    }
+    /* 开门后的收尾：清掉进度、screen 下启动后台补齐（只补 rest，不回头挡门）。
+     * 定义放在等待之后：startBackgroundFill 只能作为「门真的开了」的收尾被调用。 */
+    function openGate() {
+      gateProgressDone();
+      if (mode === 'screen') startBackgroundFill(split.rest);
+    }
     /* 判据调用两次是刻意的：源码级守卫要求开门那一行保持 `... === 0) return true;` 的原样，
      * 后台补齐只能挂在前一行「条件为真才执行」的 openGate() 上。 */
     if (flowAskable(targets, limit, mode) && S.questionsInFlight === 0) openGate();
@@ -1048,7 +1068,7 @@
     if (flowAskable(targets, limit, mode) && S.questionsInFlight === 0) return true;
     await Promise.all([full, bank]);
     const ok = flowAskable(targets, limit, mode);
-    if (ok) openGate();
+    if (ok && gateLoaded()) openGate();
     return ok;
   }
 
