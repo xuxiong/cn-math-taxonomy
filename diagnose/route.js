@@ -630,17 +630,28 @@
   var GRADE_GAP_LIMIT = 4;
   var PRIMARY_MAX = 6;
 
+  /**
+   * 路径侧的两条过滤规则，各自独立判定——可以同时命中（初中目标 + soft 边 +
+   * 小学四年级前置：既跨学段，年级差 4 也达到噪音阈值）。
+   * @returns {?{text: string, rules: Array<'stage'|'gap'>}} text 按优先级取（跨学段优先）
+   */
   function exclusionReason(prereq, target, strength) {
     if (!prereq || !target) return null;
+    var rules = [];
+    var text = '';
     if (target.grade > PRIMARY_MAX && prereq.grade <= PRIMARY_MAX) {
-      return '跨学段：前置在小学（' + gradeLabel(prereq.grade) + '），目标在' +
-        stageOfGrade(target.grade) + '，不进主路径';
+      rules.push('stage');
+      text = '跨学段：前置在小学（' + gradeLabel(prereq.grade) + '），目标在' +
+        stageOfGrade(target.grade) + '，未画入主路径';
     }
     if (strength === 'soft' && (target.grade - prereq.grade) >= GRADE_GAP_LIMIT) {
-      return '低年级 soft 前置（年级差 ' + (target.grade - prereq.grade) + ' 年 ≥ ' +
-        GRADE_GAP_LIMIT + '），按噪音过滤';
+      rules.push('gap');
+      if (!text) {
+        text = '低年级 soft 前置（年级差 ' + (target.grade - prereq.grade) + ' 年 ≥ ' +
+          GRADE_GAP_LIMIT + '），按噪音过滤';
+      }
     }
-    return null;
+    return rules.length ? { text: text, rules: rules } : null;
   }
 
   /**
@@ -676,14 +687,25 @@
           };
           var why = exclusionReason(p, target, e.strength);
           if (e.strength === 'soft') {
-            if (why) { rec.excludedWhy = why; excluded.push(rec); }
+            if (why) {
+              rec.excludedWhy = why.text;
+              rec.excludedRules = why.rules;
+              rec.excludedRule = why.rules[0];
+              excluded.push(rec);
+            }
             else if (!seen[p.id]) soft.push(rec);
             return;
           }
           if (seen[p.id]) return;   /* 已在更近的一层列出 */
           seen[p.id] = 1;
           next.push(p.id);
-          if (why) { rec.excludedWhy = why; excluded.push(rec); return; }
+          if (why) {
+            rec.excludedWhy = why.text;
+            rec.excludedRules = why.rules;
+            rec.excludedRule = why.rules[0];
+            excluded.push(rec);
+            return;
+          }
           items.push(rec);
         });
       });
@@ -929,8 +951,10 @@
   }
 
   /**
-   * 被年级截断的先修（kanban t_be33ff76）：「已略过更早的前置」一行的数据来源。
+   * 被年级截断的先修（kanban t_be33ff76）：「本次诊断未测」一行的数据来源。
    *
+   * 取的是 engine 的 session.suppressed（engine 的 GRADE_GAP = 6 年截断），
+   * 只用于 suppressedNote()，和路径侧的 GRADE_GAP_LIMIT / PRIMARY_MAX 是两条口径。
    * 为什么必须在这里现算：app.js 只把 answers 存进 localStorage，会话靠 replay 重建，
    * suppressed 不落盘；route/diagnose 读回时只能拿 targets 重新 createSession 再比对。
    *
@@ -955,17 +979,63 @@
   }
 
   /**
-   * 「已略过」那句话：名字 + 年级 + 数量。空字符串 = 没有要说的（页面不占位）。
-   * 措辞只说「考虑过、没纳入」，绝不说成诊断结论——它们不是结果，只是被排除的候选。
+   * 路径侧的「未画入主路径」总说明：阈值只来自 GRADE_GAP_LIMIT / PRIMARY_MAX，
+   * 一个数字都不写死。两处口径必须同源：
+   *   a) 计数先按 it.id 去重（保留第一条，与列表展示顺序一致）——同一个先修从两条边
+   *      进来只算 1 个知识点，不能数成 2。
+   *   b) 归类只认 excludedRules[0]，与逐条 excludedWhy 完全一致；两条规则天然互斥，
+   *      同一个先修不会被两句话各数一次。
+   * 两句之间必须用「。」——同一句里不许同时出现两个年级阈值。
+   * @param {Array} items prerequisites().excluded
+   * @returns {string} 空字符串 = 没有要说的（页面不占位）
    */
-  function skippedNote(items, gap) {
+  function skippedReasonText(items) {
+    var list = Array.isArray(items) ? items : [];
+    if (!list.length) return '';
+    var seen = Object.create(null);
+    var gapN = 0;
+    var stageN = 0;
+    list.forEach(function (it) {
+      var id = (it && it.id != null) ? String(it.id) : '';
+      if (id) {
+        if (seen[id]) return;   /* 同一 id 只保留第一条 */
+        seen[id] = 1;
+      }
+      var rules = (it && Array.isArray(it.excludedRules)) ? it.excludedRules
+        : (it && it.excludedRule ? [it.excludedRule] : []);
+      /* 逐条 excludedWhy 取 rules[0]；聚合句也只认 rules[0]，否则两处会互相打脸 */
+      var rule = rules.length ? rules[0] : null;
+      if (rule === 'gap') gapN += 1;
+      else if (rule === 'stage') stageN += 1;
+    });
+    var sentences = [];
+    if (gapN > 0) {
+      sentences.push('有 ' + gapN + ' 个先修的年级差达到 ' + GRADE_GAP_LIMIT + ' 年，按噪音过滤');
+    }
+    if (stageN > 0) {
+      sentences.push((gapN > 0 ? '另有 ' : '有 ') + stageN +
+        ' 个先修只在小学阶段（' + PRIMARY_MAX + ' 年级及以下），不跨学段画进主路径');
+    }
+    if (!sentences.length) return '';
+    return '未画入主路径：' + sentences.join('。') +
+      '。这些知识点仍在知识图谱里，可以单独查看。';
+  }
+
+  /**
+   * engine 侧「本次诊断未测」那句话：名字 + 年级 + 数量 + 离目标多远。
+   * 只给 session.suppressed 用；gap 由调用方注入 engine 的 GRADE_GAP，
+   * gap == null 时只是不写「离目标超过 N 个年级」这半句，绝不退化成路径常量。
+   * 措辞只说「本次诊断未测」，绝不说成路径侧的「未画入主路径」。
+   */
+  function suppressedNote(items, gap) {
     var list = Array.isArray(items) ? items : [];
     if (!list.length) return '';
     var head = list[0];
     var g = shortGradeLabel(head.grade);
-    return '已略过更早的前置：' + head.name + (g ? '（' + g + '）' : '') +
+    return '本次诊断未测的较早先修：' + head.name + (g ? '（' + g + '）' : '') +
       (list.length > 1 ? '等 ' + list.length + ' 个' : '') +
-      ' —— 跨度超过 ' + (gap == null ? GRADE_GAP_LIMIT : gap) + ' 个年级，不纳入本次诊断';
+      (gap == null ? '' : ' —— 离目标超过 ' + gap + ' 个年级') +
+      '，没有出题，也不是「已掌握」。';
   }
 
   /**
@@ -1322,9 +1392,10 @@
     structureNote: structureNote,
     /* 诊断结果写回（kanban t_d623773c）：纯函数，session/sum 由调用方注入 */
     buildResultView: buildResultView,
-    /* 年级截断的「已略过」一行（kanban t_be33ff76）：纯文案 + 现算，页面层直接调 */
+    /* 年级截断的「本次诊断未测」一行（kanban t_be33ff76）：纯文案 + 现算，页面层直接调 */
     skippedByGrade: skippedByGrade,
-    skippedNote: skippedNote,
+    skippedReasonText: skippedReasonText,
+    suppressedNote: suppressedNote,
     shortGradeLabel: shortGradeLabel,
     matchSession: matchSession,
     rootCaveat: rootCaveat,

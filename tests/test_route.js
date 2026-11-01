@@ -1068,6 +1068,182 @@ test('提示文案：带 xx:xx 的时间，坏时间也不抛', () => {
   assert.ok(sw.indexOf(ARCHIVE_KEY) < 0, '存档键名不许出现在 sw.js（预热清单/缓存策略里都不许）');
 });
 
+/* ================================================================
+ * 14. 两条口径分家：路径「未画入主路径」vs 诊断「本次诊断未测」
+ * ================================================================
+ * route.js 的 GRADE_GAP_LIMIT（4 年 soft 噪音）与 engine.js 的 GRADE_GAP（6 年截断）
+ * 是两件事：路径过滤管「画不画进主路径」，诊断截断管「本次出不出题」。
+ * 这里用合成最小图分别断言，避免真实数据变动把口径测试带跑偏。
+ */
+
+console.log('\n--- 14. 口径分家：路径过滤 vs 诊断截断 ---');
+
+const E = require('../diagnose/engine.js');
+
+function synTopic(id, name, grade) {
+  return {
+    id, name, grade, domain: '数与代数', chapter: '合成 ' + grade + ' 年级',
+    external: false,
+    diagnostic_question: { question: name + ' 的答案是？', answer: '1' }
+  };
+}
+
+/* setData 是模块级全局状态：用完必须还原，否则后面的测试都拿着合成数据跑 */
+function withSynData(fn) {
+  const synTopics = [
+    synTopic('cnm_syn_t8', '合成目标八', 8),
+    synTopic('cnm_syn_g4', '合成先修四', 4),
+    synTopic('cnm_syn_t8s', '合成目标八跨学段', 8),
+    synTopic('cnm_syn_t12', '合成目标十二', 12),
+    synTopic('cnm_syn_t11', '合成目标十一', 11),
+    synTopic('cnm_syn_g8', '合成先修八', 8),
+    synTopic('cnm_syn_g5', '合成先修五', 5),
+    synTopic('cnm_syn_e9', '合成目标九', 9),
+    synTopic('cnm_syn_e1', '合成先修一', 1)
+  ];
+  const synDeps = [
+    { topicId: 'cnm_syn_t8', prerequisiteId: 'cnm_syn_g4', strength: 'soft', reason: '合成 soft' },
+    { topicId: 'cnm_syn_t8s', prerequisiteId: 'cnm_syn_g5', strength: 'soft', reason: '合成 soft' },
+    { topicId: 'cnm_syn_t12', prerequisiteId: 'cnm_syn_g8', strength: 'soft', reason: '合成 soft' },
+    { topicId: 'cnm_syn_t11', prerequisiteId: 'cnm_syn_g8', strength: 'soft', reason: '合成 soft' },
+    { topicId: 'cnm_syn_e9', prerequisiteId: 'cnm_syn_e1', strength: 'hard', reason: '合成 hard' }
+  ];
+  try {
+    R.setData(synTopics, synDeps);
+    fn(synTopics, synDeps);
+  } finally {
+    R.setData(TOPICS, DEPS);
+  }
+}
+
+test('soft 边年级差 4（目标高中、前置初中）→ 进 excluded，路径侧说「未画入主路径」且数字是 4', () => withSynData(() => {
+  /* 目标 12 年级、先修 8 年级：两边都在小学以上，只命中 gap（不命中 stage），
+     这样「年级差 4」这句的计数对象与 excludedWhy 的 rules[0] 完全一致 */
+  const pre = R.prerequisites('cnm_syn_t12', 2);
+  const ex = pre.excluded.find((it) => it.id === 'cnm_syn_g8');
+  assert.ok(ex, 'cnm_syn_g8 必须在 excluded 里');
+  assert.ok(!pre.soft.some((it) => it.id === 'cnm_syn_g8'), '被过滤的 soft 边不许留在 soft 里');
+  const levelIds = [];
+  pre.levels.forEach((lv) => lv.items.forEach((it) => levelIds.push(it.id)));
+  assert.ok(!levelIds.includes('cnm_syn_g8'), '被过滤的点不许进 levels');
+
+  const text = R.skippedReasonText(pre.excluded);
+  assert.ok(text.includes('未画入主路径'), '路径侧总说明要写「未画入主路径」：' + text);
+  assert.ok(text.includes(String(R.GRADE_GAP_LIMIT)), '文案要带路径阈值 4：' + text);
+  assert.ok(!text.includes('本次诊断未测'), '路径侧不许借用诊断截断的措辞：' + text);
+
+  /* 同一句（。分隔）里不许同时出现两个阈值 */
+  text.split('。').filter(Boolean).forEach((sent) => {
+    const hasGap = sent.includes(String(R.GRADE_GAP_LIMIT));
+    const hasStage = sent.includes(String(R.PRIMARY_MAX));
+    assert.ok(!(hasGap && hasStage), '两个阈值不许同句出现：' + sent);
+  });
+}));
+
+test('soft 边年级差 3（初中学段以上）→ 保留，文案不出现「略过」', () => withSynData(() => {
+  const pre = R.prerequisites('cnm_syn_t11', 2);
+  assert.ok(pre.soft.some((it) => it.id === 'cnm_syn_g8'), '差 3 年的 soft 边要保留在 soft 里');
+  assert.ok(!pre.excluded.some((it) => it.id === 'cnm_syn_g8'), '差 3 年的 soft 边不许进 excluded');
+  const text = R.skippedReasonText(pre.excluded);
+  assert.strictEqual(text, '', '没有过滤时不该有总说明');
+  assert.ok(!text.includes('略过'), '保留的点不许说「略过」：' + text);
+  assert.ok(!text.includes('未画入主路径'), '保留的点不许说「未画入主路径」：' + text);
+}));
+
+test('一个说「未画入主路径（4 年/6 年级）」，一个说「本次诊断未测（6 年）」，本是两件事', () => withSynData((synTopics, synDeps) => {
+  /* ---- 路径侧：只被跨学段规则拦下（差 3 < 4，但前置在小学） ---- */
+  const pre = R.prerequisites('cnm_syn_t8s', 2);
+  const ex = pre.excluded.find((it) => it.id === 'cnm_syn_g5');
+  assert.ok(ex, '小学前置必须进 excluded');
+  assert.deepStrictEqual(ex.excludedRules, ['stage'], '只命中跨学段规则');
+  const pathText = R.skippedReasonText(pre.excluded);
+  assert.ok(pathText.includes('小学阶段'), '要说到小学阶段：' + pathText);
+  assert.ok(!pathText.includes('年级差达到 ' + R.GRADE_GAP_LIMIT), '差 3 年不该说「年级差达到 4」：' + pathText);
+
+  /* ---- 诊断侧：engine 的 6 年截断，只用于 suppressedNote ---- */
+  const synGraph = E.buildGraph(synTopics, synDeps);
+  const sess = E.createSession(synGraph, ['cnm_syn_e9']);
+  assert.ok(sess.suppressed.includes('cnm_syn_e1'), '差 8 > 6 的祖先要被 engine 截断');
+
+  const items = R.skippedByGrade(['cnm_syn_e9'], (ts) => E.createSession(synGraph, ts));
+  assert.deepStrictEqual(items.map((it) => it.id), ['cnm_syn_e1'], 'skippedByGrade 取的就是 engine 的 suppressed');
+  const note = R.suppressedNote(items, E.GRADE_GAP);
+  assert.strictEqual(E.GRADE_GAP, 6, 'engine 的截断线是 6，一个字都不许改');
+  assert.ok(note.includes('本次诊断未测'), '诊断侧必须说「本次诊断未测」：' + note);
+  assert.ok(note.includes(String(E.GRADE_GAP)), '诊断侧要带 6 年：' + note);
+  assert.ok(!note.includes('未画入主路径'), '诊断侧不许借用路径措辞：' + note);
+  assert.ok(!note.includes('年级差达到 ' + R.GRADE_GAP_LIMIT), '诊断侧不许把 4 年当阈值：' + note);
+}));
+
+test('源码守卫：页面只显示、route 两条口径各用各的常量、engine 截断线未改', () => {
+  const page = stripComments(fs.readFileSync(path.join(ROOT, 'diagnose', 'route-page.js'), 'utf8'));
+  assert.ok(page.includes('R.skippedReasonText('), '页面层要调路径侧总说明');
+  assert.ok(!page.includes('不纳入本次诊断'), '页面层不许再出现「不纳入本次诊断」');
+  assert.strictEqual((page.match(/window\.DiagEngine\.GRADE_GAP/g) || []).length, 1,
+    'GRADE_GAP 只许出现在传给 R.suppressedNote 的那一处');
+
+  const engineSrc = fs.readFileSync(path.join(ROOT, 'diagnose', 'engine.js'), 'utf8');
+  assert.ok(engineSrc.includes('var GRADE_GAP = 6;'), 'engine 的 GRADE_GAP = 6 一字未改');
+});
+
+test('skippedReasonText 互斥计数：同时命中 gap+stage 的先修只数一次，stage 用「另有」', () => {
+  /* 直接造 items，不依赖数据：both 同时命中，stageOnly 只命中跨学段 */
+  const both = { excludedRules: ['gap', 'stage'] };
+  const stageOnly = { excludedRules: ['stage'] };
+  const text = R.skippedReasonText([both, stageOnly]);
+  assert.ok(text.includes('有 1 个先修的年级差达到 ' + R.GRADE_GAP_LIMIT),
+    '命中 gap 的只有 1 个，不许数成 2：' + text);
+  assert.ok(text.includes('另有 1 个先修只在小学阶段'),
+    'stage 那句要排除已经算进 gap 的那个：' + text);
+  assert.ok(!text.includes('有 2 个先修只在小学阶段'), '同一个点不许重复计数：' + text);
+
+  const only = R.skippedReasonText([stageOnly]);
+  assert.ok(only.startsWith('未画入主路径：有 1 个先修只在小学阶段'), '只有跨学段项时不能用「另有」：' + only);
+  assert.ok(!only.includes('另有'), '没有 gap 项时不许出现「另有」：' + only);
+
+  text.split('。').filter(Boolean).forEach((sent) => {
+    const hasGap = sent.includes(String(R.GRADE_GAP_LIMIT));
+    const hasStage = sent.includes(String(R.PRIMARY_MAX));
+    assert.ok(!(hasGap && hasStage), '两个阈值不许同句出现：' + sent);
+  });
+});
+
+test('skippedReasonText 按 id 去重：同一知识点从两条边进来只算 1 个（cnp_h103）', () => {
+  /* 真实数据：受迫振动与共振的「声音的特性」(cnp_006) 从两条不同 soft 边进来，
+     excluded 里有两条记录，但聚合句说的「N 个先修」必须是不同知识点个数 */
+  const pre = R.prerequisites('cnp_h103', 2);
+  const same = pre.excluded.filter((it) => it.id === 'cnp_006');
+  assert.strictEqual(same.length, 2, '数据前提：同一先修从两条边进来，excluded 有两条记录');
+  assert.deepStrictEqual(same[0].excludedRules, same[1].excludedRules, '两条边的过滤规则相同');
+
+  const text = R.skippedReasonText(pre.excluded);
+  assert.ok(text.includes('有 1 个先修的年级差达到 ' + R.GRADE_GAP_LIMIT),
+    '同一 id 只算 1 个先修，不许数成 2：' + text);
+  assert.ok(!text.includes('有 2 个先修'), '计数按知识点 id 去重：' + text);
+});
+
+test('聚合归类与逐条 excludedWhy 同口径：同时命中 gap+stage 的按 stage 计（cnm_221 配方法）', () => {
+  /* 真实数据：配方法的「长方形和正方形的面积」(cnm_p089) 一条边同时命中两条规则。
+     逐条 excludedWhy 取 rules[0]（stage），聚合句也必须按 stage 归类，不能反过来算 gap */
+  const pre = R.prerequisites('cnm_221', 2);
+  const ex = pre.excluded.find((it) => it.id === 'cnm_p089');
+  assert.ok(ex, '数据前提：cnm_p089 在 excluded 里');
+  assert.deepStrictEqual(ex.excludedRules, ['stage', 'gap'], '一条边同时命中两条规则');
+  assert.strictEqual(ex.excludedRule, 'stage', '逐条归类取 rules[0]');
+  assert.ok(ex.excludedWhy.includes('跨学段'), '逐条说明是跨学段口径：' + ex.excludedWhy);
+
+  const text = R.skippedReasonText(pre.excluded);
+  assert.ok(text.includes('有 1 个先修只在小学阶段'), '聚合句要与逐条说明同为跨学段口径：' + text);
+  assert.ok(!text.includes('年级差达到 ' + R.GRADE_GAP_LIMIT),
+    '同时命中时不许反过来算进年级差那句：' + text);
+
+  text.split('。').filter(Boolean).forEach((sent) => {
+    const hasGap = sent.includes(String(R.GRADE_GAP_LIMIT));
+    const hasStage = sent.includes(String(R.PRIMARY_MAX));
+    assert.ok(!(hasGap && hasStage), '两个阈值不许同句出现：' + sent);
+  });
+});
+
 /* ================================================================ */
 
 Promise.all(ASYNC).then(() => {
