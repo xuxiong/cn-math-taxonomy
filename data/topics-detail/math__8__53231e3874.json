@@ -1,0 +1,1 @@
+[{"id":"cnm_209","description":"建立一次函数模型（含分段函数）解决收费、行程、方案选择等实际问题。","mastery_criteria":["能建立函数关系式","能结合图象与不等式选择方案"],"diagnostic_question":{"question":"出租车 3 km 内 10 元，超出每 km 2 元，行驶 x km（x>3）费用 y 的函数式？","answer":"y=10+2(x-3)=2x+4"},"standards":[{"id":"cms-2022:4.NA.42","confidence":"exact"}]}]

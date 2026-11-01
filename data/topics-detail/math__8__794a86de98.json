@@ -1,0 +1,1 @@
+[{"id":"cnm_130","description":"掌握倍长中线、截长补短、旋转型全等等构造全等三角形的常见方法。","mastery_criteria":["能识别模型并添加辅助线","能完成含辅助线的证明"],"diagnostic_question":{"question":"已知 AD 为 △ABC 中线，如何用倍长中线证明 AB+AC>2AD？","answer":"延长 AD 至 E 使 DE=AD，证 △ABD≌△ECD，再用三边关系"}}]

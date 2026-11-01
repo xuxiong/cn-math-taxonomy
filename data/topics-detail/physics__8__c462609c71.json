@@ -1,0 +1,1 @@
+[{"id":"cnp_035","description":"了解合力的概念，知道同一直线上方向相同的两个力的合力等于二力之和，方向相反时等于二力之差、方向与较大的力相同。","mastery_criteria":["会求同一直线上同向两力的合力","会求同一直线上反向两力的合力并判断方向"],"diagnostic_question":{"question":"同一直线上方向相同的 3 N 和 5 N 两个力，合力是多少？","answer":"8 N"},"standards":[{"id":"cps-2022:2.2.4","confidence":"exact"}],"mathLinks":[{"id":"cnm_001","reason":"反向的力可以看成一正一负，合力是代数和。"}]}]

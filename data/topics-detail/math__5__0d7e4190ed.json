@@ -1,0 +1,1 @@
+[{"id":"cnm_p152","description":"能根据正面、侧面、上面的形状图辨认简单物体。","mastery_criteria":["能分别说出三个方向看到的形状","能判断哪一个物体和给出的视图相符"],"diagnostic_question":{"question":"从正面、侧面、上面看同一个简单物体，看到的形状怎样？","answer":"可能不一样"},"standards":[{"id":"cms-2022:3.GG.06","confidence":"exact"}]}]

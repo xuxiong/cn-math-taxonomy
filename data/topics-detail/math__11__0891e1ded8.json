@@ -1,0 +1,1 @@
+[{"id":"cnm_h096","description":"能按探究步骤用向量重写三角形的边角关系，并计算一个具体例子。","mastery_criteria":["能说出探究要有猜想、推算和检验","能用向量坐标计算三角形的一条边长"],"diagnostic_question":{"question":"三角形顶点 A(0，0)、B(4，0)、C(0，3)。边 BC 的长是多少？","answer":"5"},"standards":[{"id":"cms-2017:H.MI.02","confidence":"exact"}]}]

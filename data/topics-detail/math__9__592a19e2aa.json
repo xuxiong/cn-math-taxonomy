@@ -1,0 +1,1 @@
+[{"id":"cnm_267","description":"利用函数、不等式、几何知识，解决最大面积、最省材料等生活中的优化问题。","mastery_criteria":["能把实际问题转化为数学模型","能求最值并解释"],"diagnostic_question":{"question":"用 20 m 篱笆围成矩形（四边都用篱笆），面积最大是多少？","answer":"边长 5 m 的正方形，面积 25 m²"},"standards":[{"id":"cms-2022:4.IP.01","confidence":"exact"}]}]

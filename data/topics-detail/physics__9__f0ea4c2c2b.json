@@ -1,0 +1,1 @@
+[{"id":"cnp_078","description":"知道人体的安全电压不高于 36 V，了解触电的类型和原因，知道安全用电原则（不接触低压带电体，不靠近高压带电体）和触电急救方法。","mastery_criteria":["知道安全电压","能判断安全与不安全的用电行为","知道发现触电先切断电源"],"diagnostic_question":{"question":"对人体安全的电压是多少？","answer":"不高于 36 V"},"standards":[{"id":"cps-2022:3.4.7","confidence":"exact"},{"id":"cps-2022:5.1.2","confidence":"exact"}]}]

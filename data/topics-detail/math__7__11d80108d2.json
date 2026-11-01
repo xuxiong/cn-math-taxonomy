@@ -1,0 +1,1 @@
+[{"id":"cnm_096","description":"不等式两边同加（减）同一个数，不等号方向不变；同乘（除以）正数方向不变，同乘（除以）负数方向改变。","mastery_criteria":["能说出三条性质","能用性质变形不等式"],"diagnostic_question":{"question":"由 -2x>6 得到 x 的范围。","answer":"x<-3"},"standards":[{"id":"cms-2022:4.NA.31","confidence":"exact"}]}]

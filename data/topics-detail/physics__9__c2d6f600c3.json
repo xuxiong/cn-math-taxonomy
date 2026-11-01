@@ -1,0 +1,1 @@
+[{"id":"cnp_076","description":"调查家庭用电情况，运用电功和电功率知识估算用电量，从减小功率、缩短时间等方面提出节约用电的建议。","mastery_criteria":["能用 W = Pt 估算家用电器用电量","能提出合理的节约用电建议"],"diagnostic_question":{"question":"一台 100 W 的电视机每天待机和观看共 5 h，一个月（30 天）消耗多少 kW·h 的电能？（只填数值）","answer":"15"},"standards":[{"id":"cps-2022:5.1.3","confidence":"exact"},{"id":"cps-2022:3.4.7","confidence":"inferred"}]}]

@@ -1,0 +1,1 @@
+[{"id":"cnm_022","description":"把一个大数写成 a×10ⁿ（1≤|a|<10，n 为正整数）的形式。","mastery_criteria":["能把大数写成科学记数法","能由科学记数法还原原数"],"diagnostic_question":{"question":"把 3 450 000 用科学记数法表示。","answer":"3.45×10⁶"},"standards":[{"id":"cms-2022:4.NA.17","confidence":"exact"}]}]

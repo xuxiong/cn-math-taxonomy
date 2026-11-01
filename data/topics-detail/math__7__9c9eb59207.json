@@ -1,0 +1,1 @@
+[{"id":"cnm_023","description":"理解近似数、精确度，会按要求四舍五入取近似数并说出有效数字。","mastery_criteria":["会按精确度取近似数","能说出近似数的有效数字个数"],"diagnostic_question":{"question":"把 0.03586 精确到 0.001，有几个有效数字？","answer":"0.036，有 2 个有效数字"},"standards":[{"id":"cms-2022:4.NA.12","confidence":"exact"}]}]

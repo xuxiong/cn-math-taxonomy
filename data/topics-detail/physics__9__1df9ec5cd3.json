@@ -1,0 +1,1 @@
+[{"id":"cnp_077","description":"通过实验了解电流的热效应，知道焦耳定律 Q = I²Rt；能用焦耳定律说明电热的利用和防止。","mastery_criteria":["会用 Q = I²Rt 计算","能解释电炉丝热而导线不热等现象","能举例说明电热的利用和防止"],"diagnostic_question":{"question":"电流 2 A 通过 10 Ω 的电阻，通电 60 s 产生多少 J 的热量？（只填数值）","answer":"2400"},"standards":[{"id":"cps-2022:3.4.6","confidence":"exact"}]}]

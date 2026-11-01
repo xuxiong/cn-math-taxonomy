@@ -1,0 +1,1 @@
+[{"id":"cnm_086","description":"点向右（左）平移 a 个单位横坐标加（减）a，向上（下）平移 b 个单位纵坐标加（减）b；图形平移即各顶点同样平移。","mastery_criteria":["能写出点平移后的坐标","能由对应点坐标变化反推平移"],"diagnostic_question":{"question":"点 A(2,3) 先向左平移 4 个单位再向上平移 1 个单位，新坐标？","answer":"(-2, 4)"},"standards":[{"id":"cms-2022:4.GG.90","confidence":"exact"},{"id":"cms-2022:4.GG.91","confidence":"exact"}]}]

@@ -1,0 +1,1 @@
+[{"id":"cnp_066","description":"探究并了解串联电路两端的总电压等于各部分电路两端电压之和，并联电路中各支路两端的电压相等且等于电源电压。","mastery_criteria":["知道串联电路电压规律 U = U₁ + U₂","知道并联电路各支路电压相等","能用规律求未知电压"],"diagnostic_question":{"question":"两个电阻串联在 6 V 的电源上，其中一个电阻两端的电压为 2 V，另一个电阻两端的电压是多少 V？（只填数值）","answer":"4"},"standards":[{"id":"cps-2022:3.4.4","confidence":"inferred"},{"id":"cps-2022:4.2.11","confidence":"exact"}]}]

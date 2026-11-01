@@ -1,0 +1,1 @@
+[{"id":"cnm_266","description":"正多边形有外接圆和内切圆，认识中心、半径、边心距、中心角，并作正多边形。","mastery_criteria":["能说出正多边形的相关量","能计算正多边形的半径与边心距"],"diagnostic_question":{"question":"边长 2 的正六边形外接圆半径是多少？","answer":"2"},"standards":[{"id":"cms-2022:4.GG.54","confidence":"exact"},{"id":"cms-2022:4.GG.50","confidence":"inferred","note":"作圆内接正方形、正六边形属正多边形与圆的关系"}]}]

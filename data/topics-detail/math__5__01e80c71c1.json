@@ -1,0 +1,1 @@
+[{"id":"cnm_p239","description":"知道用同样的图形铺满平面、不留空隙也不重叠叫密铺，能用拼在一点处的角的和是否等于 360° 判断能否密铺。","mastery_criteria":["能说出密铺的含义","能用一点处角的和判断正多边形能否单独密铺"],"diagnostic_question":{"question":"正三角形每个内角是 60 度。围绕一个点拼正三角形，几个正好拼满一周？","answer":"6"},"standards":[{"id":"cms-2022:3.GG.12","confidence":"exact"}]}]

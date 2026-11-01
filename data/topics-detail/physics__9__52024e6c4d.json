@@ -1,0 +1,1 @@
+[{"id":"cnp_089","description":"了解卫星通信（如北斗卫星导航系统）、光纤通信的特点；知道光纤是利用激光在光导纤维中多次反射传递信息。","mastery_criteria":["知道光纤通信利用激光在光纤内反射传播","知道卫星通信和北斗系统利用电磁波"],"diagnostic_question":{"question":"北斗卫星导航系统是利用什么传递信息的？","answer":"电磁波"},"standards":[{"id":"cps-2022:2.4.6","confidence":"exact"},{"id":"cps-2022:5.2.3","confidence":"exact"},{"id":"cps-2022:5.3.3","confidence":"inferred"}]}]

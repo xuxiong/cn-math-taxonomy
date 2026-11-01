@@ -1,0 +1,1 @@
+[{"id":"cnm_p237","description":"能根据从不同方向看到的形状，推想由小正方体组成的简单组合体，并判断最少或最多需要几个小正方体。","mastery_criteria":["能根据两个或三个方向的形状推想组合体","知道只看一个方向不一定能确定形状"],"diagnostic_question":{"question":"只看从正面看到的形状，能不能一定确定组合体的样子？","answer":"不一定能"},"standards":[{"id":"cms-2022:3.GG.06","confidence":"exact"}]}]

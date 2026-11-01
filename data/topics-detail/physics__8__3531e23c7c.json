@@ -1,0 +1,1 @@
+[{"id":"cnp_044","description":"利用漂浮条件制作简易密度计，知道密度计在不同液体中受到的浮力相等，液体密度越大，浸入越浅，刻度上小下大。","mastery_criteria":["知道密度计利用漂浮时 F浮 = G 的原理","能判断密度计刻度的分布特点"],"diagnostic_question":{"question":"同一支密度计放在不同液体中都漂浮，它受到的浮力有什么关系？","answer":"相等"},"standards":[{"id":"cps-2022:5.1.1","confidence":"inferred"},{"id":"cps-2022:2.2.9","confidence":"exact"}]}]

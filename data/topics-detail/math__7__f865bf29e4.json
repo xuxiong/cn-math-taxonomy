@@ -1,0 +1,1 @@
+[{"id":"cnm_090","description":"当某未知数的系数相等或相反时，把两个方程相加或相减消去该未知数。","mastery_criteria":["能判断相加还是相减","必要时先乘数使系数相同"],"diagnostic_question":{"question":"解 {x+y=5, x-y=1}。","answer":"x=3，y=2"},"standards":[{"id":"cms-2022:4.NA.25","confidence":"exact"}]}]

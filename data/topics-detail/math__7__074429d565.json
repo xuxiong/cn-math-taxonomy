@@ -1,0 +1,1 @@
+[{"id":"cnm_093","description":"通过消元把三元一次方程组转化为二元、再转化为一元一次方程求解。","mastery_criteria":["能选择消元顺序","能正确求解简单三元方程组"],"diagnostic_question":{"question":"解 {x+y=3, y+z=5, x+z=4}。","answer":"x=1，y=2，z=3"},"standards":[{"id":"cms-2022:4.NA.26","confidence":"exact"}]}]

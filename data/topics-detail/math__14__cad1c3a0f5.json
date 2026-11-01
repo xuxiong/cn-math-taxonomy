@@ -1,0 +1,1 @@
+[{"id":"cnm_h243","description":"杨辉三角的第 n 行（n 从 0 数）就是 (a+b)^n 的二项式系数。左右对称，相邻两数之和等于下一行的数。","mastery_criteria":["能按约定读出杨辉三角中的一个数","能用组合数解释相邻两数之和"],"diagnostic_question":{"question":"把 (a+b)^n 的二项式系数排成一行，n 从 0 开始。n=5 这一行、从左数第 3 个数（对应 k=2）是多少？","answer":"10"},"standards":[{"id":"cms-2017:H.MI.04","confidence":"exact"}]}]

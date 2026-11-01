@@ -1,0 +1,1 @@
+[{"id":"cnp_085","description":"利用磁体、漆包线、电池等制作简易直流电动机，理解线圈转动的原因，能排查不转的故障并提出改进方法。","mastery_criteria":["能说出简易电动机的结构和原理","能分析线圈不转的原因并改进"],"diagnostic_question":{"question":"制作简易电动机时，线圈引线一端漆皮全刮掉、另一端只刮半周，作用相当于什么？","answer":"换向器"},"standards":[{"id":"cps-2022:5.2.2","confidence":"exact"},{"id":"cps-2022:2.4.4","confidence":"exact"}]}]

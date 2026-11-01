@@ -1,0 +1,1 @@
+[{"id":"cnm_141","description":"利用轴对称把折线转化为线段，解决“将军饮马”等最短路径问题。","mastery_criteria":["能画出对称点并连线","能说明最短的依据"],"diagnostic_question":{"question":"A、B 在直线 l 同侧，怎样在 l 上找点 P 使 PA+PB 最小？","answer":"作 A 关于 l 的对称点 A′，连 A′B 与 l 的交点即 P"},"standards":[{"id":"cms-2022:4.IP.01","confidence":"exact"},{"id":"cms-2022:4.GG.04","confidence":"inferred","note":"项目活动：以轴对称转化折线为线段，依据“两点之间线段最短”"}]}]

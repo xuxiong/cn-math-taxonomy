@@ -1,0 +1,1 @@
+[{"id":"cnp_067","description":"知道电阻表示导体对电流的阻碍作用，单位欧姆（Ω）；知道导体的电阻与材料、长度、横截面积和温度有关，与电压、电流无关。","mastery_criteria":["能说出影响电阻大小的因素","知道电阻是导体的性质，与电压电流无关","会进行电阻单位换算"],"diagnostic_question":{"question":"导体的电阻与下列哪个因素无关？","answer":"导体两端的电压"},"standards":[{"id":"cps-2022:3.4.2","confidence":"exact"},{"id":"cps-2022:1.2.1","confidence":"inferred"}]}]

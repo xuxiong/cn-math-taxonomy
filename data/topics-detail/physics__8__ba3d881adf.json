@@ -1,0 +1,1 @@
+[{"id":"cnp_028","description":"能利用密度鉴别物质、计算不便直接测量的质量或体积，解释水结冰体积变大、气体密度受温度影响等现象。","mastery_criteria":["会用密度鉴别物质","会用 m = ρV、V = m/ρ 求不能直接测量的量","能解释水的反常膨胀等现象"],"diagnostic_question":{"question":"一块冰的体积是 2 m³，冰的密度取 0.9×10³ kg/m³，它的质量是多少 kg？（只填数值）","answer":"1800"},"standards":[{"id":"cps-2022:1.2.3","confidence":"exact"},{"id":"cps-2022:1.2.4","confidence":"inferred"}]}]

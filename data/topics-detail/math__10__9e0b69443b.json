@@ -1,0 +1,1 @@
+[{"id":"cnm_h078","description":"能用正弦型函数描述温度、摩天轮高度等简单周期现象。","mastery_criteria":["能由平衡位置和振幅求最高、最低","能说明周期是现象重复一次的时间"],"diagnostic_question":{"question":"温度按 y=10+8sin(ωt) 变化。最高温度是多少？","answer":"18"},"standards":[{"id":"cms-2017:H.FUN.17","confidence":"inferred","note":"应用是正弦型函数的实际背景。待核。"}]}]

@@ -1,0 +1,1 @@
+[{"id":"cnm_151","description":"找出各项的公因式（系数的最大公约数与相同字母最低次幂），提到括号外。","mastery_criteria":["能找出公因式","提取后括号内项数不变"],"diagnostic_question":{"question":"分解因式 6a²b-9ab²。","answer":"3ab(2a-3b)"},"standards":[{"id":"cms-2022:4.NA.20","confidence":"exact"}]}]

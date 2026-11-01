@@ -1,0 +1,1 @@
+[{"id":"cnp_063","description":"知道电流的单位安培（A）和毫安（mA），会使用电流表：串联在电路中，电流从“+”接线柱流入，选择合适的量程并正确读数。","mastery_criteria":["会进行电流单位换算","知道电流表要串联、正进负出","会根据量程正确读数"],"diagnostic_question":{"question":"电流表应怎样接入电路？","answer":"串联在被测电路中"},"standards":[{"id":"cps-2022:3.4.3","confidence":"exact"},{"id":"cps-2022:4.1.7","confidence":"exact"}]}]
