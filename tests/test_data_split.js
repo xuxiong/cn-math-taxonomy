@@ -276,6 +276,127 @@ test('app.js：课标对照卡的结构也等全量到货，到货后整卡原�
   assert.ok(/std-block-pending/.test(pending) && /mastery-pending/.test(pending), '详情里的课标条目/掌握标准占位也要原地换掉');
 });
 
+/* ------------------------------------------------------------ P0 回归：题源没到不许出 0 题结果页
+ *
+ * 背景（reviewer 在 50KB/s 下必现）：lite 没有 diagnostic_question，题库 1.27MB gzip 要 25s，
+ * 全量 topics 要 5s。首屏 1–3s 就可点，孩子在这 5–25s 内点任何知识点，
+ * 上一版只 await ensureDeps() 就开会话 → E.nextItem === null → 立刻收敛成「0 已答题数 / 未测」。
+ * 下面几条守「进流程前必须至少有一份题源」这个门（app.js 的 askable / ensureFlowReady / startSession）。
+ */
+const ENGINE = require('../diagnose/engine.js');
+const APP_MOD = require('../diagnose/app.js');
+
+const LITE_ALL = JSON.parse(fs.readFileSync(LITE_PATH, 'utf8'));
+const FULL_ALL = JSON.parse(fs.readFileSync(TOPICS_PATH, 'utf8'));
+/* 与 loadData 一样按学科过滤（默认数学 = cnm 前缀） */
+const liteMath = LITE_ALL.filter(function (t) { return String(t.id).indexOf('cnm') === 0; });
+const fullMath = FULL_ALL.filter(function (t) { return String(t.id).indexOf('cnm') === 0; });
+/* 找一个「全量里有 diagnostic_question」的知识点当目标：它是没有题库时唯一的题源回退 */
+const probeTopic = fullMath.filter(function (t) {
+  return t && t.diagnostic_question && t.diagnostic_question.question && !t.external;
+})[0];
+const PROBE_TARGET = probeTopic && probeTopic.id;
+const PROBE_OPTS = { mode: 'target', limit: 8, confirm: 2, seed: 'probe' };
+
+test('app.js 导出 askable 判据，且在「lite 数据 + 无题库」上对真实目标返回 false（P0 判据）', function () {
+  assert.strictEqual(typeof APP_MOD.askable, 'function', 'app.js 应导出 askable()（Node 直测用）');
+  assert.ok(PROBE_TARGET, '数据里应有带 diagnostic_question 的数学知识点，否则本组测试失效');
+  assert.strictEqual(
+    APP_MOD.askable(ENGINE, liteMath, [], null, [PROBE_TARGET], PROBE_OPTS), false,
+    'lite 数据 + 无题库时必须判定「还问不出题」——这句为 true 就会开出 0 题空会话'
+  );
+});
+
+test('全量 topics 到货（diagnostic_question 回退）或题库到货后，askable 才放行', function () {
+  assert.strictEqual(
+    APP_MOD.askable(ENGINE, fullMath, [], null, [PROBE_TARGET], PROBE_OPTS), true,
+    '全量 topics 到手后应能回退到 diagnostic_question 出题'
+  );
+  const fakeBank = [{
+    id: PROBE_TARGET + '_q1', topicId: PROBE_TARGET, difficulty: 'basic', type: 'numeric',
+    prompt: '1+1=?', answer: '2', explanation: ''
+  }];
+  assert.strictEqual(
+    APP_MOD.askable(ENGINE, liteMath, [], fakeBank, [PROBE_TARGET], PROBE_OPTS), true,
+    '题库到手后（哪怕只有 lite 主题字段）也应放行'
+  );
+  /* 目标根本不存在：不许崩，只当作问不出题 */
+  assert.strictEqual(APP_MOD.askable(ENGINE, liteMath, [], null, ['no_such_topic_xyz'], PROBE_OPTS), false);
+});
+
+test('根因复现：lite 图上直接开会话，nextItem 就是 null（这就是上一版的空结果页）', function () {
+  const g = ENGINE.buildGraph(liteMath, [], null);
+  const s = ENGINE.createSession(g, [PROBE_TARGET], PROBE_OPTS);
+  assert.strictEqual(ENGINE.nextItem(g, s), null, 'lite 图上 nextItem 应为 null（回归的根因）');
+  assert.strictEqual((s.answers || []).length, 0, '一题都还没答');
+  const sum = ENGINE.summarize(g, s);
+  /* 0 题结果页长这样：0 题已问、全部「未测」—— guard 必须把这种会话挡在门外 */
+  assert.strictEqual(sum.asked, 0, '这正是上一版直接渲染出来的「0 已答题数」');
+  assert.ok(sum.untested.length > 0, '而且会显示「未测」');
+  assert.strictEqual(APP_MOD.askable(ENGINE, liteMath, [], null, [PROBE_TARGET], PROBE_OPTS), false,
+    'askable 必须为 false，进流程前就被拦住');
+});
+
+test('app.js：所有进流程入口都过题源门（选为目标 / 整章 / 整体筛查 / 继续存档 / 路径练习 / 深链）', function () {
+  /* 老签名 withStage2(function ...) 一处都不许留：那种写法拿不到目标，判断不了题源 */
+  assert.strictEqual(APP.indexOf('withStage2(function'), -1, '还有 withStage2(function…) 老签名（不带目标）');
+  const needles = [
+    ["withStage2([x.t.id], 'target'", '「选为目标」入口没带目标过题源门'],
+    ["withStage2(ch.topics.map", '「以整章为目标」入口没带目标过题源门'],
+    ["withStage2(g.ids, 'screen'", '「开始整体筛查」入口没带目标过题源门'],
+    ["withStage2(saved.targets, saved.mode", '「继续存档」入口没带目标过题源门'],
+    ["withStage2(session ? session.targets : null, 'target'", '「路径练习」入口没带目标过题源门'],
+    ['withStage2Data(function () { startPractice', '「练习这题」入口应走 withStage2Data（练习不依赖诊断题库）'],
+    ['await ensureFlowReady(resolved.ids, limit, resolved.mode)', '?target= / ?grade= 深链没有等题源门']
+  ];
+  const missing = needles.filter(function (n) { return APP.indexOf(n[0]) < 0; }).map(function (n) { return n[1]; });
+  assert.deepStrictEqual(missing, [], '入口漏了题源门：' + missing.join('；'));
+  /* 门本身：同时等全量 topics 与题库 */
+  const gate = bodyAfter(APP, 'async function ensureFlowReady(');
+  assert.ok(/await ensureDeps\(\)/.test(gate), '题源门仍要先等先修关系');
+  assert.ok(/ensureFullTopics\(\)/.test(gate) && /ensureQuestions\(\)/.test(gate), '题源门必须同时盯住全量与题库两份题源');
+  assert.ok(/Promise\.race\(\[full, bank\]\)/.test(gate), '两份题源谁先到就先用谁（不要死等慢的那份）');
+  assert.ok(/flowAskable\(/.test(gate), '题源门必须用 askable 判据，不能只看 fetch 成没成功');
+});
+
+test('app.js：startSession / render 都有兜底，题源未定案时给「题目还在载入」而不是结果页', function () {
+  const st = bodyAfter(APP, 'function startSession(targets, label, limit, mode)');
+  assert.ok(/questionSourcesSettled\(\)/.test(st), 'startSession 必须判断题源是否已定案');
+  assert.ok(/pendingStart = \{ targets/.test(st), 'startSession 必须挂起会话参数，等题源到货后自动重开');
+  assert.ok(/renderQuestionsPending\(\)/.test(st), 'startSession 在题源未定案时应渲染等待界面');
+  assert.ok(/renderNoQuestions\(/.test(st), '题源都定案仍无题时应给可操作的重试卡（不是 0 题结果页）');
+  const rd = bodyAfter(APP, 'function render()');
+  assert.ok(/questionSourcesSettled\(\)/.test(rd) && /renderQuestionsPending\(\)/.test(rd),
+    'render() 也要兜底：一题没答却说没题 → 等待界面，不许出结果页');
+  const pend = bodyAfter(APP, 'function renderQuestionsPending()');
+  assert.ok(/题目还在载入/.test(pend), '等待界面必须有「题目还在载入…」文字');
+  assert.ok(/skel-bar/.test(pend), '等待界面要有占位条（不能只靠转圈）');
+  /* 到货后自动继续：两份题源各自的完成点都要尝试续上 */
+  assert.ok(/resumePendingStart\(\)/.test(bodyAfter(APP, 'async function loadQuestions()')), '题库到货后应尝试续上挂起的会话');
+  assert.ok(/resumePendingStart\(\)/.test(bodyAfter(APP, 'function ensureFullTopics()')), '全量到货后应尝试续上挂起的会话');
+});
+
+test('自检：把题源判断退化成「目标在图里就行」，上面那条 P0 判据必须报红', function () {
+  /* 上一版等价实现：只看目标在不在图里（lite 里当然在），然后直接开会话 */
+  const naive = function (topics, targets) {
+    const g = ENGINE.buildGraph(topics, [], null);
+    const okTargets = targets.every(function (id) { return !!g.byId[id]; });
+    if (!okTargets) return false;
+    return !!(ENGINE.nextItem(g, ENGINE.createSession(g, targets, PROBE_OPTS)));
+  };
+  assert.strictEqual(naive(liteMath, [PROBE_TARGET]), false,
+    '退化版即使「目标在 lite 图里」，nextItem 也是 null —— 说明判据必须看题源，不能只看目标存在');
+  /* 反过来说明：如果判据被改成「目标存在就放行」，就会漏过空会话 */
+  const tooLoose = function (topics, targets) {
+    const g = ENGINE.buildGraph(topics, [], null);
+    return targets.every(function (id) { return !!g.byId[id]; });
+  };
+  assert.strictEqual(tooLoose(liteMath, [PROBE_TARGET]), true,
+    '过于宽松的判据会放行（这正是上一版的 bug）——askable 必须比它更严');
+  /* 真实 askable 比它更严：同一份数据上返回 false */
+  assert.strictEqual(APP_MOD.askable(ENGINE, liteMath, [], null, [PROBE_TARGET], PROBE_OPTS), false);
+});
+
 /* ------------------------------------------------------------ 自检（测试有效性） */
 test('自检：把 description 塞进 lite 第一条，白名单断言必须报红（证明上面那条测试真的有效）', function () {
   const lite = JSON.parse(fs.readFileSync(LITE_PATH, 'utf8'));
