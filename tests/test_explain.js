@@ -244,6 +244,106 @@ testAsync('ask：JSON 带 graph → res.graph 原样透出（结构不丢）', a
   } finally { m.restore(); }
 });
 
+/* ---- 4. 超时（t_b30f8c7c）：两处 fetch 都接 AbortController，网络挂起不再永远等 ---- */
+const LLMCFG = require('../diagnose/llm-config.js');
+
+/* 假 AbortError（浏览器里是 DOMException，Node 里用 Error + name 等价） */
+function abortError() {
+  const e = new Error('The operation was aborted.');
+  e.name = 'AbortError';
+  return e;
+}
+
+/* 永不 resolve 的 fetch：只在 signal abort 时 reject AbortError（模拟代理半开 / Provider 不返回） */
+function hangingFetch(state) {
+  const real = globalThis.fetch;
+  globalThis.fetch = function (url, opts) {
+    state.calls++;
+    state.signals.push(opts && opts.signal);
+    return new Promise(function (_resolve, reject) {
+      const sig = opts && opts.signal;
+      if (!sig) return;   // 没有 signal 就永远挂着（超时没接上时测试会超时失败）
+      sig.addEventListener('abort', function () { state.aborted++; reject(abortError()); });
+    });
+  };
+  return function () { globalThis.fetch = real; };
+}
+
+/* 临时把配置里的超时调小（不真等 30s） */
+function withChatTimeout(ms) {
+  const real = LLMCFG.timeouts.chat;
+  LLMCFG.timeouts.chat = ms;
+  return function () { LLMCFG.timeouts.chat = real; };
+}
+
+const QT = { id: 'timeout-q1', type: 'numeric', prompt: '解方程 x+2=5。', answer: '3' };
+
+testAsync('generate：fetch 永不 resolve → 在配置的超时 + 500ms 内返回失败结果（不永远 pending）', async () => {
+  const X = loadExplain();
+  X._cache.clear();
+  const TIMEOUT = 120;
+  const restoreCfg = withChatTimeout(TIMEOUT);
+  const state = { calls: 0, aborted: 0, signals: [] };
+  const restoreFetch = hangingFetch(state);
+  const t0 = Date.now();
+  try {
+    const r = await X.generate(T, QT, '1');
+    const dt = Date.now() - t0;
+    assert.ok(dt <= TIMEOUT + 500, '应在配置超时 + 500ms 内返回，实际 ' + dt + 'ms');
+    assert.strictEqual(r.from, 'static', '超时应回退静态讲解（永不 reject）');
+    assert.strictEqual(r.reason, 'timeout', '超时的 reason 应为 timeout');
+    assert.ok(r.notice && r.notice.indexOf('重试') >= 0 && r.notice.indexOf('看答案') >= 0,
+      '超时文案应可操作（重试 / 看答案），实际：' + r.notice);
+    assert.deepStrictEqual(r.steps, E.socraticSteps(T, QT), '失败仍给静态三步，不是空内容');
+    assert.strictEqual(state.calls, 1, '不应自动重试（总时长以配置超时为界）');
+    assert.strictEqual(state.aborted, 1, '定时器到点应 abort 一次');
+    assert.ok(state.signals[0] && typeof state.signals[0].addEventListener === 'function',
+      'fetch 必须收到 AbortSignal');
+  } finally { restoreFetch(); restoreCfg(); }
+});
+
+testAsync('generate：fetch 直接以 AbortError 拒绝 → 走既有失败分支，文案与普通网络失败一致', async () => {
+  const X = loadExplain();
+  const real = globalThis.fetch;
+  try {
+    X._cache.clear();
+    globalThis.fetch = function () { return Promise.reject(abortError()); };
+    const aborted = await X.generate(T, { id: 'abort-q1', type: 'numeric', prompt: 'x+2=5', answer: '3' }, '1');
+
+    X._cache.clear();
+    globalThis.fetch = function () { return Promise.reject(new Error('econnrefused')); };
+    const netfail = await X.generate(T, { id: 'net-q1', type: 'numeric', prompt: 'x+2=5', answer: '3' }, '1');
+
+    assert.strictEqual(aborted.from, 'static', 'AbortError 应回退静态讲解');
+    assert.strictEqual(aborted.reason, 'timeout', 'AbortError 的 reason 应为 timeout');
+    assert.strictEqual(netfail.from, 'static', '网络错误仍回退静态讲解');
+    assert.strictEqual(netfail.reason, 'network', '网络错误的 reason 应为 network');
+    assert.strictEqual(aborted.notice, netfail.notice, 'aborted 与网络失败的文案必须一致');
+    assert.ok(aborted.notice.indexOf('重试') >= 0, '文案应可操作');
+  } finally { globalThis.fetch = real; }
+});
+
+testAsync('ask（追问）：fetch 永不 resolve → 超时后返回 offline 失败、不 reject、文案同一条', async () => {
+  const X = loadExplain();
+  const TIMEOUT = 120;
+  const restoreCfg = withChatTimeout(TIMEOUT);
+  const state = { calls: 0, aborted: 0, signals: [] };
+  const restoreFetch = hangingFetch(state);
+  const steps = [{ kind: 'hint', text: '移项要变号。' }];
+  const t0 = Date.now();
+  try {
+    const r = await X.ask(T, QT, '1', steps, '什么叫移项？');
+    const dt = Date.now() - t0;
+    assert.ok(dt <= TIMEOUT + 500, '追问也应在配置超时 + 500ms 内返回，实际 ' + dt + 'ms');
+    assert.strictEqual(r.from, 'offline', '追问超时应走既有 offline 分支');
+    assert.strictEqual(r.text, null, '超时不得当成空内容渲染');
+    assert.strictEqual(r.graph, null);
+    assert.strictEqual(r.reason, 'timeout', '追问超时的 reason 应为 timeout');
+    assert.ok(r.notice && r.notice.indexOf('重试') >= 0, '追问超时也要给可操作文案，实际：' + r.notice);
+    assert.strictEqual(state.aborted, 1, '追问的第二处 fetch 同样要接 AbortController');
+  } finally { restoreFetch(); restoreCfg(); }
+});
+
 (async function main() {
   for (const t of asyncTests) {
     try { await t.fn(); passed++; console.log('  ok   ' + t.name); }
