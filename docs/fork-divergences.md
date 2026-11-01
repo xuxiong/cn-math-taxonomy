@@ -24,6 +24,7 @@
 | 6 | 分享图 / PWA 引导图文字 / 分享二维码链接改指 `xuxiong.github.io/cn-math-taxonomy` | 本站是 fork，不该导流到上游生产站 | `79f7454`、`c652a49` | `tests/test_fork_guards.js` (f) |
 | 7 | 「关于」/「提交 Issue」链到 `github.com/xuxiong/cn-math-taxonomy` | 同上 | 早于 `79f7454` | `tests/test_fork_guards.js` (b) 只挡住「白名单外的域名」，**不校验仓库名**；见下面已知缺口 |
 | 8 | 全站 LLM 型号统一为 `DeepSeek-V4.1-Flash-1017-Unlimited`，且**只写在 `diagnose/llm-config.js` 一处**（explain / labmatch / llm-gateway / route / llm-variants 都从它取值；网关地址同样只在那里，浏览器走 `scripts/serve.js` 的 `/v1` 同源反代，不再依赖网关 CORS） | 上游硬编码的型号在本机网关里已可下线（`DeepSeek-V4-Flash-0731-TokenPlan` 直接返回 `{"retCode":9}`）；型号一失效，画板语义匹配整层按设计 fail-closed，所有讲解页都不挂画板，而测试全绿——静默退化 | `t_053abd33`、`t_b6b76e3c` | `tests/test_fork_guards.js` (h)（型号正确 + 除 `llm-config.js` 外不得再出现网关地址/型号字面量） |
+| 9 | 引入 Umami 匿名访问统计（`cloud.umami.is`，5 个页面各一个 script） | 孩子端上线后无法得知有没有人访问；Pages 与仓库 Insights 都不提供站点访问数据。统计口径刻意收窄：不带 cookie、不采集 URL 查询参数、只认 `xuxiong.github.io`、尊重 DNT；上游自建采集 worker（第 5 条）仍然关闭 | 本次提交 | `tests/test_fork_guards.js` (i) |
 
 ## 维护方式
 
@@ -39,6 +40,15 @@
 
 - 加白名单（确有正当外链）要改 `tests/test_fork_guards.js` 顶部的 `ALLOWED_DOMAINS`
   和 `scripts/fork-guard.mjs` 顶部的同名数组，并写注释说明用途 —— 改代码、看得见、走 review。
+
+## 第 9 条与第 5 条的关系
+
+第 5 条关闭的是「上游自建 worker 上报」，本条引入的是「第三方匿名计数」，两者不冲突：
+`assets/stats-config.js` 的 `endpoint` 依旧为空，本站不向任何自建地址发数据；
+Umami 那条标签只发匿名页面/事件，不带 cookie、不带 URL 查询参数（`?target=cnm_…` 这类题目 ID 不外泄）、
+只在 `xuxiong.github.io` 下生效、并尊重访客 DNT。
+
+但若将来要彻底回到零统计，改这一条即可：删 5 个页面里的 Umami `<script>` 标签 + 删守卫 (i)。
 
 ## 已知缺口（需要人判断，脚本不自动处理）
 
