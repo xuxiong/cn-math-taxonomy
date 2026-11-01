@@ -135,11 +135,12 @@ function tick() { return new Promise(function (r) { setImmediate(r); }); }
 
 /* ---------------------------------------------------------------- 1. index.html */
 
-test('index.html 不再同步加载那 14 个脚本', function () {
+test('index.html 不再同步加载那 14 个脚本（首屏只剩 chapter/lazyload/app 三件）', function () {
   const eager = assertNoEager(HTML);
-  /* 首屏该留的还在（顺序不变：llm-config → engine → children → blindspots → lazyload → app） */
-  const keep = ['llm-config.js', 'engine.js', '../assets/children.js', '../assets/blindspots.js', 'lazyload.js', 'app.js',
-    '../assets/stats-config.js', '../assets/stats.js', '../assets/pwa.js'];
+  /* 首屏（阶段 0/1 就要跑）只留三件，顺序：chapter.js → lazyload.js → app.js。
+   * chapter.js 是首屏纯函数层（parseChapter/subjectOf/buildGraph/gradeTargets + 题量常量）；
+   * engine.js / app-flow.js / children / blindspots / llm-config / stats / pwa 全都不许回来。 */
+  const keep = ['chapter.js', 'lazyload.js', 'app.js'];
   let last = -1;
   keep.forEach(function (p) {
     const at = eager.indexOf(p);
@@ -147,6 +148,15 @@ test('index.html 不再同步加载那 14 个脚本', function () {
     assert.ok(at > last, '首屏脚本顺序被改动：' + p);
     last = at;
   });
+  const MUST_BE_LAZY = ['engine.js', 'app-flow.js', 'llm-config.js', '../assets/children.js',
+    '../assets/blindspots.js', '../assets/stats-config.js', '../assets/stats.js', '../assets/pwa.js'];
+  MUST_BE_LAZY.forEach(function (p) {
+    assert.strictEqual(eager.indexOf(p), -1, 'index.html 不应同步加载 ' + p + '（首屏字节预算 / 首屏不依赖引擎）');
+    assert.ok(APP.indexOf(p) >= 0, p + ' 应由 app.js 用 Lazy.load 按需注入');
+  });
+  /* 首屏脚本总数上限：const 三件，多一件都要先过预算关 */
+  assert.ok(eager.filter(function (x) { return x.indexOf('http') !== 0; }).length <= 4,
+    '首屏同源脚本不许超过 4 件：' + eager.join(','));
 });
 
 test('index.html 里 lazyload.js 在 app.js 之前', function () {
