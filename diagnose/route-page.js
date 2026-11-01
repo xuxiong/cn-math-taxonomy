@@ -38,6 +38,56 @@
     });
   }
 
+  /* ------------------------------------------- 刷新后恢复（kanban t_70cabf77）
+   * 存档只装原始数据（输入文字 + 各段 view 的原始结构），绝不装 HTML；
+   * 组装/解析/版本闸门/清理全在 route.js 的纯函数里，本文件只把 sessionStorage 递过去。
+   * 用 sessionStorage 而不是 localStorage：一次作业的临时材料，关标签页就该没。
+   */
+  var STORE = null;
+  function store() {
+    try { STORE = window.sessionStorage || null; } catch (e) { STORE = null; }
+    return STORE;
+  }
+
+  var lastView = null;   /* 最近一次渲染出来的各段原始数据（进存档的那份，不含 HTML） */
+  var viewText = '';     /* 这份 view 对应的输入文字 */
+
+  function persist(text) {
+    if (!R || typeof R.saveArchive !== 'function') return;   /* 旧版 route.js：不存也不报错 */
+    var keep = (lastView && text === viewText) ? lastView : null;
+    R.saveArchive(store(), Date.now(), text, keep);
+  }
+
+  function showRestoreBar(at, hasView) {
+    var bar = $('restore-bar');
+    if (!bar) return;
+    $('restore-note').textContent = R.archiveNote(at, hasView);
+    bar.hidden = false;
+  }
+  function hideRestoreBar() {
+    var bar = $('restore-bar');
+    if (bar) bar.hidden = true;
+  }
+
+  /* 存档版的 view：只留渲染真正要用的字段。候选池只留前 20 个（页面本来也只列 20 个），
+   * 免得把几百个候选塞进 sessionStorage —— 恢复时反正不会再调 LLM。 */
+  function slimView(st) {
+    var pool = null;
+    if (st.pool) {
+      pool = {
+        ok: st.pool.ok, reason: st.pool.reason, detail: st.pool.detail,
+        levelLabel: st.pool.levelLabel, count: st.pool.count,
+        chapterUsed: st.pool.chapterUsed, chapterNote: st.pool.chapterNote,
+        topics: (st.pool.topics || []).slice(0, 20)
+      };
+    }
+    return {
+      fields: st.fields, skip: st.skip, subject: st.subject || null,
+      pool: pool, picks: st.picks, verify: st.verify, prereq: st.prereq, path: st.path,
+      status: st.status, level: st.level
+    };
+  }
+
   /* ---------------------------------------------------------------- ① 字段 */
 
   function fieldRow(label, f, extra) {
@@ -325,81 +375,171 @@
 
   /* ------------------------------------------------------------- 主流程 */
 
+  /* 把「要显示什么」收成一份原始数据；渲染只是它的消费者。
+   * 刷新恢复时喂同一份结构、走同一条渲染路径 —— 恢复出来的页面与刷新前一致，
+   * 因为没有第二条渲染路径可以走偏。 */
+  function renderState(st) {
+    clearSections();
+    if (!st) return;
+    if (st.fields) renderFields(st.fields);
+
+    if (st.skip === 'notMath') {
+      /* 非数学文字（语文/英语/物理…）：先拒绝，不进入候选池流程，避免任何强行匹配 */
+      $('pool-body').innerHTML = '<div class="badbox"><strong>拒绝定位：这段文字不是数学题' +
+        '（识别到「' + esc(st.subject) + '」）。</strong>' +
+        '<p class="small" style="margin:6px 0 0">本页只做数学知识点定位。' +
+        '拿一段数学对不上的文字硬套一个数学知识点，学生就会照着复习一小时——宁可不给。</p></div>';
+      show('sec-pool', true);
+      return;
+    }
+
+    if (st.pool) renderPool(st.pool);
+    /* ①② 已经渲染完了：后面即使网关挂掉，这两段也在 */
+    if (st.skip === 'insufficient') return;
+
+    if (st.picks) renderPicks(st.picks);
+    if (st.verify) {
+      renderVerify(st.verify);
+    } else if (st.skip === 'offline') {
+      $('verify-body').innerHTML = '<p class="skip">跳过：没有 LLM 的选择就无法校验。' +
+        '（这不是「定位不到」，是这一层没跑起来。）</p>';
+      show('sec-verify', true);
+    }
+
+    if (st.prereq) {
+      renderPrereq(st.prereq);
+    } else if (st.skip === 'offline' || st.skip === 'rejected') {
+      $('prereq-body').innerHTML = '<p class="skip">' + esc(st.skip === 'offline'
+        ? '跳过：定位没确定，不给前置链和路径。'
+        : '跳过：校验拒绝，不给前置链。') + '</p>';
+      show('sec-prereq', true);
+    }
+
+    if (st.picks || st.path) renderStage6(st.path ? { path: st.path } : null, st.verify || null);
+  }
+
+  /** 每一步的收尾：渲染 + 存盘 + 放开按钮。存档里是原始数据，view 里不含 HTML。 */
+  function finish(st, text) {
+    renderState(st);
+    setStatus(st.status, st.level);
+    hideRestoreBar();   /* 这一屏是刚跑出来的，不再是「恢复上次的分析」 */
+    lastView = slimView(st);
+    viewText = text;
+    persist(text);
+    $('btn-run').disabled = false;
+  }
+
   function run() {
     if (!R || !window.__routeReady) {
       setStatus('数据还没加载完，请稍候', 'err');
       return;
     }
-    clearSections();
     var text = $('in-text').value || '';
     $('btn-run').disabled = true;
     setStatus('解析中……');
 
-    var fields = R.parseFields(text);
-    renderFields(fields);
+    var st = {
+      fields: R.parseFields(text), skip: null, subject: null,
+      pool: null, picks: null, verify: null, prereq: null, path: null,
+      status: '', level: ''
+    };
 
-    /* 非数学文字（语文/英语/物理…）：先拒绝，不进入候选池流程，避免任何强行匹配 */
-    if (fields.subject && fields.subject.parsed && !fields.subject.math) {
-      $('pool-body').innerHTML = '<div class="badbox"><strong>拒绝定位：这段文字不是数学题' +
-        '（识别到「' + esc(fields.subject.value) + '」）。</strong>' +
-        '<p class="small" style="margin:6px 0 0">本页只做数学知识点定位。' +
-        '拿一段数学对不上的文字硬套一个数学知识点，学生就会照着复习一小时——宁可不给。</p></div>';
-      show('sec-pool', true);
-      setStatus('不是数学题，已拒绝定位', 'err');
-      $('btn-run').disabled = false;
+    if (st.fields.subject && st.fields.subject.parsed && !st.fields.subject.math) {
+      st.skip = 'notMath';
+      st.subject = st.fields.subject.value;
+      st.status = '不是数学题，已拒绝定位';
+      st.level = 'err';
+      finish(st, text);
       return;
     }
 
-    var pool = R.candidates(fields);
-    renderPool(pool);
+    st.pool = R.candidates(st.fields);
+    renderState(st);
 
-    /* ① ② 已经渲染完了：后面即使网关挂掉，这两段也在 */
-    if (!pool.ok) {
-      setStatus('信息不足，未做定位', 'err');
-      $('btn-run').disabled = false;
+    if (!st.pool.ok) {
+      st.skip = 'insufficient';
+      st.status = '信息不足，未做定位';
+      st.level = 'err';
+      finish(st, text);
       return;
     }
 
-    setStatus('候选池 ' + pool.count + ' 个，正在调用网关选择……');
-    R.askLLM(fields, pool.topics, {
+    setStatus('候选池 ' + st.pool.count + ' 个，正在调用网关选择……');
+    R.askLLM(st.fields, st.pool.topics, {
       fetch: window.fetch ? window.fetch.bind(window) : null,
       proxy: window.__ROUTE_PROXY || undefined
     })
       .then(function (llm) {
         if (!llm.ok) {
-          renderPicks({ stage: 'offline', message: llm.why });
-          $('verify-body').innerHTML = '<p class="skip">跳过：没有 LLM 的选择就无法校验。' +
-            '（这不是「定位不到」，是这一层没跑起来。）</p>';
-          show('sec-verify', true);
-          $('prereq-body').innerHTML = '<p class="skip">跳过：定位没确定，不给前置链和路径。</p>';
-          show('sec-prereq', true);
-          renderStage6(null, null);
-          setStatus('网关不可用：①② 已给出，③ 未完成', 'err');
-          $('btn-run').disabled = false;
+          st.skip = 'offline';
+          st.picks = { stage: 'offline', message: llm.why };
+          st.status = '网关不可用：①② 已给出，③ 未完成';
+          st.level = 'err';
+          finish(st, text);
           return;
         }
-        renderPicks({ stage: 'ok', picks: llm.picks });
-        var v = R.verifyPick(llm.picks, { pool: pool.topics, fields: fields });
-        renderVerify(v);
+        st.picks = { stage: 'ok', picks: llm.picks };
+        var v = R.verifyPick(llm.picks, { pool: st.pool.topics, fields: st.fields });
+        st.verify = v;
         if (!v.ok) {
-          $('prereq-body').innerHTML = '<p class="skip">跳过：校验拒绝，不给前置链。</p>';
-          show('sec-prereq', true);
-          renderStage6(null, v);
-          setStatus('校验拒绝：分析结果无法定位到知识点', 'err');
-          $('btn-run').disabled = false;
+          st.skip = 'rejected';
+          st.status = '校验拒绝：分析结果无法定位到知识点';
+          st.level = 'err';
+          finish(st, text);
           return;
         }
-        var pre = R.prerequisites(v.kept[0].id, 2);
-        renderPrereq(pre);
-        renderStage6({ path: R.buildPath(pre) }, v);
-        setStatus('完成：' + v.kept.length + ' 个候选知识点，路径节点都待测确认', '');
-        $('btn-run').disabled = false;
+        st.prereq = R.prerequisites(v.kept[0].id, 2);
+        st.path = R.buildPath(st.prereq);
+        st.status = '完成：' + v.kept.length + ' 个候选知识点，路径节点都待测确认';
+        st.level = '';
+        finish(st, text);
       })
       .catch(function (err) {
-        renderPicks({ stage: 'offline', message: String(err && err.message || err) });
-        setStatus('出错了：' + (err && err.message || err), 'err');
-        $('btn-run').disabled = false;
+        st.skip = 'offline';
+        st.picks = { stage: 'offline', message: String(err && err.message || err) };
+        st.status = '出错了：' + (err && err.message || err);
+        st.level = 'err';
+        finish(st, text);
       });
+  }
+
+  /* --------------------------------------------------------- 恢复与清空 */
+
+  var pendingView = null;   /* 已读到但还没渲染的存档视图（要等数据加载完） */
+
+  function renderPendingView() {
+    if (!pendingView || !window.__routeReady) return;
+    var st = pendingView;
+    pendingView = null;
+    renderState(st);
+    setStatus(st.status || '', st.level || '');
+    lastView = st;
+    viewText = $('in-text').value || '';
+  }
+
+  /** 页面加载：有存档就恢复输入框 + 顶部提示；各段等数据就绪后再渲染。 */
+  function restoreArchive() {
+    /* 旧版 route.js 被缓存住时没有这些函数：当作没有存档，绝不让恢复路径拖垮整页 */
+    if (!R || typeof R.loadArchive !== 'function') return false;
+    var got = R.loadArchive(store());
+    if (!got.ok) return false;
+    pendingView = got.data.view || null;
+    $('in-text').value = got.data.text || '';
+    showRestoreBar(got.data.at, !!pendingView);
+    renderPendingView();
+    return true;
+  }
+
+  /** 「清空」：输入、各段、提示条，以及 sessionStorage 里的存档一起清。 */
+  function clearAll() {
+    $('in-text').value = '';
+    clearSections();
+    setStatus('');
+    lastView = null;
+    viewText = '';
+    pendingView = null;
+    if (R && typeof R.clearArchive === 'function') R.clearArchive(store());
+    hideRestoreBar();
   }
 
   /* ------------------------------------------------------------ 数据加载 */
@@ -422,6 +562,7 @@
       buildEngineGraph(rs[0], rs[1], rs[2]);
       window.__routeReady = true;
       setStatus('数据已加载：数学知识点 ' + info.topics + ' 个，依赖边 ' + info.dependencies + ' 条');
+      renderPendingView();
     }).catch(function (err) {
       setStatus('数据加载失败：' + (err && err.message || err) + '（请用 node scripts/serve.js 起服务后访问）', 'err');
     });
@@ -442,16 +583,31 @@
     window.D.engineGraph = E.buildGraph(math, edges, qs);
   }
 
+  /* ---------------------------------------------------------------- 接线 */
+
   $('btn-run').addEventListener('click', run);
-  $('btn-clear').addEventListener('click', function () {
-    $('in-text').value = '';
-    clearSections();
-    setStatus('');
-  });
+  $('btn-clear').addEventListener('click', clearAll);
+  /* 提示条上的「清空」与 #btn-clear 同一个动作：清输入、清各段、清存档 */
+  var barClear = $('btn-restore-clear');
+  if (barClear) barClear.addEventListener('click', clearAll);
+
   /* Ctrl/⌘ + Enter 直接定位 */
   $('in-text').addEventListener('keydown', function (e) {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') run();
   });
 
+  /* 打字就存（300ms 防抖）：刷新/切走回来输入框还在。
+   * 文字一改，上次的结果就不再对应这段文字 —— 存档里丢掉旧 view，不拿旧结果冒充新文字的分析。 */
+  var inputTimer = null;
+  $('in-text').addEventListener('input', function () {
+    if (inputTimer) clearTimeout(inputTimer);
+    inputTimer = setTimeout(function () {
+      inputTimer = null;
+      persist($('in-text').value || '');
+    }, 300);
+  });
+
+  /* 先恢复输入框和提示条（各段等数据就绪后再渲染），再拉数据 */
+  if (R) restoreArchive();
   loadData();
 })();

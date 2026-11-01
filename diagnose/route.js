@@ -1214,6 +1214,94 @@
   }
 
   /* ================================================================
+   * 6b. 刷新后恢复（kanban t_70cabf77）：一次作业的临时存档
+   * ================================================================
+   * 只做「组装 / 解析 / 版本闸门 / 清理」这四件纯逻辑；存储对象由调用方注入
+   * （浏览器传 window.sessionStorage，Node 测试传假 storage），
+   * 本文件仍然不碰 DOM、不碰浏览器存储 API。
+   *
+   * 三条不可妥协：
+   *   a) 存档只存**原始数据**（输入文字 + 各段 view），绝不存 HTML 字符串 ——
+   *      存 HTML 等于把渲染结果当数据，改一版文案就会恢复出旧样式的页面。
+   *   b) 版本不认识 / JSON 坏了 / 结构不对 → 静默忽略**并清掉**，绝不抛错。
+   *      白屏比丢一屏更糟：学生看到的是「页面坏了」，不是「上次的记录没了」。
+   *   c) 用 sessionStorage 而不是持久化存储：这是一次作业的临时材料，关标签页就该没。
+   */
+
+  var ARCHIVE_KEY = 'cnmRouteDraft.v1';
+  var ARCHIVE_VERSION = 1;
+
+  /** 存档键名（页面层与测试共用；不写进任何 URL、日报或 sw.js 预热清单） */
+  function archiveKey() { return ARCHIVE_KEY; }
+
+  /** 组装存档（纯函数：不写存储）。at 是毫秒时间戳。 */
+  function buildArchive(at, text, view) {
+    return {
+      v: ARCHIVE_VERSION,
+      at: (typeof at === 'number' && isFinite(at)) ? at : 0,
+      text: String(text == null ? '' : text),
+      view: view == null ? null : view
+    };
+  }
+
+  /** 写存档。返回 true/false；存储不可用（隐私模式、配额满）→ false，绝不抛。 */
+  function saveArchive(storage, at, text, view) {
+    if (!storage || typeof storage.setItem !== 'function') return false;
+    try {
+      storage.setItem(ARCHIVE_KEY, JSON.stringify(buildArchive(at, text, view)));
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /** 解析存档字符串（纯函数）。坏 JSON / 版本不认识 / 结构不对 → { ok:false, why }。 */
+  function parseArchive(raw) {
+    if (raw == null || raw === '') return { ok: false, why: 'empty' };
+    var obj;
+    try { obj = JSON.parse(raw); } catch (e) { return { ok: false, why: 'bad-json' }; }
+    if (!obj || typeof obj !== 'object') return { ok: false, why: 'bad-json' };
+    if (obj.v !== ARCHIVE_VERSION) return { ok: false, why: 'version' };
+    if (typeof obj.text !== 'string') return { ok: false, why: 'bad-shape' };
+    /* view 只接受对象或 null：字符串（尤其是 HTML 字符串）一律当坏档 */
+    if (obj.view != null && typeof obj.view !== 'object') return { ok: false, why: 'bad-shape' };
+    return {
+      ok: true,
+      data: {
+        v: obj.v,
+        at: numOr(obj.at, 0),
+        text: obj.text,
+        view: obj.view == null ? null : obj.view
+      }
+    };
+  }
+
+  /** 清存档（清不掉也不许抛：存储不可用时直接放弃）。 */
+  function clearArchive(storage) {
+    if (!storage || typeof storage.removeItem !== 'function') return false;
+    try { storage.removeItem(ARCHIVE_KEY); return true; } catch (e) { return false; }
+  }
+
+  /** 读存档；坏内容/旧版本顺手清掉再返回 { ok:false, why }。 */
+  function loadArchive(storage) {
+    if (!storage || typeof storage.getItem !== 'function') return { ok: false, why: 'no-storage' };
+    var raw;
+    try { raw = storage.getItem(ARCHIVE_KEY); } catch (e) { return { ok: false, why: 'no-storage' }; }
+    var got = parseArchive(raw);
+    if (!got.ok) clearArchive(storage);   /* 坏档不留在存储里反复踩 */
+    return got;
+  }
+
+  /** 「已恢复上次的分析（时间 14:05）」—— 顶部那一行提示的唯一来源。
+   *  只恢复了输入（这次没跑出结果）时说「已恢复上次的输入」，别让学生以为结果还在。 */
+  function archiveNote(at, hasView) {
+    var d = new Date(numOr(at, 0));
+    var what = hasView === false ? '输入' : '分析';
+    if (!isFinite(d.getTime())) return '已恢复上次的' + what;
+    var hh = ('0' + d.getHours()).slice(-2);
+    var mm = ('0' + d.getMinutes()).slice(-2);
+    return '已恢复上次的' + what + '（时间 ' + hh + ':' + mm + '）';
+  }
+
+  /* ================================================================
    * 7. 导出
    * ================================================================ */
 
@@ -1241,6 +1329,14 @@
     matchSession: matchSession,
     rootCaveat: rootCaveat,
     suggestedOrder: suggestedOrder,
+    /* 刷新后恢复（kanban t_70cabf77）：存档的纯逻辑，存储对象由调用方注入 */
+    archiveKey: archiveKey,
+    buildArchive: buildArchive,
+    saveArchive: saveArchive,
+    parseArchive: parseArchive,
+    loadArchive: loadArchive,
+    clearArchive: clearArchive,
+    archiveNote: archiveNote,
     /* 工具 */
     gradeLabel: gradeLabel,
     stageOfGrade: stageOfGrade,
