@@ -394,5 +394,198 @@ test('自检：index 少了 key 时，覆盖断言必须报红', function () {
   }, /key 数应正好等于|缺这个章节的 key/, 'index 少 key 没有报红：断言无效');
 });
 
-console.log('\n' + (failed === 0 ? '全部通过' : '存在失败') + '：' + passed + ' passed, ' + failed + ' failed');
-process.exit(failed === 0 ? 0 : 1);
+/* ------------------------------------------------------------ 6. 退化路径（卡 t_83ca3ac5）
+ *
+ * 复核卡 t_588d8341 用注入 404 的本地服务实测出的两个「测试覆盖不到的破法」：
+ *   ① bundle 404 / 离线未缓存 → 无 warn、不回退全量，静默降到 topics.json 的 diagnostic_question，
+ *      会话「本知识点第 1 / 1 题」，答完一题结果页说「都掌握啦，真棒！…目标知识点已掌握」；
+ *   ② A→B 快速切换（0.45s 内）→ B 的题库一次都没请求，6.5s 后开的是 A 的会话，无任何提示。
+ * 下面这组真跑 loadBundle（Node，无 DOM：靠 resetQuestionsCache + 注入 fetch 计数）并用真实数据
+ * 跑引擎，断言「warn 文案 + questions.json 只取一次 + 结果页头条/判据不许说已掌握」。
+ */
+const ENGINE = require('../diagnose/engine.js');
+const APP_MOD = require('../diagnose/app.js');
+const TOPICS = JSON.parse(fs.readFileSync(TOPICS_PATH, 'utf8')).filter(function (t) { return String(t.id).indexOf('cnm') === 0; });
+/* 目标要同时有 diagnostic_question（兜底题来源）和真题（真题库来源），两个方向都能测到 */
+const PAIRED = TOPICS.filter(function (t) {
+  return t && !t.external && t.diagnostic_question && t.diagnostic_question.question &&
+    questions.some(function (q) { return q.topicId === t.id; });
+});
+const PAIRED_TARGET = PAIRED.length ? PAIRED[0].id : null;
+const SESSION_OPTS = { mode: 'target', limit: 8, confirm: 2, seed: 'degrade' };
+
+/* 注入 fetch：按 route 返回假响应，并记下每次请求的 URL（等于服务端日志）。 */
+function stubFetch(routes) {
+  const calls = [];
+  global.fetch = function (url) {
+    const u = String(url);
+    calls.push(u);
+    for (let i = 0; i < routes.length; i++) {
+      if (routes[i].test.test(u)) return Promise.resolve(routes[i].res);
+    }
+    return Promise.resolve({ ok: false, status: 404 });
+  };
+  return calls;
+}
+function bundleRequests(calls) {
+  return calls.filter(function (u) { return u.indexOf('data/questions/') >= 0; });
+}
+function fullRequests(calls) {
+  return calls.filter(function (u) { return /data\/questions\.json$/.test(u); });
+}
+async function captureWarns(fn) {
+  const warns = [];
+  const orig = console.warn;
+  console.warn = function () { warns.push(Array.prototype.slice.call(arguments).join(' ')); };
+  try { await fn(); } finally { console.warn = orig; }
+  return warns;
+}
+function restoreFetch() { try { delete global.fetch; } catch (e) { global.fetch = undefined; } }
+
+async function testAsync(name, fn) {
+  try { await fn(); passed++; console.log('  ok   ' + name); }
+  catch (e) { failed++; console.log('  FAIL ' + name + '\n       ' + (e && e.stack || e).split('\n').slice(0, 8).join('\n       ')); }
+}
+
+test('数据前置：有「既有 diagnostic_question 又有真题」的知识点（本组退化用例的靶子）', function () {
+  assert.ok(PAIRED_TARGET, '数据里找不到既有 diagnostic_question 又有真题的数学知识点，本组用例失效');
+});
+
+test('app.js：bundle 404 分支在源码里与「index 缺 key」完全对齐（warn 文案 + loadFullQuestions）', function () {
+  const body = bodyAfter(APP, 'async function loadBundle(');
+  assert.ok(body.indexOf("'[questions] bundle 取不到，回退全量'") >= 0,
+    'bundle 取不到时缺 warn 文案：[questions] bundle 取不到，回退全量');
+  const pair = /bundle 取不到，回退全量[\s\S]{0,200}?return loadFullQuestions\(\)/.exec(body);
+  assert.ok(pair, 'bundle 取不到时必须回退到全量 data/questions.json（不许 return false 了事）');
+  const fb = bodyAfter(APP, 'async function fetchBundle(');
+  assert.ok(/if \(!r\.ok\) return null;/.test(fb), '非 2xx 应返回 null（交给回退全量）');
+  assert.ok(/Array\.isArray\(list\) \? list : null/.test(fb), '坏 JSON / 非数组也应返回 null');
+  assert.ok(/catch \(e\)[\s\S]*return null;/.test(fb), '网络错（离线）也要返回 null，不能把异常抛给调用方');
+});
+
+test('app.js：结果页在「只有诊断题」时不许出现「已掌握」（头条 / 统计 / 已掌握卡 / 小结四处都改）', function () {
+  const rr = bodyAfter(APP, 'function renderResult()');
+  assert.ok(/const diagOnly = diagnosticOnlyRound\(D\.graph, session\);/.test(rr), '结果页要先算「本轮只有兜底诊断题」');
+  assert.ok(/else if \(diagOnly\) page\.append\(noBankCard\(sum\)\);/.test(rr),
+    '只有兜底诊断题时不许画「接下来练什么」小结（那句「都掌握啦，真棒！」是假的）');
+  assert.ok(/diagOnly \? null : stat\('ok', sum\.mastered\.length, '已掌握'\)/.test(rr),
+    '只有兜底诊断题时不许显示「已掌握」统计');
+  assert.ok(/if \(!diagOnly\) page\.append\(h\('details', \{ class: 'card', id: 'mastered' \}/.test(rr),
+    '只有兜底诊断题时不许显示「已掌握的知识点」卡');
+  assert.ok(/const headline = resultHeadline\(sum, session, screen, diagOnly, targetsMastered\);/.test(rr),
+    '头条文案应走 resultHeadline（才能被 Node 直测）');
+  const head = bodyAfter(APP, 'function resultHeadline(');
+  assert.ok(head.indexOf("'题库没取到，本轮只做了 '") >= 0 && head.indexOf("' 道诊断题，结果不作数") >= 0,
+    '头条缺「题库没取到…结果不作数」文案');
+  const gate = /if \(diagOnly\) \{[\s\S]*?\n    \}/.exec(head);
+  assert.ok(gate, 'resultHeadline 应先判 diagOnly');
+  assert.strictEqual(gate[0].indexOf('已掌握'), -1, 'diagOnly 分支里不许出现「已掌握」');
+});
+
+test('app.js：A→B 快速切换不再被静默吞掉（latest-click-wins：门开时按最后一次点击重过）', function () {
+  const body = bodyAfter(APP, 'function withStage2(');
+  const guardAt = body.indexOf('if (flowPending) return;');
+  assert.ok(guardAt > 0, 'withStage2 应保留「门已开着就不叠第二个门」的守卫');
+  assert.ok(body.indexOf('flowJob = { targets: targets, mode: mode, fn: fn }') < guardAt,
+    '守卫之前必须先把这次点击记成 flowJob —— 实测缺陷就是后一次点击在守卫处被静默丢弃（B 的题库 0 次请求，最后开 A 的会话）');
+  assert.ok(body.indexOf('flowSeq++') < guardAt, '守卫之前必须递增点击序号');
+  assert.ok(/if \(flowPending\) return;[\s\S]*openStage2Gate\(\)/.test(body), '门没开着时才开始取题源');
+  const gate = bodyAfter(APP, 'function openStage2Gate()');
+  assert.ok(/const seq = flowSeq;/.test(gate) && /const job = flowJob;/.test(gate), '门要记住开时的序号与目标');
+  assert.ok(/ensureFlowReady\(job\.targets, undefined, job\.mode\)/.test(gate), '门应等「最后一次点击」的目标所在章节');
+  assert.ok(/if \(seq !== flowSeq\) return openStage2Gate\(\)/.test(gate),
+    '门开时若序号已变（等待期间又点了别的），要按最新点击重过门，不许开旧目标的会话');
+  assert.ok(/renderFlowBlocked\(job\.targets, job\.mode, job\.fn\)/.test(gate), '失败时仍要给可操作的重试卡（不许吞掉）');
+  const resets = (gate.match(/flowPending = false;/g) || []).length;
+  assert.strictEqual(resets, 2, '成功 / 兜底两条出口都要放开 flowPending（含取题源抛错时，当前 ' + resets + ' 条）');
+});
+
+test('app.js：题源门不许在「题库还在路上」时开门（否则 bundle 404 回退全量那几秒就是 1 题会话）', function () {
+  const body = bodyAfter(APP, 'async function ensureFlowReady(');
+  assert.ok(/if \(flowAskable\(targets, limit, mode\) && questionsInFlight === 0\) return true;/.test(body),
+    '过门判据必须等题库定案（在飞请求数归零）—— 实测 bundle 404 时全量 7.8MB 还没到，门就开了，' +
+    '会话拿到的是 topics.json 的兜底诊断题（「本知识点第 1 / 1 题」+ 标签「诊断题」）');
+  const afterRace = /await Promise\.race\(\[full, bank\]\);([\s\S]*?)await Promise\.all/.exec(body);
+  assert.ok(afterRace && afterRace[1].indexOf('questionsInFlight === 0') >= 0,
+    '这个判据要放在 race 之后的第一处开门点，不是最后兜底');
+});
+
+async function runDegradeTests() {
+  /* ---- ① bundle 404：warn + 回退全量一次（现有 index 缺 key 分支的行为） ---- */
+  await testAsync('真跑 loadBundle：bundle 404 时 warn「bundle 取不到，回退全量」且 questions.json 被请求一次', async function () {
+    const key = Object.keys(index)[0];
+    const file = index[key];
+    APP_MOD.resetQuestionsCache();
+    const calls = stubFetch([
+      { test: /questions-index\.json$/, res: { ok: true, status: 200, json: async function () { return index; } } },
+      { test: /data\/questions\/[^/]+\.json$/, res: { ok: false, status: 404 } },
+      { test: /data\/questions\.json$/, res: { ok: false, status: 404 } }
+    ]);
+    try {
+      const warns = await captureWarns(async function () { await APP_MOD.loadBundle(key); });
+      assert.strictEqual(bundleRequests(calls).length, 1, '只该试一次 bundle');
+      assert.strictEqual(bundleRequests(calls)[0], '../data/questions/' + file, 'bundle 请求的应是 index 指向的文件');
+      assert.strictEqual(fullRequests(calls).length, 1,
+        'bundle 取不到时必须回退全量一次（实测缺陷：服务端 0 次 questions.json，直接静默降级成 1 道诊断题）');
+      const line = warns.filter(function (w) { return w.indexOf('回退全量') >= 0; }).join(' | ');
+      assert.ok(line.indexOf('[questions] bundle 取不到，回退全量') >= 0, '缺 warn 文案，实际：' + (line || '(无 warn)'));
+      assert.ok(line.indexOf(key) >= 0 && line.indexOf(file) >= 0, 'warn 里应带上 key 与文件名，便于排查：' + line);
+    } finally { restoreFetch(); APP_MOD.resetQuestionsCache(); }
+  });
+
+  await testAsync('真跑 loadBundle：index 缺 key 的老路径行为不变（warn + 只回退一次）', async function () {
+    APP_MOD.resetQuestionsCache();
+    const calls = stubFetch([
+      { test: /questions-index\.json$/, res: { ok: true, status: 200, json: async function () { return {}; } } },
+      { test: /data\/questions\.json$/, res: { ok: false, status: 404 } }
+    ]);
+    try {
+      const warns = await captureWarns(async function () { await APP_MOD.loadBundle('math|0|不存在的章节'); });
+      assert.strictEqual(fullRequests(calls).length, 1, 'index 缺 key 时仍应回退全量一次');
+      assert.ok(warns.join(' | ').indexOf('[questions] index 缺 key，回退全量') >= 0, 'index 缺 key 的 warn 文案丢了');
+    } finally { restoreFetch(); APP_MOD.resetQuestionsCache(); }
+  });
+
+  /* ---- ② 只有诊断题的一轮：判据 + 头条文案（真引擎、真数据） ---- */
+  test('诊断题兜底判据：无题库的图上目标全是 legacy 兜底题 → true；真题到货 → false', function () {
+    const gNoBank = ENGINE.buildGraph(TOPICS, [], null);
+    const sNoBank = ENGINE.createSession(gNoBank, [PAIRED_TARGET], SESSION_OPTS);
+    assert.strictEqual(APP_MOD.diagnosticOnlyRound(gNoBank, sNoBank), true,
+      '题库整个没取到（bundle 404 / 离线未缓存）时必须认出「这一轮只有 diagnostic_question」');
+    const realQs = questions.filter(function (q) { return q.topicId === PAIRED_TARGET; });
+    const gBank = ENGINE.buildGraph(TOPICS, [], realQs);
+    const sBank = ENGINE.createSession(gBank, [PAIRED_TARGET], SESSION_OPTS);
+    assert.strictEqual(APP_MOD.diagnosticOnlyRound(gBank, sBank), false, '真题库到货时不许误报「不作数」');
+    assert.strictEqual(APP_MOD.diagnosticOnlyRound(gNoBank, ENGINE.createSession(gNoBank, [PAIRED_TARGET], SESSION_OPTS)),
+      true, '两次会话互不影响');
+    assert.strictEqual(APP_MOD.diagnosticOnlyRound(null, sNoBank), false, '空图不许崩');
+  });
+
+  test('结果页头条：只有诊断题的一轮说「不作数」，且不含「已掌握」；正常一轮保持原话', function () {
+    const gNoBank = ENGINE.buildGraph(TOPICS, [], null);
+    const sNoBank = ENGINE.createSession(gNoBank, [PAIRED_TARGET], SESSION_OPTS);
+    const sum = ENGINE.summarize(gNoBank, sNoBank);
+    const degraded = APP_MOD.resultHeadline(sum, sNoBank, false, true, true);
+    assert.ok(degraded.indexOf('不作数') >= 0, '缺「结果不作数」：' + degraded);
+    assert.ok(degraded.indexOf('题库没取到') >= 0, '缺「题库没取到」：' + degraded);
+    assert.strictEqual(degraded.indexOf('已掌握'), -1, '只有诊断题的一轮头条不许说「已掌握」：' + degraded);
+    assert.strictEqual(degraded.indexOf('都掌握啦'), -1, '只有诊断题的一轮头条不许说「都掌握啦」：' + degraded);
+    const realQs = questions.filter(function (q) { return q.topicId === PAIRED_TARGET; });
+    const gBank = ENGINE.buildGraph(TOPICS, [], realQs);
+    const sBank = ENGINE.createSession(gBank, [PAIRED_TARGET], SESSION_OPTS);
+    const normal = APP_MOD.resultHeadline(ENGINE.summarize(gBank, sBank), sBank, false, false, true);
+    assert.strictEqual(normal.indexOf('不作数'), -1, '真题到货的一轮不许说「不作数」：' + normal);
+    assert.ok(normal.indexOf('已掌握') >= 0, '真题到货、目标全对时应保留「目标知识点已掌握」：' + normal);
+  });
+}
+
+function report() {
+  console.log('\n' + (failed === 0 ? '全部通过' : '存在失败') + '：' + passed + ' passed, ' + failed + ' failed');
+  process.exit(failed === 0 ? 0 : 1);
+}
+
+runDegradeTests().then(report, function (e) {
+  console.log('  FAIL 退化用例框架出错\n       ' + (e && e.stack || e));
+  failed++;
+  report();
+});
