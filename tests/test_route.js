@@ -1094,6 +1094,7 @@ function withSynData(fn) {
     synTopic('cnm_syn_t8', '合成目标八', 8),
     synTopic('cnm_syn_g4', '合成先修四', 4),
     synTopic('cnm_syn_t8s', '合成目标八跨学段', 8),
+    synTopic('cnm_syn_t12', '合成目标十二', 12),
     synTopic('cnm_syn_t11', '合成目标十一', 11),
     synTopic('cnm_syn_g8', '合成先修八', 8),
     synTopic('cnm_syn_g5', '合成先修五', 5),
@@ -1103,6 +1104,7 @@ function withSynData(fn) {
   const synDeps = [
     { topicId: 'cnm_syn_t8', prerequisiteId: 'cnm_syn_g4', strength: 'soft', reason: '合成 soft' },
     { topicId: 'cnm_syn_t8s', prerequisiteId: 'cnm_syn_g5', strength: 'soft', reason: '合成 soft' },
+    { topicId: 'cnm_syn_t12', prerequisiteId: 'cnm_syn_g8', strength: 'soft', reason: '合成 soft' },
     { topicId: 'cnm_syn_t11', prerequisiteId: 'cnm_syn_g8', strength: 'soft', reason: '合成 soft' },
     { topicId: 'cnm_syn_e9', prerequisiteId: 'cnm_syn_e1', strength: 'hard', reason: '合成 hard' }
   ];
@@ -1114,14 +1116,16 @@ function withSynData(fn) {
   }
 }
 
-test('soft 边年级差 4、目标初中 → 进 excluded，路径侧说「未画入主路径」且数字是 4', () => withSynData(() => {
-  const pre = R.prerequisites('cnm_syn_t8', 2);
-  const ex = pre.excluded.find((it) => it.id === 'cnm_syn_g4');
-  assert.ok(ex, 'cnm_syn_g4 必须在 excluded 里');
-  assert.ok(!pre.soft.some((it) => it.id === 'cnm_syn_g4'), '被过滤的 soft 边不许留在 soft 里');
+test('soft 边年级差 4（目标高中、前置初中）→ 进 excluded，路径侧说「未画入主路径」且数字是 4', () => withSynData(() => {
+  /* 目标 12 年级、先修 8 年级：两边都在小学以上，只命中 gap（不命中 stage），
+     这样「年级差 4」这句的计数对象与 excludedWhy 的 rules[0] 完全一致 */
+  const pre = R.prerequisites('cnm_syn_t12', 2);
+  const ex = pre.excluded.find((it) => it.id === 'cnm_syn_g8');
+  assert.ok(ex, 'cnm_syn_g8 必须在 excluded 里');
+  assert.ok(!pre.soft.some((it) => it.id === 'cnm_syn_g8'), '被过滤的 soft 边不许留在 soft 里');
   const levelIds = [];
   pre.levels.forEach((lv) => lv.items.forEach((it) => levelIds.push(it.id)));
-  assert.ok(!levelIds.includes('cnm_syn_g4'), '被过滤的点不许进 levels');
+  assert.ok(!levelIds.includes('cnm_syn_g8'), '被过滤的点不许进 levels');
 
   const text = R.skippedReasonText(pre.excluded);
   assert.ok(text.includes('未画入主路径'), '路径侧总说明要写「未画入主路径」：' + text);
@@ -1196,6 +1200,42 @@ test('skippedReasonText 互斥计数：同时命中 gap+stage 的先修只数一
   const only = R.skippedReasonText([stageOnly]);
   assert.ok(only.startsWith('未画入主路径：有 1 个先修只在小学阶段'), '只有跨学段项时不能用「另有」：' + only);
   assert.ok(!only.includes('另有'), '没有 gap 项时不许出现「另有」：' + only);
+
+  text.split('。').filter(Boolean).forEach((sent) => {
+    const hasGap = sent.includes(String(R.GRADE_GAP_LIMIT));
+    const hasStage = sent.includes(String(R.PRIMARY_MAX));
+    assert.ok(!(hasGap && hasStage), '两个阈值不许同句出现：' + sent);
+  });
+});
+
+test('skippedReasonText 按 id 去重：同一知识点从两条边进来只算 1 个（cnp_h103）', () => {
+  /* 真实数据：受迫振动与共振的「声音的特性」(cnp_006) 从两条不同 soft 边进来，
+     excluded 里有两条记录，但聚合句说的「N 个先修」必须是不同知识点个数 */
+  const pre = R.prerequisites('cnp_h103', 2);
+  const same = pre.excluded.filter((it) => it.id === 'cnp_006');
+  assert.strictEqual(same.length, 2, '数据前提：同一先修从两条边进来，excluded 有两条记录');
+  assert.deepStrictEqual(same[0].excludedRules, same[1].excludedRules, '两条边的过滤规则相同');
+
+  const text = R.skippedReasonText(pre.excluded);
+  assert.ok(text.includes('有 1 个先修的年级差达到 ' + R.GRADE_GAP_LIMIT),
+    '同一 id 只算 1 个先修，不许数成 2：' + text);
+  assert.ok(!text.includes('有 2 个先修'), '计数按知识点 id 去重：' + text);
+});
+
+test('聚合归类与逐条 excludedWhy 同口径：同时命中 gap+stage 的按 stage 计（cnm_221 配方法）', () => {
+  /* 真实数据：配方法的「长方形和正方形的面积」(cnm_p089) 一条边同时命中两条规则。
+     逐条 excludedWhy 取 rules[0]（stage），聚合句也必须按 stage 归类，不能反过来算 gap */
+  const pre = R.prerequisites('cnm_221', 2);
+  const ex = pre.excluded.find((it) => it.id === 'cnm_p089');
+  assert.ok(ex, '数据前提：cnm_p089 在 excluded 里');
+  assert.deepStrictEqual(ex.excludedRules, ['stage', 'gap'], '一条边同时命中两条规则');
+  assert.strictEqual(ex.excludedRule, 'stage', '逐条归类取 rules[0]');
+  assert.ok(ex.excludedWhy.includes('跨学段'), '逐条说明是跨学段口径：' + ex.excludedWhy);
+
+  const text = R.skippedReasonText(pre.excluded);
+  assert.ok(text.includes('有 1 个先修只在小学阶段'), '聚合句要与逐条说明同为跨学段口径：' + text);
+  assert.ok(!text.includes('年级差达到 ' + R.GRADE_GAP_LIMIT),
+    '同时命中时不许反过来算进年级差那句：' + text);
 
   text.split('。').filter(Boolean).forEach((sent) => {
     const hasGap = sent.includes(String(R.GRADE_GAP_LIMIT));

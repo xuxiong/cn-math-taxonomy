@@ -980,8 +980,11 @@
 
   /**
    * 路径侧的「未画入主路径」总说明：阈值只来自 GRADE_GAP_LIMIT / PRIMARY_MAX，
-   * 一个数字都不写死。计数互斥：同时命中 gap+stage 的只算进 gap，stage 只数
-   * 「只被跨学段拦下」的点，避免同一个先修被两句话各数一次。
+   * 一个数字都不写死。两处口径必须同源：
+   *   a) 计数先按 it.id 去重（保留第一条，与列表展示顺序一致）——同一个先修从两条边
+   *      进来只算 1 个知识点，不能数成 2。
+   *   b) 归类只认 excludedRules[0]，与逐条 excludedWhy 完全一致；两条规则天然互斥，
+   *      同一个先修不会被两句话各数一次。
    * 两句之间必须用「。」——同一句里不许同时出现两个年级阈值。
    * @param {Array} items prerequisites().excluded
    * @returns {string} 空字符串 = 没有要说的（页面不占位）
@@ -989,22 +992,28 @@
   function skippedReasonText(items) {
     var list = Array.isArray(items) ? items : [];
     if (!list.length) return '';
+    var seen = Object.create(null);
     var gapN = 0;
-    var stageOnlyN = 0;
+    var stageN = 0;
     list.forEach(function (it) {
+      var id = (it && it.id != null) ? String(it.id) : '';
+      if (id) {
+        if (seen[id]) return;   /* 同一 id 只保留第一条 */
+        seen[id] = 1;
+      }
       var rules = (it && Array.isArray(it.excludedRules)) ? it.excludedRules
         : (it && it.excludedRule ? [it.excludedRule] : []);
-      var hasGap = rules.indexOf('gap') >= 0;
-      var hasStage = rules.indexOf('stage') >= 0;
-      if (hasGap) gapN += 1;
-      else if (hasStage) stageOnlyN += 1;
+      /* 逐条 excludedWhy 取 rules[0]；聚合句也只认 rules[0]，否则两处会互相打脸 */
+      var rule = rules.length ? rules[0] : null;
+      if (rule === 'gap') gapN += 1;
+      else if (rule === 'stage') stageN += 1;
     });
     var sentences = [];
     if (gapN > 0) {
       sentences.push('有 ' + gapN + ' 个先修的年级差达到 ' + GRADE_GAP_LIMIT + ' 年，按噪音过滤');
     }
-    if (stageOnlyN > 0) {
-      sentences.push((gapN > 0 ? '另有 ' : '有 ') + stageOnlyN +
+    if (stageN > 0) {
+      sentences.push((gapN > 0 ? '另有 ' : '有 ') + stageN +
         ' 个先修只在小学阶段（' + PRIMARY_MAX + ' 年级及以下），不跨学段画进主路径');
     }
     if (!sentences.length) return '';
