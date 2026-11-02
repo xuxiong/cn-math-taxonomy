@@ -25,6 +25,7 @@
 | 7 | 「关于」/「提交 Issue」链到 `github.com/xuxiong/cn-math-taxonomy` | 同上 | 早于 `79f7454` | `tests/test_fork_guards.js` (b) 只挡住「白名单外的域名」，**不校验仓库名**；见下面已知缺口 |
 | 8 | 全站 LLM 型号统一为 `DeepSeek-V4.1-Flash-1017-Unlimited`，且**只写在 `diagnose/llm-config.js` 一处**（explain / labmatch / llm-gateway / route / llm-variants 都从它取值；网关地址同样只在那里，浏览器走 `scripts/serve.js` 的 `/v1` 同源反代，不再依赖网关 CORS） | 上游硬编码的型号在本机网关里已可下线（`DeepSeek-V4-Flash-0731-TokenPlan` 直接返回 `{"retCode":9}`）；型号一失效，画板语义匹配整层按设计 fail-closed，所有讲解页都不挂画板，而测试全绿——静默退化 | `t_053abd33`、`t_b6b76e3c` | `tests/test_fork_guards.js` (h)（型号正确 + 除 `llm-config.js` 外不得再出现网关地址/型号字面量） |
 | 9 | 引入 Umami 匿名访问统计（`cloud.umami.is`，5 个页面各一个 script） | 孩子端上线后无法得知有没有人访问；Pages 与仓库 Insights 都不提供站点访问数据。统计口径刻意收窄：不带 cookie、不采集 URL 查询参数、只认 `xuxiong.github.io`、尊重 DNT；上游自建采集 worker（第 5 条）仍然关闭 | 本次提交 | `tests/test_fork_guards.js` (i) |
+| 10 | 首页导航「使用手册」→ `bcntjxmosoi0.feishu.cn/docx/AZGudD6Hgo9zvxxKeg4cSePwn9g`（飞书文档） | 使用手册托管在飞书，站内没有静态副本；本 fork 自有内容，非上游推广位 | 本次提交 | `tests/test_fork_guards.js` (b) 白名单 + `scripts/fork-guard.mjs` 白名单 |
 
 ## 维护方式
 
