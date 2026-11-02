@@ -53,6 +53,8 @@ const ALLOWED_DOMAINS = [
   'localhost',         // 同上
   'www.w3.org',        // 内联 SVG 的 XML 命名空间（xmlns="http://www.w3.org/2000/svg"），不是外链
   'cloud.umami.is',    // 匿名访问统计脚本（5 个页面各一处，见分叉清单第 9 条、守卫 (i)）
+  'bcntjxmosoi0.feishu.cn', // 使用手册（飞书文档）：index.html 导航「使用手册」外链，家长/学生查看操作说明。
+                            // 本 fork 自建的手册托管在飞书文档，不是上游回流的外链推广位（分叉清单第 10 条）
 ];
 
 /** 本文件/分叉清单必须写出被禁的字符串才能检测/说明它，扫描时跳过。 */
