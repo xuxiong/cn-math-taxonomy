@@ -130,7 +130,13 @@ function restart() {
 function commit(result) {
     if (S.commitPending) return;                       // 防连点：上一次作答还没落定
     const item = eng().nextItem(S.D.graph, S.session);
-    if (!item) return;
+    /* 会话已经收敛（最后一题答完 / 题量用满 / 提前 mastered）：nextItem 为空时**不许静默 return**。
+     * 旧代码这里直接返回，反馈态下点「下一题」等于把点击吞掉 —— 页面停在原地、onerror 零报错，
+     * 而结果页只有 render() 的收敛分支会调 renderResult()，于是「正常做完一次诊断看不到报告」
+     * （P0，卡 t_07716ba2）。交给 render() 走同一条收敛分支：那里的「题源还没到货」与
+     * 「screen 后台还在补章节」两个守卫必须继续生效 —— 不能把「题库没到」当成「已掌握」出结果页。 */
+    if (!item) { render(); return; }
+
     /* 答错 / 不会会向先修回溯，而引擎的 isTestable() 看的是「当时有没有题库」：
      * 题库按章节懒取，所以应用作答之前先把本题直接先修所在章节的题库取到
      * （同一章节只取一次；通常和本题同章 → 0 个新请求）。
@@ -597,6 +603,24 @@ function answerEcho(q, pickedKey, showRef) {
     return h('div', { class: 'answer-echo', id: 'answer-echo' }, kids);
   }
 
+/* 这道题答完之后会话会不会就结束（nextItem 为空）？
+ * 反馈态的按钮靠它把「下一题」改成「看结果」—— 会话已经收敛时还写「下一题」，
+ * 孩子会以为还能继续，点下去就是旧版那个「毫无反应」的死路（卡 t_07716ba2）。
+ * 判据必须与 commit()/render() 同一套口径：题源还没到货（弱网下题库 1.27MB 在路上）或
+ * screen 轮后台还在补章节时，nextItem 为空并不代表「已掌握」，一律按「还能继续」处理，
+ * 免得把「题库没到」误标成「最后一题」。applyAnswer 是纯函数（内部 cloneSession），
+ * 这里只拿它试算一份副本，不动 S.session。 */
+function sessionEndsAfter(item, result) {
+    if (S.prac || !S.session || !item || !eng()) return false;
+    if (!questionSourcesSettled()) return false;
+    if (S.session.mode === 'screen') {
+      const bg = backgroundFillState ? backgroundFillState() : null;
+      if (bg && bg.running) return false;
+    }
+    const probe = eng().applyAnswer(S.D.graph, S.session, item.topicId, result);
+    return !eng().nextItem(S.D.graph, probe);
+}
+
 function renderQuestion(item) {
     /* 面板每次重建都会重新挂画板：先销毁上一块几何画板（断开 ResizeObserver + 摘掉画布），
      * 否则来回翻步骤会累积画布与观察者（funclab 靠 DOM 替换回收，geomlab 显式销毁更稳）。 */
@@ -654,6 +678,8 @@ function renderQuestion(item) {
         h('button', { id: 'btn-skip', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiRequested = false; renderQuestion(item); } }, '不会')));
     } else if (S.ui.phase === 'auto') {
       const ok = S.ui.verdict.verdict === 'correct';
+      const nextResult = ok ? 'correct' : 'wrong';
+      const ends = sessionEndsAfter(item, nextResult);
       card.append(
         q.type === 'choice'
           ? choicesBlock(q, { item: item, readonly: true, correctKey: answerKeys(q), pickedKey: S.ui.answer })
@@ -662,7 +688,7 @@ function renderQuestion(item) {
         feedbackBlock(q),
         h('div', { class: 'row' },
           ok ? null : h('button', { class: 'primary', id: 'btn-explain', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiRequested = false; renderQuestion(item); } }, '为什么错了？一起想想'),
-          h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer(ok ? 'correct' : 'wrong'); } }, '下一题'),
+          h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer(nextResult); } }, ends ? '看结果' : '下一题'),
           h('button', { id: 'btn-flip', onclick: function () { finishAnswer(ok ? 'wrong' : 'correct'); } }, ok ? '判错了，我其实没做对' : '判错了，我其实做对了'),
           h('button', { onclick: function () { S.ui.phase = 'ask'; renderQuestion(item); } }, '重新作答')));
     } else if (S.ui.phase === 'explain') {
@@ -684,7 +710,7 @@ function renderQuestion(item) {
           ? choicesBlock(q, { item: item, readonly: true, correctKey: answerKeys(q), pickedKey: null })
           : answerEcho(q, null),
         feedbackBlock(q),
-        h('div', { class: 'row' }, h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer('skip'); } }, '下一题')));
+        h('div', { class: 'row' }, h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer('skip'); } }, sessionEndsAfter(item, 'skip') ? '看结果' : '下一题')));
     } else {
       /* 原生 card.append 会把三目里的 null 字符串化成文本节点（self 阶段、ui.verdict 还空时）。
        * 自定义 append(el, c) 只吃一个子节点，兄弟节点要放进数组里传；它天生跳过 null。 */
@@ -1878,6 +1904,10 @@ function resolveTargets(params) {
   return {
     enter: enter,
     closeShare: closeShare, startSession: startSession, restoreFromSave: restoreFromSave,
+    /* commit 只给 tests/test_result_deadend.js 用：会话已收敛（nextItem 为空）时它必须落到
+     * 结果页而不是静默吞掉点击，这条分支在正常 UI 流程里被 render() 先一步收敛掉，
+     * 只有直接调用才测得到 —— 不留这条入口就只能靠「读源码」式假测试。 */
+    commit: commit,
     render: render, resolveTargets: resolveTargets, makeOracle: makeOracle, runDemo: runDemo,
     renderResult: renderResult, masteryNode: masteryNode, standardsBlock: standardsBlock,
     standardsCard: standardsCard, refreshStdText: refreshStdText, restart: restart,

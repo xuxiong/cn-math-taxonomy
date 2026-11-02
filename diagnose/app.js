@@ -1328,6 +1328,12 @@
   }
   function recordKey() { return [S.subject, S.session.seed, S.session.targets.join(',')].join('|'); }
   function saveToChild(sum) {
+    /* 深链（?target= / ?grade= 等）进来时 init() 在 `if (resolved) { flow('enter')(...); return; }` 处返回，
+     * 末尾 whenIdle 里的 children.js 根本没被请求，CC 一直是 undefined。旧代码这里裸调 CC.current()
+     * → TypeError 抛在 renderResult 的第二行，整页不渲染 = 「诊断报告不可达」的第二个成因
+     * （卡 t_07716ba2）。与 childBar() 的空守卫保持同一口径：children.js 不到货就不存档案，
+     * 而不是让结果页炸掉。 */
+    if (!CC) return;
     const cur = CC.current();
     if (S.demo || !cur || !sum.asked) return;
     CC.saveRecord(cur.id, {
@@ -1355,6 +1361,7 @@
   }
   function blindStartCard() {
     if (!window.CnmBlind) return null;
+    if (!CC) return null;   // 同上：children.js 未到货（深链首屏）时不许裸调 CC.current()
     const rows = window.CnmBlind.list({ subject: S.subject, limit: 6 });
     if (!rows.length) return null;
     const cur = CC.current();
@@ -1380,7 +1387,9 @@
     const rootIds = (sum.roots || []).map(function (r) { return r.id; });
     const shakyIds = (sum.shaky || []).slice();
     if (!weakIds.length && !shakyIds.length) return null;
-    const cur = CC.current();
+    /* children.js 未到货（深链首屏）时 CC 是 undefined：这里只是取「当前孩子」拼历史链接，
+     * 取不到就用通用历史页，不必让整张卡（以及整个结果页）炸掉。 */
+    const cur = CC ? CC.current() : null;
     const hist = window.CnmBlind ? window.CnmBlind.historyHref(cur && cur.id, '../children/') : '../children/history.html';
     return h('div', { class: 'card no-print', id: 'blind-result' },
       h('h2', { text: '盲区再测' }),
