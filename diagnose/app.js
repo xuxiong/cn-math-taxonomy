@@ -208,6 +208,12 @@
       flowEnginePromise = Promise.all([Lazy.load('engine.js'), Lazy.load('app-flow.js')]).then(function () {
         if (!E) E = Browser.DiagEngine;   // E 是 let：按需段注册前先拿到引擎（app-flow 的 CORE.E 走 getter 能读到）
         flowEngineReady = true;           // Round 2 第 3 条：flowStatusText 在引擎到货后才不说「出题引擎还在下」
+      }, function (err) {
+        /* 失败清缓存：让下次调用（重试）能重新发起补载，而不是永远拿到同一个 rejected Promise
+         * （与 Lazy.load 失败清缓存配套 —— 引擎/按需段恢复后重试真能成功，不是空转）。
+         * kanban t_5d6eb0d9：renderFlowBlocked 的「重新试试」就靠这条才能真正重新补载。 */
+        flowEnginePromise = null;
+        throw err;
       });
     }
     return flowEnginePromise;
@@ -231,14 +237,45 @@
    * latest-click-wins 在 withStage2 里：等待期间再点别的，门开时按最后一次点击重过（见 flowSeq）。
    * enter 是 app-flow.js 里唯一的会话开入口，统一了按钮 / 深链 / 续练三种路径。 */
   function goFlow(targets, label, limit, mode) {
+    const enterNow = function () {
+      const f = flow('enter'); if (f) f(targets, label, limit, mode);
+    };
     showFlowStartFeedback(targets, mode);
     ensureFlowEngine().then(function () {
-      withStage2(targets, mode, function () {
-        const f = flow('enter'); if (f) f(targets, label, limit, mode);
-      });
+      withStage2(targets, mode, enterNow);
     }, function () {
-      /* 引擎/按需段补载失败：给一张可操作的重试卡，别让用户点了没反应 */
-      renderFlowBlocked(targets, mode, function () { goFlow(targets, label, limit, mode); });
+      /* 引擎/按需段补载失败：给一张可操作的重试卡。重试走 renderFlowBlocked 的
+       * enterWithEngine → 重新 ensureFlowEngine（失败已清 flowEnginePromise）+ 重新过题源门 → enterNow。 */
+      renderFlowBlocked(targets, mode, enterNow);
+    });
+  }
+
+  /* 阻塞卡「重新试试」onclick 的唯一入口（kanban t_5d6eb0d9）：先 ensureFlowEngine 再 withStage2 —— 重新触发引擎
+   * 补载 + 重新过题源门，再执行 fn（门后那件事）。失败分支也只传 fn —— 重试再走 renderFlowBlocked 的
+   * onclick → enterWithEngine 重新过两道门，不会嵌套过两次门。banner「继续」因源码级守卫
+   * （test_data_split.js 要求存档入口那行 withStage2 的首参写成 saved.targets）走专用的 resumeSaved；
+   * 这里是 renderFlowBlocked 的通用重试，targets/mode/fn 是参数，无守卫约束，可直接复用。 */
+  function enterWithEngine(targets, mode, fn) {
+    showFlowStartFeedback(targets, mode);
+    ensureFlowEngine().then(function () {
+      withStage2(targets, mode, fn);
+    }, function () {
+      renderFlowBlocked(targets, mode, fn);
+    });
+  }
+
+  /* banner「继续」的入口（kanban t_5d6eb0d9）：先 ensureFlowEngine 等引擎/按需段，再 withStage2 过题源门，
+   * 否则首屏没加载 engine.js/app-flow.js 时 flow('restoreFromSave') 是空实现（FLOW 为 null），
+   * 题源门开了也是空转 —— 点继续 0.4s 内毫无反应。等待期反馈复用 showFlowStartFeedback 这一张等待卡，
+   * 不新造状态文案。失败分支落到 renderFlowBlocked，只传「门后那件事」restoreNow —— 重试走 renderFlowBlocked
+   * 的 enterWithEngine 重新 ensureFlowEngine（失败已清 flowEnginePromise）+ 重新过题源门 → restoreNow。 */
+  function resumeSaved(saved) {
+    const restoreNow = function () { const rf = flow('restoreFromSave'); if (rf) rf(saved); };
+    showFlowStartFeedback(saved.targets, saved.mode);
+    ensureFlowEngine().then(function () {
+      withStage2(saved.targets, saved.mode, restoreNow);
+    }, function () {
+      renderFlowBlocked(saved.targets, saved.mode, restoreNow);
     });
   }
 
@@ -1620,7 +1657,11 @@
           h('button', { id: 'btn-noq-back', onclick: function () { renderStart(); } }, '回选题页')))));
   }
 
-  /* 两份题源都取失败（Pages 部署竞态 / 断网首访）：明确告诉孩子「没到」，给重试，不留白屏。 */
+  /* 两份题源都取失败（Pages 部署竞态 / 断网首访）：明确告诉孩子「没到」，给重试，不留白屏。
+   * 「重新试试」是唯一带门的重试入口（kanban t_5d6eb0d9）：onclick 走 enterWithEngine —— 重新
+   * ensureFlowEngine（失败已清 flowEnginePromise）+ 重新过题源门，再执行 fn。三个调用点（goFlow /
+   * resumeSaved / openStage2Gate 的失败分支）只传「门后那件事」，不再自己包 enterWithEngine/goFlow/resumeSaved，
+   * 否则会绕过两道门直接执行 fn（旧版 onclick 直接 fn() 就是这个错）。 */
   function renderFlowBlocked(targets, mode, fn) {
     if (typeof document === 'undefined' || !root) return;
     show(h('div', null,
@@ -1630,7 +1671,7 @@
         h('div', { class: 'skel', 'aria-hidden': 'true' },
           h('span', { class: 'skel-bar' }), h('span', { class: 'skel-bar skel-short' })),
         h('div', { class: 'row no-print' },
-          h('button', { class: 'primary', id: 'btn-flow-retry', onclick: function () { withStage2(targets, mode, fn); } }, '重新试试'),
+          h('button', { class: 'primary', id: 'btn-flow-retry', onclick: function () { enterWithEngine(targets, mode, fn); } }, '重新试试'),
           h('button', { id: 'btn-flow-back', onclick: function () { renderStart(); } }, '回选题页')))));
   }
 
@@ -1642,7 +1683,7 @@
       page.append(h('div', { class: 'banner' },
         h('b', { text: '有一份未清除的诊断：' }), saved.label || saved.targets.map(nameOf).join('、'),
         '（已答 ' + (saved.answers || []).length + ' 题）　',
-        h('button', { class: 'primary', onclick: function () { withStage2(saved.targets, saved.mode, function () { const rf = flow('restoreFromSave'); if (rf) rf(saved); }); } }, '继续'),
+        h('button', { class: 'primary', onclick: function () { resumeSaved(saved); } }, '继续'),
         ' ', h('button', { onclick: function () { lsDel(sessionKey()); renderStart(); } }, '放弃存档')));
     }
     if (errMsg) page.append(h('p', { class: 'err', text: errMsg }));
