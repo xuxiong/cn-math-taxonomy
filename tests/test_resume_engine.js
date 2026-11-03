@@ -27,9 +27,13 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const http = require('http');
-const { spawn } = require('child_process');
+
+/* 共用小模块：
+ *   chrome-guard —— Chrome 进程级兜底回收（抛错 / SIGKILL / 外部超时都不留进程、不留临时目录）
+ *   wait         —— until 统一超时口径（超时=失败上限，不是性能断言） */
+const guard = require('./lib/chrome-guard');
+const { until } = require('./lib/wait');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -37,16 +41,6 @@ const tests = [];
 let passed = 0;
 let failed = 0;
 function test(name, fn) { tests.push({ name: name, fn: fn }); }
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function until(fn, label, timeout) {
-  const end = Date.now() + (timeout || 20000);
-  while (Date.now() < end) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(100);
-  }
-  throw new Error('Timeout: ' + label);
-}
 
 /* ------------------------------------------------------------ 测试服务器 */
 /* engine.js 失败开关（用例 B）：>0 时让前 N 次 /diagnose/engine.js 返回 404，
@@ -55,7 +49,7 @@ async function until(fn, label, timeout) {
  * 重试可以真正重新补载。改前 ensureFlowEngine 不清缓存，重试拿到同一个 rejected Promise，
  * 永远不会重新发 engine.js 请求（这正是用例 B 守的红）。 */
 let engineFailCount = 0;
-const out = fs.mkdtempSync(path.join(os.tmpdir(), 'cnm-resume-engine-'));
+const out = guard.tempDir('cnm-resume-engine-');
 const server = http.createServer(function (req, res) {
   let file = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
   if (file.endsWith('/')) file += 'index.html';
@@ -82,6 +76,12 @@ class CDP {
     this.id = 0;
     this.pending = new Map();
     this.handlers = [];
+    /* 连接断开（页面崩了 / 浏览器被杀）时把未完成的请求全部 reject：
+     * 否则 await 一个永远不回来的响应，测试进程既不失败也不退出，Chrome 就一直留在机器上。 */
+    ws.addEventListener('close', () => {
+      for (const p of this.pending.values()) p.reject(new Error(p.method + ': CDP 连接已关闭'));
+      this.pending.clear();
+    });
     ws.addEventListener('message', (e) => {
       const m = JSON.parse(e.data);
       if (m.id) {
@@ -94,10 +94,21 @@ class CDP {
       }
     });
   }
+  /* 每个请求 25s 上限：这是「无响应」的失败上限，不是性能断言（页面正常时一次 eval 是毫秒级）。
+   * 旧写法没有上限，浏览器一旦不响应，整个测试文件就永久挂住 —— 假红之外的另一种不可诊断状态。 */
   send(method, params) {
     const id = ++this.id;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve, reject: reject, method: method });
+      const timer = setTimeout(() => {
+        if (!this.pending.has(id)) return;
+        this.pending.delete(id);
+        reject(new Error('CDP 无响应（25s 上限）: ' + method));
+      }, 25000);
+      this.pending.set(id, {
+        method: method,
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); }
+      });
       this.ws.send(JSON.stringify({ id: id, method: method, params: params || {} }));
     });
   }
@@ -123,11 +134,13 @@ async function openBrowser() {
     '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'
   ].find(function (p) { return p && fs.existsSync(p); });
   if (!chromePath) throw new Error('找不到 Chrome/Chromium，请设置 CHROME 环境变量');
-  chrome = spawn(chromePath, [
+  /* guard.launch：spawn 之后立刻登记 pid —— 后面等 DevToolsActivePort 超时抛错时，
+   * 收尾照样杀得掉（旧写法要等 `chrome = spawn(...)` 赋值成功，抛错时 chrome 还是 null）。 */
+  chrome = guard.launch(chromePath, [
     '--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     '--disable-background-networking', '--disable-sync', '--disable-extensions', '--disable-component-update',
     '--remote-debugging-port=0', '--user-data-dir=' + profileDir, 'about:blank'
-  ], { stdio: ['ignore', 'ignore', fs.openSync(path.join(out, 'chrome.log'), 'w')] });
+  ], { logFile: path.join(out, 'chrome.log') });
   const activePort = path.join(profileDir, 'DevToolsActivePort');
   await until(function () { return fs.existsSync(activePort); }, 'Chrome 调试端口');
   const port = fs.readFileSync(activePort, 'utf8').split('\n')[0];
@@ -259,7 +272,7 @@ test('banner「继续」必须先 ensureFlowEngine（立刻点，出题/报告 +
      * 改前：裸 withStage2 不等引擎，flow('restoreFromSave') 是空实现（FLOW 为 null）→ 啥也没干
      *      → #q-text 永远不出现 → until 超时（红）。 */
     await until(function () { return cdp.eval('!!document.getElementById("q-text") || !!document.getElementById("summary")'); },
-      '点继续后出现题目或报告', 12000);
+      '点继续后出现题目或报告');
     assert.strictEqual(await cdp.eval('!!document.getElementById("flow-blocked")'), false,
       '引擎到货后不许出现 #flow-blocked');
     assert.strictEqual(await cdp.eval('typeof window.DiagCore.E !== "undefined"'), true,
@@ -267,7 +280,7 @@ test('banner「继续」必须先 ensureFlowEngine（立刻点，出题/报告 +
     const errs = await pageErrors(cdp);
     assert.deepStrictEqual(errs, [], '点继续 → 出题过程零报错');
   } finally {
-    chrome && chrome.kill('SIGKILL');
+    guard.kill(chrome);
     chrome = null;
   }
 });
@@ -285,7 +298,7 @@ test('阻塞卡「重新试试」重新触发 engine.js 补载（首次 404 → 
      * 改前：裸 withStage2 不调 ensureFlowEngine，engine.js 404 对它无影响 → #flow-blocked 永远不出现
      *      → until 超时（红）。 */
     await until(function () { return cdp.eval('!!document.getElementById("flow-blocked")'); },
-      'engine.js 404 时点继续后必须出现 #flow-blocked', 12000);
+      'engine.js 404 时点继续后必须出现 #flow-blocked');
     const blockedText = await cdp.eval('document.querySelector("#flow-blocked h1").textContent');
     assert.ok(blockedText.indexOf('数据没下来') >= 0, '阻塞卡标题：' + blockedText);
     /* 第一次 engine.js 请求已发出（404）。记下当前请求数。 */
@@ -298,7 +311,7 @@ test('阻塞卡「重新试试」重新触发 engine.js 补载（首次 404 → 
     engineFailCount = 0;
     await cdp.eval('document.getElementById("btn-flow-retry").click()');
     await until(function () { return cdp.eval('!!document.getElementById("q-text") || !!document.getElementById("summary")'); },
-      '点重新试试后出现题目或报告', 12000);
+      '点重新试试后出现题目或报告');
     assert.strictEqual(await cdp.eval('!!document.getElementById("flow-blocked")'), false,
       '重试成功后 #flow-blocked 必须消失');
     assert.strictEqual(await cdp.eval('typeof window.DiagCore.E !== "undefined"'), true,
@@ -311,7 +324,7 @@ test('阻塞卡「重新试试」重新触发 engine.js 补载（首次 404 → 
     assert.deepStrictEqual(errs, [], '重试 → 出题过程零报错');
   } finally {
     engineFailCount = 0;
-    chrome && chrome.kill('SIGKILL');
+    guard.kill(chrome);
     chrome = null;
   }
 });
@@ -329,7 +342,7 @@ test('阻塞卡「重新试试」重新触发 engine.js 补载（首次 404 → 
     }
   }
   try { server.close(); } catch (e) { /* 未监听 */ }
-  if (chrome) chrome.kill('SIGKILL');
+  if (chrome) guard.kill(chrome);
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   if (failed) process.exitCode = 1;
 })();

@@ -19,9 +19,13 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const http = require('http');
-const { spawn } = require('child_process');
+
+/* 共用小模块：
+ *   chrome-guard —— Chrome 进程级兜底回收（抛错 / SIGKILL / 外部超时都不留进程、不留临时目录）
+ *   wait         —— until 统一超时口径（超时=失败上限，不是性能断言）+ 报告页「渲染完成」条件等待 */
+const guard = require('./lib/chrome-guard');
+const { until, reportReady } = require('./lib/wait');
 
 const ROOT = path.resolve(__dirname, '..');
 const E = require(path.join(ROOT, 'diagnose', 'engine.js'));
@@ -30,16 +34,6 @@ const tests = [];
 let passed = 0;
 let failed = 0;
 function test(name, fn) { tests.push({ name: name, fn: fn }); }
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function until(fn, label, timeout) {
-  const end = Date.now() + (timeout || 20000);
-  while (Date.now() < end) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(100);
-  }
-  throw new Error('Timeout: ' + label);
-}
 
 /* ------------------------------------------------------------ 1. 引擎层：收敛点在哪 */
 const dataDir = path.join(ROOT, 'data');
@@ -72,7 +66,7 @@ test('引擎层：cnm_221 单点 + confirm=3，答对 3 题后 nextItem 为空�
 });
 
 /* ------------------------------------------------------------ 2. 真实浏览器：整条路径 */
-const out = fs.mkdtempSync(path.join(os.tmpdir(), 'cnm-result-deadend-'));
+const out = guard.tempDir('cnm-result-deadend-');
 const server = http.createServer(function (req, res) {
   let file = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
   if (file.endsWith('/')) file += 'index.html';
@@ -95,6 +89,12 @@ class CDP {
     this.id = 0;
     this.pending = new Map();
     this.handlers = [];
+    /* 连接断开（页面崩了 / 浏览器被杀）时把未完成的请求全部 reject：
+     * 否则 await 一个永远不回来的响应，测试进程既不失败也不退出，Chrome 就一直留在机器上。 */
+    ws.addEventListener('close', () => {
+      for (const p of this.pending.values()) p.reject(new Error(p.method + ': CDP 连接已关闭'));
+      this.pending.clear();
+    });
     ws.addEventListener('message', (e) => {
       const m = JSON.parse(e.data);
       if (m.id) {
@@ -107,10 +107,21 @@ class CDP {
       }
     });
   }
+  /* 每个请求 25s 上限：这是「无响应」的失败上限，不是性能断言（页面正常时一次 eval 是毫秒级）。
+   * 旧写法没有上限，浏览器一旦不响应，整个测试文件就永久挂住 —— 假红之外的另一种不可诊断状态。 */
   send(method, params) {
     const id = ++this.id;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve, reject: reject, method: method });
+      const timer = setTimeout(() => {
+        if (!this.pending.has(id)) return;
+        this.pending.delete(id);
+        reject(new Error('CDP 无响应（25s 上限）: ' + method));
+      }, 25000);
+      this.pending.set(id, {
+        method: method,
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); }
+      });
       this.ws.send(JSON.stringify({ id: id, method: method, params: params || {} }));
     });
   }
@@ -136,11 +147,13 @@ async function openBrowser() {
     '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'
   ].find(function (p) { return p && fs.existsSync(p); });
   if (!chromePath) throw new Error('找不到 Chrome/Chromium，请设置 CHROME 环境变量');
-  chrome = spawn(chromePath, [
+  /* guard.launch：spawn 之后立刻登记 pid —— 后面等 DevToolsActivePort 超时抛错时，
+   * 收尾照样杀得掉（旧写法要等 `chrome = spawn(...)` 赋值成功，抛错时 chrome 还是 null）。 */
+  chrome = guard.launch(chromePath, [
     '--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     '--disable-background-networking', '--disable-sync', '--disable-extensions', '--disable-component-update',
     '--remote-debugging-port=0', '--user-data-dir=' + profileDir, 'about:blank'
-  ], { stdio: ['ignore', 'ignore', fs.openSync(path.join(out, 'chrome.log'), 'w')] });
+  ], { logFile: path.join(out, 'chrome.log') });
   const activePort = path.join(profileDir, 'DevToolsActivePort');
   await until(function () { return fs.existsSync(activePort); }, 'Chrome 调试端口');
   const port = fs.readFileSync(activePort, 'utf8').split('\n')[0];
@@ -225,13 +238,15 @@ test('流程层：会话已收敛时 commit() 落到结果页（不再静默吞�
     assert.strictEqual(await cdp.eval('!!document.getElementById("summary")'), false);
 
     await cdp.eval('window.DiagFlow.commit("correct")');
-    await until(function () { return cdp.eval('!!document.getElementById("summary")'); }, '结果页根节点 #summary', 8000);
+    /* 不再用「等 8 秒看报告页来不来得及」当性能断言：等的是状态 —— #summary + 标题 +
+     * 四状态统计块 + 路径图落定（dataset.ready），超时 30s 只是失败上限。 */
+    await reportReady(cdp, 'commit() 后报告页渲染完成');
     const head = await cdp.eval('document.querySelector("#summary h2").textContent');
     assert.ok(head.indexOf('诊断结果') >= 0, '结果页标题应含「诊断结果」：' + head);
     const errs = await pageErrors(cdp);
     assert.deepStrictEqual(errs, [], '渲染结果页期间零报错（深链下 CC 未到货不许抛 TypeError）');
   } finally {
-    chrome && chrome.kill('SIGKILL');
+    guard.kill(chrome);
     chrome = null;
   }
 });
@@ -264,7 +279,7 @@ test('界面层：最后一题答对后按钮是「看结果」，点进去渲�
     assert.deepStrictEqual(labels, ['下一题', '下一题', '看结果'],
       '前两题仍是「下一题」，最后一题必须改成「看结果」（旧版三题全是「下一题」，点下去毫无反应）');
 
-    await until(function () { return cdp.eval('!!document.getElementById("summary")'); }, '点「看结果」后渲染出报告页', 8000);
+    await reportReady(cdp, '点「看结果」后报告页渲染完成');
     const view = await cdp.eval([
       '(() => ({',
       /* 口径诚实化（卡 t_54813ae7）：「已掌握」方块下面的小字，以及「接下来练什么」小结里的口径说明 */
@@ -295,7 +310,7 @@ test('界面层：最后一题答对后按钮是「看结果」，点进去渲�
     const errs = await pageErrors(cdp);
     assert.deepStrictEqual(errs, [], '整个答题 → 报告页过程零报错');
   } finally {
-    chrome && chrome.kill('SIGKILL');
+    guard.kill(chrome);
     chrome = null;
   }
 });
@@ -322,10 +337,12 @@ test('路径图：未测节点是灰虚线框（照旧画出来）且图例里�
     assert.strictEqual(conv.next, false, '前置：limit=1 答一题就该收敛');
     assert.ok(conv.untested >= 1, '前置：这一轮必须有「未测」的知识点，否则这条断言测不到东西：' + JSON.stringify(conv));
     await cdp.eval('window.DiagFlow.commit("wrong")');
-    await until(function () { return cdp.eval('!!document.getElementById("summary")'); }, '渲染报告页', 8000);
+    await reportReady(cdp, 'commit() 后报告页渲染完成');
+    /* 路径图单独再断言一次「真的画完了」：等待条件里只要求落定（'1' 或 'err'），
+     * 这里要求 '1' —— 画失败（'err'）必须红，不许被等待条件抹平。 */
     await until(function () {
       return cdp.eval('!!window.__pathCy && document.getElementById("path-cy").dataset.ready === "1"');
-    }, '路径图挂载完成', 20000);
+    }, '路径图挂载完成');
     const g = await cdp.eval([
       '(() => {',
       '  const cy = window.__pathCy;',
@@ -350,7 +367,7 @@ test('路径图：未测节点是灰虚线框（照旧画出来）且图例里�
     const errs = await pageErrors(cdp);
     assert.deepStrictEqual(errs, [], '这一轮答题 → 报告页零报错');
   } finally {
-    chrome && chrome.kill('SIGKILL');
+    guard.kill(chrome);
     chrome = null;
   }
 });
@@ -368,7 +385,7 @@ test('路径图：未测节点是灰虚线框（照旧画出来）且图例里�
     }
   }
   try { server.close(); } catch (e) { /* 未监听 */ }
-  if (chrome) chrome.kill('SIGKILL');
+  if (chrome) guard.kill(chrome);
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   if (failed) process.exitCode = 1;
 })();
