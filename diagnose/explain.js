@@ -47,7 +47,7 @@
    * 不拼 err.message / 栈 / URL / base —— 4 种故障各说各话，让孩子知道下一步能做什么。
    * 未知 reason 逐字保留旧通用文案（不破坏既有体验，也是 fail-closed 的兜底）。
    * timeout 的秒数从 LLMConfig.timeouts.chat 现算（chatTimeoutMs() 为 null 时不写秒数，不写死超时值）。 */
-  function noticeFor(reason, status, degraded) {
+  function noticeFor(reason, status, degraded, detail) {
     if (reason === 'timeout') {
       const ms = chatTimeoutMs();
       const sec = ms ? Math.max(1, Math.round(ms / 1000)) : 0;
@@ -59,11 +59,23 @@
       return '网络没通 / 没收到你的问题，请点「再问一次」重试。';
     }
     if (reason === 'http') {
+      /* 401 / 429 重试无意义：key 失效或额度用尽，只能家长去设置页处理。
+       * 文案里的错误码同样走 /^\d{3}$/ 校验（这里 status 由数字常量拼出，仍保留纪律）。 */
+      if (String(status) === '401') {
+        return 'AI 老师没拿到通行证（401），重试也没用 —— 请让家长点右上角「设置」重新填一次密钥。';
+      }
+      if (String(status) === '429') {
+        return 'AI 老师的额度用完了（429），重试也没用 —— 请让家长点右上角「设置」看看用量或换一次密钥。';
+      }
       /* 错误码只允许三位数字（/^\d{3}$/），不合法就不写错误码 —— 不把任何字符串拼进去 */
       const code = /^\d{3}$/.test(String(status)) ? '（错误码 ' + status + '）' : '';
       return 'AI 服务这边出了点问题' + code + '，请点「再问一次」重试。';
     }
     if (reason === 'llm') {
+      /* detail 来自 llmSteps / llmAsk 的具体失败形态；未传 / 'empty' 走原句。 */
+      if (detail === 'truncated') return 'AI 老师话没说完就被打断了，点「再问一次」通常就好。';
+      if (detail === 'badjson') return 'AI 老师的回答没按格式来，点「再问一次」再来一次。';
+      if (detail === 'mismatch') return 'AI 老师的解析和标准答案对不上，先看下面的解析；想再试可以点「再问一次」。';
       return '答了但内容空了，请点「再问一次」重试。';
     }
     return 'AI 老师暂时离线，没回答上。稍后再问一次试试。';
@@ -92,7 +104,7 @@
     if (typeof fetch !== 'function') return Promise.reject(_markFail(new Error('fetch 不可用'), 'network'));
     return _postChatOnce(body).catch(function (err) {
       if (err && err.reason === 'http' && typeof err.httpStatus === 'number'
-          && err.httpStatus >= 400 && err.httpStatus < 500 && err.httpStatus !== 401
+          && err.httpStatus >= 400 && err.httpStatus < 500 && err.httpStatus !== 401 && err.httpStatus !== 429
           && body && body.response_format) {
         const relaxed = Object.assign({}, body);
         delete relaxed.response_format;
@@ -152,7 +164,9 @@
     return {
       reason: reason,
       httpStatus: (err && typeof err.httpStatus === 'number') ? err.httpStatus : null,
-      degraded: !!(err && err.degraded)
+      degraded: !!(err && err.degraded),
+      /* 细节分档（llm 档文案用）：truncated / badjson / mismatch / empty；无则 null */
+      detail: (err && typeof err.detail === 'string') ? err.detail : null
     };
   }
 
@@ -343,7 +357,11 @@
         graph = null;
       }
       const cleaned = cleanMarkdown(text);
-      if (!cleaned) throw _markFail(new Error('llm empty'), 'llm');
+      if (!cleaned) {
+        const err = _markFail(new Error('llm empty'), 'llm');
+        err.detail = 'empty';
+        throw err;
+      }
       return { text: cleaned, graph: graph };
     });
   }
@@ -357,8 +375,8 @@
     return llmAsk(topic, q, userAnswer, steps, question, labDesc)
       .then(function (res) { return { text: res.text, graph: res.graph, from: 'llm' }; })
       .catch(function (err) {
-        const f = failInfo(err);   // reason/httpStatus/degraded 带出来
-        const notice = noticeFor(f.reason, f.httpStatus, f.degraded);
+        const f = failInfo(err);   // reason/httpStatus/degraded/detail 带出来
+        const notice = noticeFor(f.reason, f.httpStatus, f.degraded, f.detail);
         if (global.console && global.console.warn) {
           const tag = (f.reason === 'http' && f.httpStatus) ? ('http ' + f.httpStatus) : f.reason;
           const extra = f.degraded ? '（已降级重试）' : '';
@@ -393,10 +411,23 @@
     };
     const data = await postChat(body);
     const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-    const steps = parseSteps(content);
-    if (!steps) throw _markFail(new Error('llm bad json'), 'llm');
+    /* 内容为空 / 解析不出三步：按 finish_reason 区分「被 max_tokens 截断」与「格式不对」，
+     * 学生看到的文案才能与事实相符（截断≠空内容）。detail 只用于选文案，不进公开字段。 */
+    const truncated = !!(data && data.choices && data.choices[0] && data.choices[0].finish_reason === 'length');
+    const detail = truncated ? 'truncated' : 'badjson';
+    let steps = null;
+    try { steps = parseSteps(content); } catch (e) { steps = null; }   /* 残缺 JSON 同归「格式不对」 */
+    if (!steps) {
+      const err = _markFail(new Error('llm bad json'), 'llm');
+      err.detail = detail;
+      throw err;
+    }
     // 数值校验：reveal 的最终解值与标准答案不一致就整轮作废（抛错 -> generate 返回 from='none'）
-    if (checkReveal(q, steps).ok === false) throw _markFail(new Error('llm reveal mismatch'), 'llm');
+    if (checkReveal(q, steps).ok === false) {
+      const err = _markFail(new Error('llm reveal mismatch'), 'llm');
+      err.detail = 'mismatch';
+      throw err;
+    }
     return steps;
   }
 
@@ -418,7 +449,7 @@
       })
       .catch(function (err) {
         const f = failInfo(err);
-        const notice = noticeFor(f.reason, f.httpStatus, f.degraded);
+        const notice = noticeFor(f.reason, f.httpStatus, f.degraded, f.detail);
         /* 并发失败的清理：早先的实现会先写静态占位，这里已不写占位；
          * 仍删一次同名 key，防止「同题不同画板」等历史残留把重试挡在缓存里。 */
         if (ckey) cache.delete(ckey);

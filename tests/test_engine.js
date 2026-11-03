@@ -2396,7 +2396,8 @@ testAsync('Explain.generate：reveal 数值算错 -> 失败返回 from=none、st
     assert.strictEqual(r.from, 'none');
     assert.strictEqual(r.steps, null, '失败不得再给静态三步');
     assert.strictEqual(r.reason, 'llm');
-    assert.strictEqual(r.notice, X._noticeFor('llm'));
+    /* 卡 t_efd74ae1 起 llm 档按 detail 分叉，算错（对不上标准答案）走 mismatch 专用文案 */
+    assert.strictEqual(r.notice, X._noticeFor('llm', null, false, 'mismatch'));
   } finally { restore(); }
 });
 
