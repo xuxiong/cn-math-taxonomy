@@ -433,3 +433,41 @@ table.log select { min-height: 44px; }
   opacity: 0.85;
 }
 .skel-bar.skel-short { width: 46%; }
+
+/* ---- 窄屏可读性（卡 t_c9d5267b）：只在 ≤480px 的手机上生效，桌面端布局不受影响 ---- */
+@media (max-width: 480px) {
+  /* 1) 正文字号抬到 ≥14px：全页只有两处小于 14px —— .brand-kicker（0.72rem = 11.52px）
+   *    和 .tag（0.78rem = 12.48px）。只抬这两类，不用 zoom/scale，44px 触控目标不受影响。 */
+  .brand-kicker { font-size: 0.9rem; }
+  .tag { font-size: 0.9rem; }
+
+  /* 2) 答题记录表：窄屏改成「一题一块」两行式布局 —— 第一行「# + 知识点/题目」，
+   *    第二行「你的答案 + 结果」，第三行「参考答案」。列一个不删（结果列是核心信息），
+   *    table/thead/tbody/tr/td 语义不变，只是 display 换成 grid，因此不需要横滑。 */
+  #log { overflow-x: visible; }
+  table.log { display: block; width: 100%; min-width: 0; font-size: 1rem; }
+  table.log thead { display: none; }
+  table.log tbody { display: block; }
+  table.log tr {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 4px 8px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px 12px;
+    margin: 0 0 10px;
+  }
+  table.log td { display: block; border: 0; padding: 0; min-width: 0; }
+  table.log td:nth-child(1) { grid-column: 1; grid-row: 1; font-weight: 800; }
+  table.log td:nth-child(2) { grid-column: 2; grid-row: 1; overflow-wrap: anywhere; }
+  table.log td:nth-child(3) { grid-column: 1 / -1; grid-row: 2; }
+  table.log td:nth-child(4) { grid-column: 1 / -1; grid-row: 3; justify-self: start; }
+  table.log td:nth-child(5) { grid-column: 1 / -1; grid-row: 4; }
+  table.log td:nth-child(3)::before { content: '你的答案：'; font-weight: 700; color: var(--text); }
+  table.log td:nth-child(4)::before { content: '结果：'; font-weight: 700; }
+  table.log td:nth-child(5)::before { content: '参考答案：'; font-weight: 700; }
+  table.log select { min-height: 44px; max-width: 100%; }
+
+  /* 3) 「已掌握」长列表折叠后露出的展开按钮 */
+  .list-more { width: 100%; margin: 8px 0 2px; }
+}
