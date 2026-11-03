@@ -290,11 +290,11 @@ testAsync('generate：fetch 永不 resolve → 在配置的超时 + 500ms 内返
     const r = await X.generate(T, QT, '1');
     const dt = Date.now() - t0;
     assert.ok(dt <= TIMEOUT + 500, '应在配置超时 + 500ms 内返回，实际 ' + dt + 'ms');
-    assert.strictEqual(r.from, 'static', '超时应回退静态讲解（永不 reject）');
+    assert.strictEqual(r.from, 'none', '超时不再回退静态讲解，返回 from=none（永不 reject）');
+    assert.strictEqual(r.steps, null, '失败时 steps 必须为 null，不留模板内容');
     assert.strictEqual(r.reason, 'timeout', '超时的 reason 应为 timeout');
-    assert.ok(r.notice && r.notice.indexOf('重试') >= 0 && r.notice.indexOf('看答案') >= 0,
-      '超时文案应可操作（重试 / 看答案），实际：' + r.notice);
-    assert.deepStrictEqual(r.steps, E.socraticSteps(T, QT), '失败仍给静态三步，不是空内容');
+    assert.strictEqual(r.notice, X._noticeFor('timeout'), '超时文案来自 noticeFor(timeout)，秒数现算不写死');
+    assert.ok(r.notice.indexOf('重试') >= 0, '超时文案应可操作（重试），实际：' + r.notice);
     assert.strictEqual(state.calls, 1, '不应自动重试（总时长以配置超时为界）');
     assert.strictEqual(state.aborted, 1, '定时器到点应 abort 一次');
     assert.ok(state.signals[0] && typeof state.signals[0].addEventListener === 'function',
@@ -314,11 +314,14 @@ testAsync('generate：fetch 直接以 AbortError 拒绝 → 走既有失败分�
     globalThis.fetch = function () { return Promise.reject(new Error('econnrefused')); };
     const netfail = await X.generate(T, { id: 'net-q1', type: 'numeric', prompt: 'x+2=5', answer: '3' }, '1');
 
-    assert.strictEqual(aborted.from, 'static', 'AbortError 应回退静态讲解');
+    assert.strictEqual(aborted.from, 'none', 'AbortError 也应返回 from=none，不再回退静态');
+    assert.strictEqual(aborted.steps, null);
     assert.strictEqual(aborted.reason, 'timeout', 'AbortError 的 reason 应为 timeout');
-    assert.strictEqual(netfail.from, 'static', '网络错误仍回退静态讲解');
+    assert.strictEqual(netfail.from, 'none', '网络错误同样返回 from=none');
+    assert.strictEqual(netfail.steps, null);
     assert.strictEqual(netfail.reason, 'network', '网络错误的 reason 应为 network');
-    assert.strictEqual(aborted.notice, netfail.notice, 'aborted 与网络失败的文案必须一致');
+    assert.strictEqual(aborted.notice, X._noticeFor('timeout'), '超时文案由 noticeFor(timeout) 统一给出');
+    assert.strictEqual(netfail.notice, X._noticeFor('network'), '网络文案由 noticeFor(network) 统一给出');
     assert.ok(aborted.notice.indexOf('重试') >= 0, '文案应可操作');
   } finally { globalThis.fetch = real; }
 });

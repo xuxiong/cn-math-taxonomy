@@ -1,6 +1,7 @@
 # 第一阶段需求文档：一元一次方程学习闭环
 
-状态：v4（T1/T2/T3/T3.5 已完成并浏览器实测通过；D1=B 本地网关、D2=苏格拉底 已拍板；O1-O3 优化方向已列入 §7）
+状态：v5（T1/T2/T3/T3.5 已完成并浏览器实测通过；D1=B 本地网关、D2=苏格拉底 已拍板；O1-O3 优化方向已列入 §7）
+注：T1/T2 的「静态三步 + 失败回退 static」已被卡 t_6bfdf8c2 取代——没配置 LLM 时改为解析直达（参考答案 + 解析原文），配置了 LLM 才请求模型，失败返回 `from:'none'` 并给「再问一次」。以下 T1/T2 保留为历史记录。
 日期：2026-10-22
 仓库：xuxiong/cn-math-taxonomy（fork 自 xiaoyang111222/cn-math-taxonomy）
 
@@ -55,7 +56,7 @@
 
 ## 4. Ticket 拆分（tracer-bullet：每条都有 blocking edges）
 
-### T1 讲解层骨架（✅ 已完成 2026-10-22）
+### T1 讲解层骨架（✅ 已完成 2026-10-22；⚠️ 已被 t_6bfdf8c2 取代：`socraticSteps`/`firstClueOf` 静态模板已删除）
 - engine.js 新增 `socraticSteps(topic, q)` 纯函数：返回 [{kind:'prompt'|'hint'|'reveal', text}] 三步引导
   - prompt 不泄露答案；hint 只给解析第一句线索（firstClueOf 截到首个逗号，避免泄露）；reveal 才揭示完整答案+解析
   - 缺解析时自动退回通用引导
@@ -68,7 +69,7 @@
 - 浏览器实测（agent-browser + Chrome/155）：答错→讲解→hint→reveal→下一题、以及"重新做一遍"分支全部通过
 - 交互约定：`ui.phase='explain'` + `ui.explainStep`(0/1/2)；renderQuestion 的 auto 分支加按钮、新增 explainPanel(item)
 
-### T2 LLM 讲解服务（✅ 已完成 2026-10-22；blocking: T1 的交互约定，D1=B 本地网关已定）
+### T2 LLM 讲解服务（✅ 已完成 2026-10-22；⚠️ 已被 t_6bfdf8c2 取代：不再用静态版渐进增强，失败不回退 static；blocking: T1 的交互约定，D1=B 本地网关已定）
 - 新增 diagnose/explain.js：`window.Explain.generate(topic, q, userAnswer)` → Promise<{steps, from:'llm'|'static'}>
   - **渐进增强**：先用 engine.socraticSteps 静态版即时渲染，同时后台调 LLM 生成个性化三步，成功后重渲染替换
   - prompt 分 system（苏格拉底三步 JSON 输出约束）+ user（题目/知识点/学生答案/标准解析），temperature 0.6，max_tokens 900
@@ -159,7 +160,7 @@ T2 的 LLM prompt 按此结构生成（prompt/hint/reveal 三段式，接口与 
 - edulab 三重自检：kernel 答案 == 答案卡 == 末步骤展示值；本项目对应风险在 explain.js 的
   reveal 是 LLM 全文生成，偶发算错会直接教错
 - 适配：prompt 把标准答案/解析作为"事实锚"要求 reveal 以该值收尾；生成后数值等价校验
-  （解析 reveal 中出现的数，与 q.answer 比较），不等则回退静态版
+  （解析 reveal 中出现的数，与 q.answer 比较），不等则按失败处理（t_6bfdf8c2 后为 `from:'none'` + 解析直达，不再回退静态模板）
 - 落点：explain.js 的 generate/ask、tests/test_engine.js（校验逻辑抽纯函数可测）
 
 ### O3 题目图片入口（★ 远期；几何题 90% 无配图的另一条路）

@@ -4,7 +4,7 @@
  *   node scripts/screenshot.js
  *
  * 做的事：起仓库自己的 scripts/serve.js（同源反代 /v1，页面不再跨域直连网关），启动系统 Chrome（headless），
- *   1) 打开 /diagnose/，选目标、「不会」→ 苏格拉底三步引导 →「明白了，下一题」出第二题 → 判薄弱 → 回溯先修、
+ *   1) 打开 /diagnose/，选目标、「不会」→ 解析直达（参考答案 + 解析原文）→「重新做一遍」→ 答错 → 出第二题 → 判薄弱 → 回溯先修、
  *      刷新验证存档、一路答到结果页、导出 JSON、生成 PDF；
  *      再用固定 seed 分别测选择题（点选项）和数值题（输入答案）的自动判题与解析显示；全程监听 console 错误；
  *   2) 用 ?target=cnm_219&demo=1 的演示模式（掌握 / 不稳 / 薄弱 三种状态都会出现）截
@@ -439,58 +439,66 @@ async function main() {
     check(true, '能选目标并进入出题页');
     check((await evalJs('document.querySelector(".q-title").textContent')).includes('配方法'), '首题是目标知识点本身（配方法）');
 
-    // 「不会」不再直接出参考答案，而是先进苏格拉底三步引导；下面几处都按这条真实路径点
-    const clickButtonByText = (sel, text) => evalJs(`(() => {
-      const b = [...document.querySelectorAll(${JSON.stringify(sel)})].find((x) => x.textContent.trim() === ${JSON.stringify(text)});
-      if (!b) return false;
-      b.click();
-      return true;
-    })()`);
-    const socStepText = () => evalJs('(() => { const s = document.querySelector(".socratic .soc-step"); return s ? s.textContent.trim() : ""; })()');
-    const revealByDirectAnswer = async () => {
-      await waitFor(() => clickButtonByText('.socratic button', '直接看答案'), '「直接看答案」按钮');
-      await waitFor(async () => (await socStepText()).includes('第 3 步'), '苏格拉底第 3 步完整解析');
+    // 没配置 LLM 时（冒烟环境即此路径）：「不会」→ 解析直达（参考答案 + 解析原文），
+    // 不再有苏格拉底三步；「我想出来了，重新做一遍」回到答题态，提交错误答案推进。
+    // 后续「第二题 / 回溯先修」都靠这条真实路径走到。
+    const answerThenNext = async () => {
+      // 开放题没有自动判分，只能看参考答案自评；冒烟只求跑通路径，这里点「对」推进。
+      if (!(await exists('#btn-submit'))) {
+        await click('#btn-peek');
+        await waitFor(() => exists('#btn-right'), '自评按钮');
+        await click('#btn-right');
+        return;
+      }
+      const promptText = await evalJs('document.querySelector("#q-text").textContent');
+      const q = QUESTION_ROWS.find((x) => x.prompt === promptText);
+      if (q && q.type === 'choice') {
+        await click('#choice-' + q.choices.find((c) => c.key !== q.answer).key);
+      } else if (await exists('#ans')) {
+        await evalJs('(() => { const el = document.querySelector("#ans"); el.value = "999999999"; el.dispatchEvent(new Event("input", {bubbles:true})); })()');
+      } else {
+        // 变式题不在静态题库里：退化成选第一个选项，保证冒烟能继续走。
+        await click('#choices .choice');
+      }
+      await click('#btn-submit');
+      await waitFor(() => evalJs('!!document.querySelector("#btn-next") || !!document.querySelector("#btn-right")'), '判题结果');
+      if (await exists('#btn-next')) await click('#btn-next');
+      else await click('#btn-right');
     };
     const skipOrNextOne = async () => {
       if (await exists('#btn-skip')) {
         await click('#btn-skip');
-        await waitFor(() => exists('.socratic'), '「不会」后的苏格拉底引导');
-        await revealByDirectAnswer();
-        await waitFor(() => exists('#btn-soc-done'), '「明白了，下一题」按钮');
-        await click('#btn-soc-done');
+        await waitFor(() => exists('#explain-direct'), '「不会」后的解析直达');
+        await click('#btn-explain-redo');
+        await waitFor(() => evalJs('!!document.querySelector("#btn-skip") && !document.querySelector("#explain-direct")'), '「重新做一遍」回到答题态');
+        await answerThenNext();
       } else if (await exists('#btn-next')) {
         await click('#btn-next');
-      } else if (await exists('#btn-soc-done')) {
-        await click('#btn-soc-done');
       }
     };
 
-    // 第一题：点「不会」→ 苏格拉底三步引导（第 1 步不提前给答案）→「明白了，下一题」；同一知识点出第二题
+    // 第一题：点「不会」→ 解析直达（参考答案 + 解析原文，没有苏格拉底三步）
     check(await exists('.tag.diff-basic, .tag.diff-standard, .tag.diff-advanced'), '题目显示难度标签');
     check(await exists('#btn-skip'), '有「不会」按钮');
+    const firstPrompt = await evalJs('document.querySelector("#q-text").textContent');
+    const firstQ = QUESTION_ROWS.find((x) => x.prompt === firstPrompt);
     await click('#btn-skip');
-    await waitFor(() => exists('.socratic'), '「不会」后进入苏格拉底引导面板');
-    check(await exists('.socratic') && (await evalJs('document.querySelector(".socratic").textContent')).includes('苏格拉底引导'),
-      '「不会」后进入苏格拉底引导面板（不再直接出参考答案）');
-    check(!(await exists('.refans')) && !(await exists('details.explain-fold')),
-      '第 1 步「先别看答案」：没有提前显示参考答案和完整解析');
-    const socButtons = await evalJs('Array.from(document.querySelectorAll(".socratic button")).map((b) => b.textContent.trim())');
-    check(['还是卡住，给我一点提示', '直接看答案', '我想出来了，重新做一遍'].every((t) => socButtons.indexOf(t) >= 0),
-      '第 1 步给出三个选项（重新做 / 给提示 / 直接看答案）');
-    await click('#btn-soc-hint');
-    await waitFor(async () => (await socStepText()).includes('第 2 步'), '苏格拉底第 2 步提示');
-    check(true, '点「还是卡住，给我一点提示」进入第 2 步');
-    await click('#btn-soc-reveal');
-    await waitFor(async () => (await socStepText()).includes('第 3 步'), '苏格拉底第 3 步完整解析');
-    check(await evalJs('(() => { const b = document.querySelector(".socratic details.explain-fold .explain"); if (!b) return false; const text = b.textContent.trim(); return text.length > 20 && /参考答案|答案[:：]/.test(text); })()'),
-      '第 3 步折叠块里是参考答案和解析');
-    await click('#btn-soc-done');
-    await waitFor(() => evalJs('(() => { const c = document.querySelector(".card"); return !!document.querySelector(".q-text") && !document.querySelector(".socratic") && !!c && c.textContent.indexOf("第 2 题") >= 0; })()'), '第二题');
+    await waitFor(() => exists('#explain-direct'), '「不会」后解析直达');
+    check(!(await exists('.socratic')), '「不会」不再出现苏格拉底三步面板');
+    check((await evalJs('document.querySelector("#explain").textContent')).includes('解析：'), '解析直达含「解析：」');
+    check(!!firstQ && (await evalJs('document.querySelector("#explain").textContent')).includes(firstQ.explanation),
+      '解析直达展示题目原文解析');
+    check((await evalJs('document.querySelector(".refans").textContent')).includes('参考答案：'), '解析直达显示参考答案');
+    await click('#btn-explain-redo');
+    await waitFor(() => evalJs('!!document.querySelector("#btn-skip") && !document.querySelector("#explain-direct")'), '「重新做一遍」回到答题态');
+    check(true, '「我想出来了，重新做一遍」可回到答题态');
+    await answerThenNext();
+    await waitFor(() => evalJs('(() => { const c = document.querySelector(".card"); return !!document.querySelector(".q-text") && !!c && c.textContent.indexOf("第 2 题") >= 0; })()'), '第二题');
     const cardText2 = await evalJs('document.querySelector(".card").textContent');
     check(/第 2 题/.test(cardText2) && /本知识点第 2 \/ \d+ 题/.test(cardText2) && (await evalJs('document.querySelector(".q-title").textContent')).includes('配方法'),
       '第一题没过 → 同一知识点（配方法）再出第 2 题');
     await skipOrNextOne();
-    await waitFor(() => evalJs('!!document.querySelector(".q-text") && !document.querySelector(".socratic")'), '回溯到先修');
+    await waitFor(() => evalJs('!!document.querySelector(".q-text") && !document.querySelector("#explain-direct")'), '回溯到先修');
     const cardText3 = await evalJs('document.querySelector(".card").textContent');
     check(/第 3 题/.test(cardText3) && !(await evalJs('document.querySelector(".q-title").textContent')).includes('配方法') && /本知识点第 1 \/ \d+ 题/.test(cardText3),
       '两题都没过 → 判薄弱并回溯到先修知识点（第 3 题是别的知识点）');
@@ -505,7 +513,7 @@ async function main() {
     await waitFor(() => exists('.q-text'), '继续后的出题页');
     check(/第 3 题/.test(await evalJs('document.querySelector(".card").textContent')), '刷新后点「继续」仍在第 3 题');
 
-    // 一路点「不会」到结果页（每题都真的走苏格拉底三步引导，不绕过 UI）
+    // 一路点「不会」→ 解析直达 → 重新做一遍 → 答错到结果页（每题都走真实 UI，不绕过）
     for (let i = 0; i < 40; i++) {
       if (await exists('#summary')) break;
       await skipOrNextOne();

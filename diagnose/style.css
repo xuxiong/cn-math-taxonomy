@@ -358,7 +358,16 @@ table.log select { min-height: 44px; }
 .funclab-check-res.is-no { color: #c0392b; }
 .funclab-check-res.is-empty { color: #6b7c93; font-weight: 400; }
 .ai-tag { font-size: 0.8rem; color: var(--brand); border: 1px solid var(--brand); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
-.ai-tag.static { color: var(--muted, #888); border-color: var(--muted, #888); }
+/* 等待模型返回时的中性占位（t_6bfdf8c2）：只有一句状态 + 灰条骨架，
+ * 不显示任何引导文本，避免等待期先闪一遍模板或提前泄露模型内容。 */
+.ai-pending { margin-top: 14px; padding: 14px; border: 1px dashed var(--line, #ddd); border-radius: 12px; background: var(--bg-elev); }
+.ai-pending-text { color: var(--muted, #888); }
+.ai-skel { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.ai-skel-bar { display: block; height: 12px; border-radius: 6px; background-color: var(--line); opacity: 0.75; }
+.ai-skel-bar.ai-skel-short { width: 46%; }
+/* 配置了 LLM 但这次调用失败：解析已经直达，失败原因和「再问一次」挂在下面，不抢解析的位置。 */
+.explain-fail { margin-top: 10px; color: var(--warn, #b58900); display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.explain-fail button { font-size: 0.9rem; }
 /* T3.5 追问区 */
 .ask-box { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line, #ddd); }
 .ask-hist { display: flex; flex-direction: column; gap: 8px; }
