@@ -184,11 +184,11 @@ async function openBrowser() {
 
 const DEEP = '/diagnose/?target=cnm_221&seed=sg450mxq';
 
-async function freshDeepLink(cdp) {
+async function freshDeepLink(cdp, url) {
   await cdp.send('Page.navigate', { url: cdp.base + '/' });
   await until(function () { return cdp.eval('document.readyState === "complete"'); }, '首页加载');
   await cdp.eval('localStorage.clear()');
-  await cdp.send('Page.navigate', { url: cdp.base + DEEP });
+  await cdp.send('Page.navigate', { url: cdp.base + (url || DEEP) });
   await until(function () { return cdp.eval('!!document.getElementById("q-text")'); }, '深链出第一题');
 }
 
@@ -267,6 +267,9 @@ test('界面层：最后一题答对后按钮是「看结果」，点进去渲�
     await until(function () { return cdp.eval('!!document.getElementById("summary")'); }, '点「看结果」后渲染出报告页', 8000);
     const view = await cdp.eval([
       '(() => ({',
+      /* 口径诚实化（卡 t_54813ae7）：「已掌握」方块下面的小字，以及「接下来练什么」小结里的口径说明 */
+      '  okSub: (function () { var e = document.querySelector("#summary .stat.ok .stat-sub"); return e ? e.textContent : null; })(),',
+      '  advice: document.getElementById("advice-summary") ? document.getElementById("advice-summary").textContent : null,',
       '  title: document.querySelector("#summary h2").textContent,',
       '  stats: document.querySelector("#summary .stats").innerText.replace(/\\s+/g, " "),',
       '  roots: document.getElementById("roots") ? document.getElementById("roots").innerText.replace(/\\s+/g, " ").slice(0, 200) : null,',
@@ -282,9 +285,70 @@ test('界面层：最后一题答对后按钮是「看结果」，点进去渲�
     assert.ok(view.roots && view.roots.indexOf('没有。') >= 0,
       'cnm_221 全对场景下薄弱根因为 0 条，页面必须写「没有。」：' + view.roots);
     assert.ok(view.path && view.path.indexOf('不需要补课') >= 0, '全对时学习路径应写「不需要补课」：' + view.path);
+    /* 口径诚实化（卡 t_54813ae7）：cnm_221 只答了 3 题、实测确认的只有 1 个点，其余 69 个是祖先闭包推断的。
+     * 方块只写「70 已掌握」会被家长/学生读成「测了 70 个都掌握」，所以必须把两个数拆开。 */
+    assert.strictEqual(view.okSub, '实测 1 / 推断 69', '「已掌握」方块要拆出实测/推断：' + view.okSub);
+    assert.ok(view.stats.indexOf('实测 1 / 推断 69') >= 0, '拆分数要出现在统计行里：' + view.stats);
+    assert.ok(view.advice && /已掌握」共 70 个/.test(view.advice) && /亲自答对测出来的 1 个/.test(view.advice) && /69 个是/.test(view.advice),
+      '「接下来练什么」小结要说清 70 里 1 个实测、69 个推断：' + view.advice);
     assert.deepStrictEqual(view.cnmChildren, 'undefined', '深链页 CnmChildren 仍应是 undefined（没靠加载 children.js 绕过）');
     const errs = await pageErrors(cdp);
     assert.deepStrictEqual(errs, [], '整个答题 → 报告页过程零报错');
+  } finally {
+    chrome && chrome.kill('SIGKILL');
+    chrome = null;
+  }
+});
+
+/* 2c 未测节点：题量用满（?limit=1）后路径图上「没测过」的点必须能看出来 + 图例有这一项 */
+const UNSET_DEEP = '/diagnose/?target=cnm_051&limit=1&seed=sg450mxq';
+
+test('路径图：未测节点是灰虚线框（照旧画出来）且图例里有「未测」', async function () {
+  const cdp = await openBrowser();
+  try {
+    await freshDeepLink(cdp, UNSET_DEEP);
+    /* 答错一题就撞到题量上限（limit=1）：目标点判薄弱 → 它的先修进图，且都还是「未测」。
+     * 用引擎推会话（等价于答完那一题），再走 commit() 的真实收敛分支到报告页。 */
+    const conv = await cdp.eval([
+      '(() => {',
+      '  const D = window.DiagCore, E = D.E, S = D.S, G = S.D.graph;',
+      '  const it = E.nextItem(G, S.session);',
+      '  if (!it) return { err: "没有题" };',
+      '  S.session = E.applyAnswer(G, S.session, it.topicId, "wrong", {});',
+      '  const sum = E.summarize(G, S.session);',
+      '  return { answers: S.session.answers.length, next: !!E.nextItem(G, S.session), untested: sum.untested.length };',
+      '})()'
+    ].join('\n'));
+    assert.strictEqual(conv.next, false, '前置：limit=1 答一题就该收敛');
+    assert.ok(conv.untested >= 1, '前置：这一轮必须有「未测」的知识点，否则这条断言测不到东西：' + JSON.stringify(conv));
+    await cdp.eval('window.DiagFlow.commit("wrong")');
+    await until(function () { return cdp.eval('!!document.getElementById("summary")'); }, '渲染报告页', 8000);
+    await until(function () {
+      return cdp.eval('!!window.__pathCy && document.getElementById("path-cy").dataset.ready === "1"');
+    }, '路径图挂载完成', 20000);
+    const g = await cdp.eval([
+      '(() => {',
+      '  const cy = window.__pathCy;',
+      '  const unk = cy.nodes().filter(function (n) { return n.hasClass("unknown"); });',
+      '  return {',
+      '    nodes: cy.nodes().length,',
+      '    unknown: unk.map(function (n) { return { id: n.id(), borderStyle: n.style("border-style"), borderColor: n.style("border-color"),',
+      '      bgOpacity: n.style("background-opacity"), w: n.renderedWidth() }; }),',
+      '    legend: document.querySelector("#graph .legend") ? document.querySelector("#graph .legend").textContent : null,',
+      '    fold: document.getElementById("path-fold") ? !document.getElementById("path-fold").hidden : null',
+      '  };',
+      '})()'
+    ].join('\n'));
+    assert.ok(g.unknown.length >= 1, '路径图上必须有 class 含 unknown 的节点（照旧画出来，不许删）：' + JSON.stringify(g.unknown));
+    assert.ok(g.nodes > g.unknown.length, '未测节点之外还要有其它节点，才谈得上「区分得开」：' + g.nodes);
+    g.unknown.forEach(function (n) {
+      assert.strictEqual(n.borderStyle, 'dashed', '未测节点必须是虚线边框：' + JSON.stringify(n));
+      assert.ok(n.w > 0, '未测节点必须真的画在图上（renderedWidth > 0）：' + JSON.stringify(n));
+    });
+    assert.ok(g.unknown.some(function (n) { return Number(n.bgOpacity) < 1; }), '未测节点要半透明：' + JSON.stringify(g.unknown));
+    assert.ok(g.legend && g.legend.indexOf('未测（灰虚线框）') >= 0, '图例必须有「未测」这一项：' + g.legend);
+    const errs = await pageErrors(cdp);
+    assert.deepStrictEqual(errs, [], '这一轮答题 → 报告页零报错');
   } finally {
     chrome && chrome.kill('SIGKILL');
     chrome = null;

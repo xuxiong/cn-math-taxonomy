@@ -500,9 +500,14 @@ function practiceResultBanner() {
 function adviceCard(sum) {
     const text = eng().studentAdvice(sum, nameOf);
     const lines = text.split('\n');
+    const split = masteredSplit(sum);
     return h('div', { class: 'card', id: 'advice-summary' },
       h('h2', { text: '接下来练什么' }),
       lines.map(function (line) { return h('p', { style: 'margin:2px 0' }, line); }),
+      /* 小结里只要提到「已掌握」，就得说清这 N 个是怎么来的：亲自答对测出来的，还是按先修推断的。 */
+      split.inferred ? h('p', { class: 'muted small', style: 'margin:6px 0 0' },
+        '口径说明：上面的「已掌握」共 ' + split.total + ' 个，其中你亲自答对测出来的 ' + split.direct +
+        ' 个；另外 ' + split.inferred + ' 个是「你答对了更靠后的知识点，说明这些先修也都掌握了」推断出来的。') : null,
       h('p', { class: 'no-print', style: 'margin-top:8px' },
         h('button', { class: 'small', onclick: function (e) {
           copyText(text);
@@ -1348,6 +1353,8 @@ function renderResult() {
     const headline = resultHeadline(sum, S.session, screen, diagOnly, targetsMastered);
 
     const more = screen ? 10 : 4;
+    /* 五格里的「已掌握」必须能看出拆分（实测 / 推断），口径见 masteredSplit 注释。 */
+    const mastered = masteredSplit(sum);
     const summaryCard = h('div', { class: 'card', id: 'summary' },
       h('h2', { text: '诊断结果：' + S.sessionMeta.label }),
       h('p', null, headline),
@@ -1355,7 +1362,7 @@ function renderResult() {
         stat('ask', sum.asked, '已答题数'),
         stat('bad', sum.weak.length, '薄弱'),
         stat('shaky', sum.shaky.length, '不稳'),
-        diagOnly ? null : stat('ok', sum.mastered.length, '已掌握'),
+        diagOnly ? null : stat('ok', sum.mastered.length, '已掌握', '实测 ' + mastered.direct + ' / 推断 ' + mastered.inferred),
         stat('unk', sum.untested.length, '未测')),
       sum.unconfirmed.length ? h('p', { class: 'notice' }, '「' + sum.unconfirmed.map(nameOf).join('」「') + '」答错过但还没完成确认就到了题量上限，没来得及复测，暂按薄弱处理。') : null,
       sum.limitReached ? h('p', { class: 'notice' }, '已达到题量上限（' + sum.limit + '），剩余没测到的知识点标为「未测」。薄弱根因的先修里若有未测点，真正的根因可能更靠前。',
@@ -1398,7 +1405,7 @@ function renderResult() {
 
     page.append(h('div', { class: 'card', id: 'graph' },
       h('h2', { text: '路径图' }),
-      h('p', { class: 'muted small' }, '小学、初中和高中用不同颜色。硬先修是实线，软先修是虚线，点线表示中间省略了没画出来的知识点。红框是薄弱根因，橙框是目标。节点较多时先按年级收起中间点，可再展开。名称太长会省略，悬停或点按可看全名。滚轮缩放，拖动平移。上面的列表是完整学习顺序。'),
+      h('p', { class: 'muted small' }, '小学、初中和高中用不同颜色。硬先修是实线，软先修是虚线，点线表示中间省略了没画出来的知识点。红框是薄弱根因，橙框是目标，灰虚线框是还没测到的知识点（半透明，照旧画在图上）。节点较多时先按年级收起中间点，可再展开。名称太长会省略，悬停或点按可看全名。滚轮缩放，拖动平移。上面的列表是完整学习顺序。'),
       h('div', { class: 'path-tools no-print' },
         h('button', { type: 'button', id: 'path-zoom-out', onclick: function () { const f = flow('pathZoom'); if (f) f(0.8); } }, '缩小'),
         h('button', { type: 'button', id: 'path-zoom-in', onclick: function () { const f = flow('pathZoom'); if (f) f(1.25); } }, '放大'),
@@ -1410,6 +1417,7 @@ function renderResult() {
         h('li', null, h('i', { class: 'swatch sw-h' }), '高中'),
         h('li', null, h('i', { class: 'swatch sw-root' }), '薄弱根因'),
         h('li', null, h('i', { class: 'swatch sw-target' }), '目标'),
+        h('li', null, h('i', { class: 'swatch sw-unk' }), '未测（灰虚线框）'),
         h('li', null, h('i', { class: 'swatch line-hard' }), '硬先修（实线）'),
         h('li', null, h('i', { class: 'swatch line-soft' }), '软先修（虚线）'),
         h('li', null, h('i', { class: 'swatch line-skip' }), '中间省略（点线）')),
@@ -1462,7 +1470,22 @@ function chaptersCard(chapters, outOfScope) {
       }));
   }
 
-function stat(cls, n, label) { return h('div', { class: 'stat ' + cls }, h('b', { text: String(n) }), label); }
+/* sub：主数字下面那行小字（「已掌握」用它拆「实测 / 推断」）；不传就还是原来的两行结构。 */
+function stat(cls, n, label, sub) {
+    return h('div', { class: 'stat ' + cls }, h('b', { text: String(n) }), label,
+      sub ? h('span', { class: 'stat-sub', text: sub }) : null);
+  }
+
+/* 「已掌握」的两个来源（engine.js applyAnswer）：src 'direct' = 这个点自己答对测出来的；
+ * 其余是祖先闭包被推断出来的（答对了更靠后的点，说明先修必然也会）。方块上必须拆开，
+ * 否则「70 已掌握」会被读成「测了 70 个都掌握了」。 */
+function masteredSplit(sum) {
+    const direct = sum.mastered.filter(function (id) {
+      const st = S.session.status[id];
+      return st && st.src === 'direct';
+    }).length;
+    return { total: sum.mastered.length, direct: direct, inferred: sum.mastered.length - direct };
+  }
 
 function standardsCard(sum) {
     const ids = new Set(S.session.mode === 'screen' ? [] : S.session.targets);
@@ -1664,6 +1687,8 @@ function resolveTargets(params) {
     if (n.isTarget) { bg = colors.currentBg; border = colors.currentBorder; }
     if (n.isRoot) { bg = colors.badBg; border = colors.bad; }
     const classes = [kind];
+    /* 「未测」在图上要和测过的点区分得开（灰色虚线框 + 半透明，见 mountPathGraph 的 node.unknown 样式） */
+    if (n.status === 'unknown') classes.push('unknown');
     if (n.isRoot) classes.push('root');
     if (n.isTarget) classes.push('target', 'current');
     return {
@@ -1818,6 +1843,8 @@ function resolveTargets(params) {
       try {
         ensureDagre();
         const colors = theme();
+        /* 未测节点的灰：和 .tag.unknown / .stat.unk / 图例 .sw-unk 同一个 --unk */
+        const unkColor = getComputedStyle(document.documentElement).getPropertyValue('--unk').trim() || '#475569';
         const narrow = labelLimit() <= 8;
         const textMax = narrow ? 104 : 126;
         const boxW = narrow ? 118 : 142;
@@ -1848,10 +1875,16 @@ function resolveTargets(params) {
               'background-color': 'data(bg)', 'border-width': 2, 'border-color': 'data(border)',
               shape: 'round-rectangle', width: boxW, height: 34, padding: 0, 'corner-radius': 8
             } },
+            { selector: 'node.unknown', style: {
+              /* 没测过的点：灰色虚线框 + 半透明（照旧画出来，学生要看到「还有没测的」） */
+              'border-style': 'dashed', 'border-color': unkColor, 'background-opacity': 0.5
+            } },
             { selector: 'node.current', style: { 'border-width': 4, 'z-index': 8 } },
             { selector: 'node.root', style: {
               'background-color': colors.badBg, 'border-color': colors.bad, 'border-width': 4, 'z-index': 11
             } },
+            /* 目标本身还没测到时：保留橙色（它仍然是目标），只把边框改成虚线 */
+            { selector: 'node.unknown.target', style: { 'border-color': colors.currentBorder, 'border-style': 'dashed' } },
             { selector: 'edge', style: {
               width: 1.6, 'line-color': 'data(color)', 'target-arrow-color': 'data(color)',
               'target-arrow-shape': 'triangle', 'curve-style': heavy ? 'straight' : 'bezier', 'arrow-scale': 0.8, 'line-style': 'solid'

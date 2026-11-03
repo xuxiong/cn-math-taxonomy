@@ -470,8 +470,13 @@ test('app.js：结果页在「只有诊断题」时不许出现「已掌握」�
   assert.ok(/const diagOnly = diagnosticOnlyRound\((?:S\.)?D\.graph, (?:S\.)?session\);/.test(rr), '结果页要先算「本轮只有兜底诊断题」');
   assert.ok(/else if \(diagOnly\) page\.append\(noBankCard\(sum\)\);/.test(rr),
     '只有兜底诊断题时不许画「接下来练什么」小结（那句「都掌握啦，真棒！」是假的）');
-  assert.ok(/diagOnly \? null : stat\('ok', sum\.mastered\.length, '已掌握'\)/.test(rr),
+  /* 契约更新（卡 t_54813ae7）：这条断言原来把「stat('ok', sum.mastered.length, '已掌握')」这个
+   * 不含「实测/推断」拆分的调用形式当成契约。方块口径诚实化后该调用多了第 4 个参数
+   * （'实测 X / 推断 Y'），所以这里只锁「diagOnly 时不许出现已掌握统计」这一点，允许可选的第 4 个参数。 */
+  assert.ok(/diagOnly \? null : stat\('ok', sum\.mastered\.length, '已掌握'(?:, [^)]*)?\)/.test(rr),
     '只有兜底诊断题时不许显示「已掌握」统计');
+  assert.ok(rr.indexOf("'已掌握', '实测 '") >= 0 && rr.indexOf("' / 推断 '") >= 0,
+    '「已掌握」方块必须把实测/推断拆开（第 4 个参数），不许只报一个总数');
   assert.ok(/if \(!diagOnly\) page\.append\(h\('details', \{ class: 'card', id: 'mastered' \}/.test(rr),
     '只有兜底诊断题时不许显示「已掌握的知识点」卡');
   assert.ok(/const headline = resultHeadline\(sum, (?:S\.)?session, screen, diagOnly, targetsMastered\);/.test(rr),
