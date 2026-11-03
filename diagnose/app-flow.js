@@ -1249,6 +1249,27 @@ function topicItem(id, tags, extra, pbtn) {
       topicBody(id, extra));
   }
 
+/* 窄屏长列表折叠（卡 t_c9d5267b）：≤480px 时「已掌握」卡默认只渲染前 12 项，
+ * 给「展开全部（还有 N 个）」按钮；桌面端（>480px）保持一次全列的老行为。
+ * 只影响列表渲染，不动 sum.mastered / 判定算法。 */
+const MASTERED_HEAD = 12;
+function masteredList(ids) {
+  const items = ids.map(function (id) {
+    const src = S.session.status[id].src === 'direct' ? '答对' : '由后续知识点答对推断';
+    return topicItem(id, [tag('mastered', src)].concat(S.D.graph.byId[id].external ? [tag('ext', '小学')] : []));
+  });
+  const narrow = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(max-width: 480px)').matches;
+  if (!narrow || items.length <= MASTERED_HEAD) return items;
+  const box = h('div', { class: 'list-fold' }, items.slice(0, MASTERED_HEAD));
+  const btn = h('button', { type: 'button', class: 'list-more no-print' },
+    '展开全部（还有 ' + (items.length - MASTERED_HEAD) + ' 个）');
+  btn.onclick = function () {
+    items.slice(MASTERED_HEAD).forEach(function (el) { box.appendChild(el); });
+    btn.remove();
+  };
+  return [box, btn];
+}
+
 function tag(cls, text) { return h('span', { class: 'tag ' + cls, text: text }); }
 
 function statusTags(id, rootSet, targetSet) {
@@ -1427,10 +1448,7 @@ function renderResult() {
 
     if (!diagOnly) page.append(h('details', { class: 'card', id: 'mastered' },
       h('summary', null, h('b', null, '已掌握的知识点（' + sum.mastered.length + '）')),
-      sum.mastered.map(function (id) {
-        const src = S.session.status[id].src === 'direct' ? '答对' : '由后续知识点答对推断';
-        return topicItem(id, [tag('mastered', src)].concat(S.D.graph.byId[id].external ? [tag('ext', '小学')] : []));
-      })));
+      masteredList(sum.mastered)));
 
     page.append(h('details', { class: 'card', id: 'untested' },
       h('summary', null, h('b', null, '未测的知识点（' + sum.untested.length + '）')),
