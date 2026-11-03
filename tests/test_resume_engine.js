@@ -33,7 +33,7 @@ const http = require('http');
  *   chrome-guard —— Chrome 进程级兜底回收（抛错 / SIGKILL / 外部超时都不留进程、不留临时目录）
  *   wait         —— until 统一超时口径（超时=失败上限，不是性能断言） */
 const guard = require('./lib/chrome-guard');
-const { until } = require('./lib/wait');
+const { until, chromePort, devtoolsJson } = require('./lib/wait');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -142,9 +142,9 @@ async function openBrowser() {
     '--remote-debugging-port=0', '--user-data-dir=' + profileDir, 'about:blank'
   ], { logFile: path.join(out, 'chrome.log') });
   const activePort = path.join(profileDir, 'DevToolsActivePort');
-  await until(function () { return fs.existsSync(activePort); }, 'Chrome 调试端口');
-  const port = fs.readFileSync(activePort, 'utf8').split('\n')[0];
-  const tabs = await fetch('http://127.0.0.1:' + port + '/json').then(function (r) { return r.json(); });
+  /* 等端口「写完整」（文件刚创建时内容可能还是 0 字节），再等 HTTP 端点能应答：见 wait.chromePort。 */
+  const port = await chromePort(activePort);
+  const tabs = await devtoolsJson(port);
   const tab = tabs.find(function (t) { return t.type === 'page'; });
   const ws = new WebSocket(tab.webSocketDebuggerUrl);
   await new Promise(function (resolve, reject) { ws.addEventListener('open', resolve); ws.addEventListener('error', reject); });

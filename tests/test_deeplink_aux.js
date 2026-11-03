@@ -29,7 +29,7 @@ const http = require('http');
  *   chrome-guard —— Chrome 进程级兜底回收（抛错 / SIGKILL / 外部超时都不留进程、不留临时目录）
  *   wait         —— until 统一超时口径（超时=失败上限，不是性能断言） */
 const guard = require('./lib/chrome-guard');
-const { until, reportReady } = require('./lib/wait');
+const { until, reportReady, chromePort, devtoolsJson } = require('./lib/wait');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -128,9 +128,9 @@ async function openBrowser() {
     '--remote-debugging-port=0', '--user-data-dir=' + profileDir, 'about:blank'
   ], { logFile: path.join(out, 'chrome.log') });
   const activePort = path.join(profileDir, 'DevToolsActivePort');
-  await until(function () { return fs.existsSync(activePort); }, 'Chrome 调试端口');
-  const port = fs.readFileSync(activePort, 'utf8').split('\n')[0];
-  const tabs = await fetch('http://127.0.0.1:' + port + '/json').then(function (r) { return r.json(); });
+  /* 等端口「写完整」（文件刚创建时内容可能还是 0 字节），再等 HTTP 端点能应答：见 wait.chromePort。 */
+  const port = await chromePort(activePort);
+  const tabs = await devtoolsJson(port);
   const tab = tabs.find(function (t) { return t.type === 'page'; });
   const ws = new WebSocket(tab.webSocketDebuggerUrl);
   await new Promise(function (resolve, reject) { ws.addEventListener('open', resolve); ws.addEventListener('error', reject); });
@@ -236,8 +236,15 @@ test('limit=1 深链答完后报告页出现 #child-bar 且孩子档案真的写
   try {
     await freshNavigate(cdp, '/diagnose/?target=cnm_221&limit=1&seed=sg450mxq');
     /* 先等辅助模块到货，再造孩子：saveToChild() 只在 CC 到货且有「当前孩子」时才写记录。 */
-    await until(async function () { return (await cdp.eval('typeof window.CnmChildren')) === 'object'; },
-      '深链下 CnmChildren 到货');
+    /* 等辅助模块整批到货，而不是只等 children.js：app.js 是在这批脚本的 Promise.all 之后
+     * 才把内部引用 CC 指向 CnmChildren 的（diagnose/app.js scheduleAuxLoad）。只等
+     * window.CnmChildren 会出现「文件到了、CC 还没接上」的窗口，那一刻报告页的 childBar()
+     * 返回 null，#child-bar 永远不出现 —— 全量连跑 + 高负载下实测踩到过。
+     * 判据是这批模块各自挂的全局都在场（超时 30s 只是失败上限）。 */
+    await until(async function () {
+      return await cdp.eval('!!(window.CnmChildren && window.CnmBlind && window.cnmTrack' +
+        ' && window.LLMConfig && window.CNM_STATS)');
+    }, '深链下辅助模块整批到货（CnmChildren / CnmBlind / cnmTrack / LLMConfig / CNM_STATS）');
     const added = await cdp.eval([
       '(() => { const r = window.CnmChildren.add({ name: "测试娃", grade: "三年级" });',
       '  return r && r.ok ? r.child.id : null; })()'

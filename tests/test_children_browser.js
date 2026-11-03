@@ -10,7 +10,7 @@ const path = require('path');
 const http = require('http');
 const assert = require('assert');
 const guard = require('./lib/chrome-guard');
-const { until } = require('./lib/wait');
+const { until, chromePort, devtoolsJson } = require('./lib/wait');
 const root = path.resolve(__dirname, '..');
 /* 临时目录走 guard.tempDir：退出/被打断时只删这一个自己 mkdtemp 出来的目录 */
 const out = guard.tempDir('cnm-backup-browser-');
@@ -74,17 +74,17 @@ let chrome, source, target, browser;
     '--remote-debugging-port=0', '--user-data-dir=' + path.join(out, 'profile'), 'about:blank'
   ], { logFile: path.join(out, 'chrome.log') });
   const activePort = path.join(out, 'profile', 'DevToolsActivePort');
-  await until(() => fs.existsSync(activePort), 'Chrome debugger');
-  const port = fs.readFileSync(activePort, 'utf8').split('\n')[0];
+  /* 等端口「写完整」（文件刚创建时内容可能还是 0 字节），再等 HTTP 端点能应答：见 wait.chromePort。 */
+  const port = await chromePort(activePort, 'Chrome debugger');
   async function connect(targetId) {
-    const tabs = await fetch('http://127.0.0.1:' + port + '/json').then(r => r.json());
+    const tabs = await devtoolsJson(port);
     const tab = targetId ? tabs.find(t => t.id === targetId) : tabs.find(t => t.type === 'page');
     const ws = new WebSocket(tab.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => { ws.addEventListener('open', resolve); ws.addEventListener('error', reject); });
     return new CDP(ws);
   }
   source = await connect();
-  const browserInfo = await fetch('http://127.0.0.1:' + port + '/json/version').then(r => r.json());
+  const browserInfo = await devtoolsJson(port, '/json/version');
   const browserSocket = new WebSocket(browserInfo.webSocketDebuggerUrl);
   await new Promise((resolve,reject) => { browserSocket.addEventListener('open',resolve); browserSocket.addEventListener('error',reject); });
   browser = new CDP(browserSocket);

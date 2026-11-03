@@ -137,6 +137,13 @@ function launch(command, args, options) {
     live.add(child);
     child.once('exit', function () { live.delete(child); });
     tellReaper({ type: 'chrome', pid: child.pid });
+    /* 不让 Chrome 反过来把测试进程吊住。
+     * 为什么关键：openBrowser() 抛错发生在每个用例的 try 之外（`const cdp = await openBrowser()`），
+     * 用例的 finally 根本不会执行；这时如果子进程句柄还让事件循环活着，进程就永远退不出去，
+     * 而 'exit' 钩子只有在进程真要退出时才跑 —— 结果是 Chrome 一直活着（实测：把 CHROME 指向
+     * 一个真 Chrome、但不写 DevToolsActivePort，node 打完「0 passed, 2 failed」后挂住不退出）。
+     * unref 之后主流程跑完、其它句柄清空，进程就能正常退出，退出钩子再把 Chrome 收掉。 */
+    if (typeof child.unref === 'function') child.unref();
   }
   child.on('error', function () { /* 交给调用方的 until 超时暴露；不要让 error 事件把进程打崩 */ });
   return child;
