@@ -1683,55 +1683,25 @@ test('普通整章 / 单点诊断不受影响：不带 mode 的会话仍回溯�
   sum.roots.forEach((r) => assert.deepStrictEqual(r.outOfScopePrereqs, []));
 });
 
-/* ------------------------------------------------------------ 苏格拉底讲解引导
- * socraticSteps(topic, q) -> [{kind:'prompt'|'hint'|'reveal', text}]
- * 静态骨架版：不接 LLM，用题目数据生成三步引导；T2 再把文本换成模型生成。
- * 原则：prompt 不给答案、hint 只给线索、reveal 才揭晓完整解析。
+/* ------------------------------------------------------------ 静态讲解模板已删除（卡 t_6bfdf8c2）
+ * 旧的 socraticSteps(topic, q) 与 firstClueOf(expl) 静态模板已按新口径删除：
+ *   没配置 LLM → app-flow 走上游式「参考答案 + 解析原文」直达；
+ *   配置了 LLM → 三步讲解只来自模型 JSON（diagnose/explain.js）。
+ * 行为保护（引导文本不得泄露答案）改到 tests/test_socratic_gate.js 的全库扫描
+ * （12135 题）与浏览器级面板断言，覆盖不弱于旧的 50 条变式样本。
  */
 
 const Q_A = { id: 'q1', type: 'numeric', prompt: '解方程 2(x-3)=4-(x+1)。', answer: '3', explanation: '去括号得 2x-6=4-x-1，移项合并得 3x=9，所以 x=3。', difficulty: 'standard' };
 const T_A = { id: 'cnm_043', name: '含括号的一元一次方程', chapter: '七上 第五章 5.2', type: 'procedural' };
 
-test('socraticSteps：返回三步，kind 顺序为 prompt→hint→reveal', () => {
-  const steps = E.socraticSteps(T_A, Q_A);
-  assert.strictEqual(steps.length, 3);
-  assert.deepStrictEqual(steps.map((s) => s.kind), ['prompt', 'hint', 'reveal']);
+test('静态讲解模板已删除：engine 不再导出 socraticSteps / firstClueOf', () => {
+  assert.strictEqual(typeof E.socraticSteps, 'undefined', 'socraticSteps 必须已删除（重引入 = 回归）');
+  assert.strictEqual(typeof E.firstClueOf, 'undefined', 'firstClueOf 必须已删除（重引入 = 回归）');
+  const exported = Object.keys(E);
+  assert.ok(exported.indexOf('socraticSteps') < 0, 'engine 导出表里不能再有 socraticSteps');
+  assert.ok(exported.indexOf('firstClueOf') < 0, 'engine 导出表里不能再有 firstClueOf');
 });
 
-test('socraticSteps：prompt 是提问且不泄露参考答案', () => {
-  const steps = E.socraticSteps(T_A, Q_A);
-  assert.ok(steps[0].text.length > 0);
-  assert.ok(steps[0].text.indexOf(Q_A.answer) < 0, 'prompt 不能包含答案');
-  assert.ok(steps[0].text.indexOf(Q_A.explanation) < 0, 'prompt 不能包含完整解析');
-  assert.ok(steps[0].text.indexOf(T_A.name) >= 0, 'prompt 应提及知识点名');
-});
-
-test('socraticSteps：hint 只给线索，不揭晓最终答案', () => {
-  const steps = E.socraticSteps(T_A, Q_A);
-  assert.ok(steps[1].text.length > 0);
-  assert.ok(steps[1].text.indexOf(Q_A.answer) < 0, 'hint 不能包含最终答案');
-  assert.ok(steps[1].text.length < steps[2].text.length, 'hint 应短于 reveal');
-});
-
-test('socraticSteps：reveal 揭晓参考答案与解析', () => {
-  const steps = E.socraticSteps(T_A, Q_A);
-  assert.ok(steps[2].text.indexOf(Q_A.answer) >= 0, 'reveal 必须包含参考答案');
-  assert.ok(steps[2].text.indexOf(Q_A.explanation) >= 0, 'reveal 必须包含解析');
-});
-
-test('socraticSteps：选择题 hint 引导到判断依据而非答案文本', () => {
-  const qc = { id: 'q2', type: 'choice', prompt: '移项正确的是？', answer: 'B', choices: [{ key: 'A', text: '2x-5x=6-3' }, { key: 'B', text: '2x-5x=6+3' }], explanation: '移项要变号：5x 移到左边变 -5x，-3 移到右边变 +3。', difficulty: 'standard' };
-  const steps = E.socraticSteps(T_A, qc);
-  assert.strictEqual(steps[0].kind, 'prompt');
-  assert.ok(steps[2].text.indexOf('B') >= 0);
-});
-
-test('socraticSteps：缺解析时也能生成三步', () => {
-  const qNo = { id: 'q3', type: 'numeric', prompt: 'x+2=5', answer: '3' };
-  const steps = E.socraticSteps(T_A, qNo);
-  assert.strictEqual(steps.length, 3);
-  assert.ok(steps[2].text.indexOf('x+2=5') < 0 || steps[2].text.indexOf('3') >= 0, 'reveal 应至少给出答案');
-});
 
 /* ---------------- T3：pickPracticeQuestions(graph, topicId, n, doneIds) ---------------- */
 
@@ -2175,17 +2145,13 @@ test('14 解析结构（步骤关键词 + 末句 x={answer}）', () => {
   }
 });
 
-test('15 首句不泄露（socraticSteps hint 不含 x=answer 且不含"系数化为"）', () => {
-  const topic = { id: 'cnm_043', name: '含括号的一元一次方程' };
-  for (let i = 0; i < 50; i++) {
-    const q = V.genVariant('cnm_043', i);
-    const steps = E.socraticSteps(topic, q);
-    const hint = steps[1].text;
-    // 不含 x=<answer>
-    const ansRe = new RegExp('x\\s*=\\s*' + q.answer.replace('/', '\\/'));
-    assert.ok(!ansRe.test(hint), 'hint 不含 x=' + q.answer + ': idx=' + i + ' hint=' + hint);
-    assert.ok(hint.indexOf('系数化为') < 0, 'hint 不含"系数化为": idx=' + i);
-  }
+test('15 静态讲解模板已删除（首句泄露保护由 test_socratic_gate 全库扫描接管）', () => {
+  /* 旧断言要求 E.socraticSteps(topic,q).steps[1]（hint）不含 x=answer / 系数化为；
+   * 卡 t_6bfdf8c2 已删除静态模板，这条保护失去对象。接管位置：
+   * tests/test_socratic_gate.js 第 5 条对全库 12135 题扫描「静态引导文本是否含答案」，
+   * 并以「静态模板函数必须不存在」作为闸门；覆盖面比旧断言只扫 50 条变式更宽。 */
+  assert.strictEqual(typeof E.socraticSteps, 'undefined', '静态模板已删除');
+  assert.strictEqual(typeof E.firstClueOf, 'undefined', '静态首句线索函数已删除');
 });
 
 test('16 撞题去重 + 确定性', () => {
@@ -2419,7 +2385,7 @@ testAsync('Explain.generate：reveal 数值正确 -> from=llm', async () => {
   } finally { restore(); }
 });
 
-testAsync('Explain.generate：reveal 数值算错 -> 整轮回退静态讲解（from=static）', async () => {
+testAsync('Explain.generate：reveal 数值算错 -> 失败返回 from=none、steps=null', async () => {
   const X = loadExplain();
   X._cache.clear();
   const q = { id: 'o2-bad', type: 'numeric', prompt: '解方程 2(x-3)=4-(x+1)。', answer: '3' };
@@ -2427,13 +2393,14 @@ testAsync('Explain.generate：reveal 数值算错 -> 整轮回退静态讲解（
   const restore = mockLLM(wrong);
   try {
     const r = await X.generate(T_A, q, '1');
-    assert.strictEqual(r.from, 'static');
-    assert.deepStrictEqual(r.steps, E.socraticSteps(T_A, q));
-    assert.ok(r.steps[2].text.indexOf(wrong.slice(-4)) < 0, '错值讲解不能留在 steps 里');
+    assert.strictEqual(r.from, 'none');
+    assert.strictEqual(r.steps, null, '失败不得再给静态三步');
+    assert.strictEqual(r.reason, 'llm');
+    assert.strictEqual(r.notice, X._noticeFor('llm'));
   } finally { restore(); }
 });
 
-testAsync('Explain.generate：网关异常仍回退静态（契约不变：永不 reject）', async () => {
+testAsync('Explain.generate：网关异常仍不 reject，返回 from=none 与可操作文案', async () => {
   const X = loadExplain();
   X._cache.clear();
   const q = { id: 'o2-offline', type: 'numeric', prompt: 'x+2=5', answer: '3' };
@@ -2441,7 +2408,10 @@ testAsync('Explain.generate：网关异常仍回退静态（契约不变：永�
   globalThis.fetch = function () { return Promise.reject(new Error('econnrefused')); };
   try {
     const r = await X.generate(T_A, q, '1');
-    assert.strictEqual(r.from, 'static');
+    assert.strictEqual(r.from, 'none');
+    assert.strictEqual(r.steps, null);
+    assert.strictEqual(r.reason, 'network');
+    assert.strictEqual(r.notice, X._noticeFor('network'));
   } finally { globalThis.fetch = real; }
 });
 

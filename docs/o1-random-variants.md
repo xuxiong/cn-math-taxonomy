@@ -22,7 +22,7 @@
 | D7 | 确定性 | `seedKey = (opts.seed \|\| topicId) + '\|' + topicId + '\|v' + index + '#' + attempt`；同一份题库数据下同 (topicId,index) 永远同一题 |
 | D8 | id | `<topicId>_v<index+1>`（如 `cnm_043_v7`），与题库 `_q<N>` 命名空间不冲突，不进 data/ |
 | D9 | 兜底 | 60 次重抽按段降级（正常→强制整数根→同难度换 recipe→T1 兜底）；受支持 topic **永不返回 null**，未支持 topic 返回 null |
-| D10 | 泄露 | 解析首句（`firstClueOf` 取到第一个逗号）结构上只写"去括号得…"，**不用"字符串包含答案"当判据**（见 §5.4） |
+| D10 | 泄露 | 卡 t_6bfdf8c2 已删除 `firstClueOf` 静态首句线索；变式 `explanation` 仍按模板写，但不再从中截 hint。历史判据见 §5.4（已标注失效） |
 | D11 | 撞题 | 与题库 prompt 归一化后逐字比较去重（`avoidPrompts`） |
 | D12 | 测试 | 追加到 `tests/test_engine.js`（现有 103 条基线），新增 ≥16 条 |
 
@@ -37,7 +37,7 @@
 
 1. 给定知识点 id + 变式序号，确定性地产出一道**与题库同构、同字段**的方程题。
 2. 答案天然规整：整数或最简分数，无根号、无循环小数、无浮点误差。
-3. 复用现有判题链（`judgeQuestion`）、讲解链（`socraticSteps` / `explain.js`），**不改它们**。
+3. 复用现有判题链（`judgeQuestion`）与讲解链（`explain.js`；静态 `socraticSteps` 已随 t_6bfdf8c2 删除），**不改它们**。
 4. 题池耗尽时练习不空转：题库 4 题 → 无限变式。
 
 ### 1.2 不做（明确边界，实现卡照此拒绝扩需求）
@@ -316,16 +316,20 @@ id = topicId + '_v' + (index + 1)      // cnm_043_v1, cnm_043_v2, ...
 
 三个下游消费者天然兼容：
 
-- `socraticSteps(topic, q)`：读 `q.type/answer/choices/explanation` → 变式字段齐全，
-  reveal 自然带答案，hint 取解析首句（§5.4 保证安全）。
 - `explain.js`（LLM 讲解）：读 `q.prompt/answer/explanation` + `topic` 对象；缓存 key 是 `q.id`，
   变式 id 唯一，不会串题。
+- 没配置 LLM 时的解析直达：直接展示变式的 `explanation` 原文（t_6bfdf8c2 起不再有静态三步），
+  所以变式的解析文字质量直接面向学生，仍需按 §5.3 模板生成。
 - O2 的"reveal 数值校验"（另一张卡）：解析末句固定 `x={answer}`，正好是它的比对锚点。
 
 ### 5.4 泄露判据：结构保证，而不是"字符串包含答案"
 
-`firstClueOf` 取解析里第一个 `，。；;,` 之前的内容作为 hint。首句结构上是
-"去括号得 …"，**不可能**出现 `x=r` 这种直接给解的形式。因此判据定义为：
+> ⚠️ 失效说明（卡 t_6bfdf8c2）：`firstClueOf` 与 `socraticSteps` 静态模板已删除，
+> 不再从解析里截首句当 hint。下文保留为当时的判据记录；当前闸门是
+> `tests/test_socratic_gate.js`——静态模板函数必须不存在，配置了 LLM 时讲解文本由模型 JSON 给出。
+
+当时 `firstClueOf` 取解析里第一个 `，。；;,` 之前的内容作为 hint。首句结构上是
+"去括号得 …"，**不可能**出现 `x=r` 这种直接给解的形式。判据曾是：
 
 - hint **不得**匹配 `/x\s*=\s*<规范根>/`；
 - hint **不得**包含 `系数化为`（最后一步的标志）。
@@ -517,7 +521,7 @@ function fillPractice(bankPicks, topicId, n, opts) {
 | 12 | `accept` 语义 | 若 `q.accept` 存在：`judgeQuestion(q, q.accept[0]).verdict==='correct'` 且 reason 为 `identical`；`q.accept[0]` 含小数点 | D6 |
 | 13 | 判题链兼容（4 种输入） | `answer`、`x=`+`answer`、等价小数（分数根时）、错值 → `correct/correct/correct/wrong` | 变式必须能进现有判卷流程 |
 | 14 | 解析结构 | 每个 `explanation` 含该模板规定的步骤关键词、并以 `系数化为 1 得 x={answer}。` 结尾 | 讲解链与 O2 校验锚点 |
-| 15 | 首句不泄露 | `E.socraticSteps(topic, q)` 的 `steps[1].text` 不匹配 `/x\s*=\s*<answer>/` 且不含 `系数化为` | §5.4，且用公开 API 而非复制内部函数 |
+| 15 | 静态模板已删除 | `typeof E.socraticSteps === "undefined"` 且 `typeof E.firstClueOf === "undefined"`（t_6bfdf8c2 取代首句断言） | §5.4 失效说明；泄露闸门由 `tests/test_socratic_gate.js` 全库扫描接管 |
 | 16 | 撞题去重（并保持确定性） | ①`avoidPrompts:[该题自己的 prompt]` 时同 index 生成的 prompt ≠ 被避开的那个；②非撞题场景下，传 `[]` 与传题库 prompts 两个数组的生成结果**深相等**（attempt 未被消耗） | §5.5 + D7 |
 | 17 | 未支持 topic 的失败语义 | `genVariant('cnm_045',0)===null`、`variantSet('cnm_045',0,3)===[]`、`fillPractice([],'cnm_045',3,{})` 不抛错 | 边界不报错、不弹窗 |
 | 18 | 共存策略：充足时不混变式 | `fillPractice(bankPicks4, 'cnm_043', 3, {doneIds:[]})` → 3 题全是题库题、顺序与 `pickPracticeQuestions` 一致、`usedVariants===0` | "题池有题时行为不变"的可执行证明 |

@@ -72,10 +72,13 @@ let askSeq = 0;          // 当前是第几次追问请求（1-based；讲解请
 function setMock(fn) { mockFn = fn; mockBodies.length = 0; askSeq = 0; }
 
 function defaultExplainBody() {
+  /* 卡 t_6bfdf8c2 起 askBox 只在模型三步成功（aiState='done'）时渲染；
+   * 讲解请求必须通过 verifyReveal 才能算成功。gotoAsk 固定 seed=sg450mxq 的首题是
+   * cnm_221_q3（答案 1，-7），所以 reveal 要给出同解，不能再写旧的 x=3。 */
   return { choices: [{ message: { content: JSON.stringify({
     prompt: '先想想怎么去括号？',
     hint: '注意符号要变号。',
-    reveal: '去括号得2x-6=4-x-1，移项合并得3x=9，所以x=3。答案：x = 3'
+    reveal: '移项得 (x+3)²=16，x+3=±4，所以 x=1 或 x=-7。答案：x1 = 1，x2 = -7'
   }) } }] };
 }
 
@@ -239,6 +242,12 @@ async function gotoAsk(cdp) {
     '})()'
   ].join('\n'));
   await until(function () { return cdp.eval('!!window.LLMConfig'); }, 'LLMConfig 加载（手动注入）', 10000);
+  /* 卡 t_6bfdf8c2 起，只有 isConfigured() 为真才会请求讲解、成功后渲染 askBox；
+   * 仅靠 ?llm=<base> 只覆盖基址，三字段不全仍算「未配置」。这里补一条直连配置，
+   * 让 gotoAsk 走「配了 LLM → 三步成功 → 追问区」这条路径（mock 不校验 key）。 */
+  await cdp.eval('localStorage.setItem(' + JSON.stringify('cnmDiagnose.llm') + ', JSON.stringify({base:'
+    + JSON.stringify(llmBase) + ',model:"mock-model",key:"mock-key"}))');
+  await until(function () { return cdp.eval('window.LLMConfig.isConfigured() === true'); }, 'LLMConfig 已配置', 10000);
   await cdp.eval('document.getElementById("btn-skip").click()');
   await until(function () { return cdp.eval('!!document.getElementById("ask-input")'); }, '进讲解面板出追问输入框');
   await until(function () { return cdp.eval('!!window.Explain'); }, 'Explain 模块加载', 10000);

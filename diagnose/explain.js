@@ -1,11 +1,12 @@
 /* LLM 苏格拉底讲解（T2）。挂在 window.Explain 上。
- * 设计：渐进增强——explainPanel 先用 engine.socraticSteps 的静态版即时渲染，
- * 同时后台调本地网关（经 llm-proxy.js :8010 绕 CORS）生成个性化三步；
- * 成功后重渲染面板，失败/离线则保留静态版（自动降级，不阻塞学习）。
+ * 口径（卡 t_6bfdf8c2）：没配置 LLM 时由 app-flow.js 直接走上游式「参考答案 + 解析原文」，
+ * 本模块根本不参与；配置了 LLM 才向模型请求个性化三步，等待期由面板显示中性占位，
+ * 失败也不回模板——直接把解析原文交给学生，另给一句失败原因和「再问一次」。
  *
- * window.Explain.generate(topic, q, userAnswer) -> Promise<[{kind,text}]>
- *   - 同题 5 分钟防刷（Map 缓存，key = q.id）
- *   - 网关不可达 / 解析失败 → resolve 静态版（永不 reject）
+ * window.Explain.generate(topic, q, userAnswer) -> Promise<{steps, from}>
+ *   - 成功：{steps: [{kind,text}], from: 'llm'}
+ *   - 失败：{steps: null, from: 'none', reason, notice}（永不 reject）
+ *   - 只缓存成功结果（同题 5 分钟），失败不进缓存，避免「重试」命中空壳
  */
 (function (global) {
   'use strict';
@@ -39,12 +40,10 @@
   }
 
   /* 失败原因标记：timeout / network / http / llm。
-   * 只有 reason 区分原因，给学生的文案统一一条（可操作、不让孩子对着「生成中」干等）。
-   * FAIL_NOTICE 供 generate() 路径使用（讲解失败回退静态讲解，文案要求含「看答案」），
-   * 追问路径用 noticeFor() 按 reason 区分文案 —— 两者职责分离，不要改 FAIL_NOTICE 的内容。 */
-  const FAIL_NOTICE = '讲解没取到：可以重试，或先看答案。';
+   * 学生可见文案只有 noticeFor() 一个来源（讲解与追问共用，按 reason 分档），
+   * 因此同一类故障在两条链路上说法一致，也不会有一处改了文案另一处忘改。 */
 
-  /* 追问离线气泡按 reason 选文案：学生可见文案**只**从这里取，
+  /* 按 reason 选文案：学生可见文案**只**从这里取，
    * 不拼 err.message / 栈 / URL / base —— 4 种故障各说各话，让孩子知道下一步能做什么。
    * 未知 reason 逐字保留旧通用文案（不破坏既有体验，也是 fail-closed 的兜底）。
    * timeout 的秒数从 LLMConfig.timeouts.chat 现算（chatTimeoutMs() 为 null 时不写秒数，不写死超时值）。 */
@@ -146,25 +145,18 @@
     });
   }
 
-  /** 把失败错误收成 {reason, notice, httpStatus, degraded}：给调用方 / UI 的一致失败形状。
-   *  notice 仍是 FAIL_NOTICE（供 generate() 路径）；追问路径用 noticeFor() 另选文案。
+  /** 把失败错误收成 {reason, httpStatus, degraded}：调用方再交给 noticeFor 生成学生文案。
    *  httpStatus（数字）与 degraded（布尔）由 postChat 的 4xx 降级重试 / body 读取带出来。 */
   function failInfo(err) {
     const reason = (err && err.reason) || 'network';
     return {
       reason: reason,
-      notice: FAIL_NOTICE,
       httpStatus: (err && typeof err.httpStatus === 'number') ? err.httpStatus : null,
       degraded: !!(err && err.degraded)
     };
   }
 
-  const cache = new Map();   // qid -> {ts, steps, from}
-
-  function staticSteps(topic, q) {
-    // 依赖 engine.js 已加载（index.html 顺序：engine.js → explain.js → app.js）
-    return global.DiagEngine.socraticSteps(topic, q);
-  }
+  const cache = new Map();   // qid|有无画板 -> {ts, steps}（只存成功结果）
 
   function systemPrompt() {
     return '你是人教版初中数学的一对一辅导老师，学生基础薄弱，需要你耐心引导。'
@@ -388,7 +380,7 @@
   }
 
   async function llmSteps(topic, q, userAnswer, labDesc) {
-    /* 配置没加载就按离线处理：由 generate 回退静态讲解 */
+    /* 配置没加载就按失败处理：generate 把 from='none' 交回面板 */
     if (!CFG) throw new Error('LLMConfig 未加载（llm-config.js 没引入）');
     const body = {
       model: MODEL,
@@ -403,46 +395,43 @@
     const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
     const steps = parseSteps(content);
     if (!steps) throw _markFail(new Error('llm bad json'), 'llm');
-    // 数值校验：reveal 的最终解值与标准答案不一致就整轮作废（抛错 -> generate 回退静态讲解）
+    // 数值校验：reveal 的最终解值与标准答案不一致就整轮作废（抛错 -> generate 返回 from='none'）
     if (checkReveal(q, steps).ok === false) throw _markFail(new Error('llm reveal mismatch'), 'llm');
     return steps;
   }
 
-  /** 苏格拉底讲解（渐进增强）。
-   * 返回 Promise<{steps: [{kind,text}], from: 'llm'|'static'}>，永不 reject：
-   *   llm    —— 网关成功返回个性化三步
-   *   static —— 网关不可用/解析失败，退化为 engine 静态模板（不显示"AI 讲解"标签）
-   * 同题 5 分钟内存缓存（key = q.id + '|' + 有无画板）；缓存命中按 llm 计。
-   * 同一题有/无画板两次 generate 不得互相命中。 */
+  /** 苏格拉底讲解（只在配置了 LLM 时由面板调用）。
+   * 返回 Promise<{steps, from}>，永不 reject：
+   *   成功 —— {steps: [{kind,text}], from: 'llm'}
+   *   失败 —— {steps: null, from: 'none', reason, notice}；notice 由 noticeFor 统一给
+   * 只缓存成功结果（同题 5 分钟，key = q.id + '|' + 有无画板）；失败不缓存，
+   * 否则学生点「再问一次」会命中一条没有内容的占位。同一题有/无画板不得互相命中。 */
   function generate(topic, q, userAnswer, labDesc) {
     const qid = q && q.id;
     const ckey = qid ? (qid + '|' + (labDesc ? 1 : 0)) : null;
     const hit = ckey && cache.get(ckey);
-    if (hit && Date.now() - hit.ts < TTL) return Promise.resolve({ steps: hit.steps, from: hit.from || 'llm' });
-    const fallback = staticSteps(topic, q);
-    if (ckey) cache.set(ckey, { ts: Date.now(), steps: fallback, from: 'static' });   // 先占位，防并发重复调
+    if (hit && Date.now() - hit.ts < TTL) return Promise.resolve({ steps: hit.steps, from: 'llm' });
     return llmSteps(topic, q, userAnswer, labDesc)
       .then((steps) => {
-        if (ckey) cache.set(ckey, { ts: Date.now(), steps: steps, from: 'llm' });
+        if (ckey) cache.set(ckey, { ts: Date.now(), steps: steps });
         return { steps: steps, from: 'llm' };
       })
       .catch(function (err) {
-        /* 失败一律给静态版（契约不变：永不 reject），但要带 reason/notice：
-         * 超时（AbortError）与网络错误走同一条可操作文案，不把 aborted 当空内容静默渲染。
-         * 失败时删掉先前的占位缓存 —— 否则 5 分钟内点「重试」会直接命中静态占位发不出请求。 */
         const f = failInfo(err);
+        const notice = noticeFor(f.reason, f.httpStatus, f.degraded);
+        /* 并发失败的清理：早先的实现会先写静态占位，这里已不写占位；
+         * 仍删一次同名 key，防止「同题不同画板」等历史残留把重试挡在缓存里。 */
         if (ckey) cache.delete(ckey);
         if (global.console && global.console.warn) {
-          global.console.warn('Explain.generate 失败（' + f.reason + '）：' + f.notice);
+          global.console.warn('Explain.generate 失败（' + f.reason + '）：' + notice);
         }
-        return { steps: fallback, from: 'static', reason: f.reason, notice: f.notice };
-      });   // 网关挂了 / reveal 数值校验没过，都用静态版
+        return { steps: null, from: 'none', reason: f.reason, notice: notice };
+      });
   }
 
   global.Explain = {
     generate: generate,
     ask: ask,
-    staticSteps: staticSteps,
     _cache: cache,
     _ttl: TTL,
     /* 内部 prompt（t_85395e07 起可带 labDesc）；导出供测试直接断言画板段落 */

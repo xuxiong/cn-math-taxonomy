@@ -16,7 +16,7 @@
     pracPath: null,
     pracResult: null,
     pracLoading: null,
-    ui: { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, askScroll: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null },
+    ui: { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiNotice: null, aiRequested: false, askHistory: [], askPending: false, askScroll: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null },
     subject: 'math',
     startQuery: '',
     startStage: '',
@@ -60,7 +60,7 @@
    * 下面这些模块不在 index.html 的 <script> 链上（首屏脚本 403KB → ≈85KB），
    * 用到时才由 Lazy.load 按依赖顺序注入。依赖顺序只写在这里，调用点不要自己拼列表。
    * 每个使用点都先 Lazy.load 再调用；Lazy 内部按 src 去重，重复调用零成本。 */
-  const LAZY_EXPLAIN = ['explain.js'];                                       // LLM 讲解（依赖首屏的 llm-config.js）
+  const LAZY_EXPLAIN = ['explain.js'];                                       // LLM 讲解（llm-config.js 由 explainPanel 按需先补载）
   const LAZY_LAB = ['funclab.js', 'geomlab.js', 'labmatch.js', 'chatgraph.js'];  // 画板 + 追问图校验（labmatch/chatgraph 依赖 funclab）
   const LAZY_SHARE = ['../assets/vendor/qrcode.js', 'share.js'];             // 分享图（share 依赖 qrcode）
   const LAZY_PATH = [                                                        // 先修路径图（dagre 依赖 cytoscape）
@@ -491,7 +491,7 @@
     if (v.indexOf(qid) < 0) { v.push(qid); lsSet(LS_SEEN, v); }
   }
   function newSeed() { return S.seedParam != null ? S.seedParam : Math.random().toString(36).slice(2, 10); }
-  function resetUi() { S.ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, askScroll: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null }; }
+  function resetUi() { S.ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiNotice: null, aiRequested: false, askHistory: [], askPending: false, askScroll: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null }; }
   function clearRoot() { while (root.firstChild) root.removeChild(root.firstChild); }
   function teardownPath() {
     S.pathToken++;

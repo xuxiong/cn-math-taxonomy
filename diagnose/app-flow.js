@@ -635,7 +635,7 @@ function renderQuestion(item) {
     const t = S.D.graph.byId[id];
     const pr = !!S.prac;   // T3 练习模式
     const key = id + '#' + item.attempt;
-    if (S.ui.key !== key) S.ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiRequested: false, askHistory: [], askPending: false, askScroll: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null };
+    if (S.ui.key !== key) S.ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiNotice: null, aiRequested: false, askHistory: [], askPending: false, askScroll: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null };
     const n = pr ? S.prac.idx : S.session.answers.length;
     const card = h('div', { class: 'card' });
     const onPath = pr && pathPracticeExists();
@@ -680,7 +680,7 @@ function renderQuestion(item) {
       card.append(h('div', { class: 'row', style: 'margin-top:10px' },
         q.type === 'self' ? null : h('button', { class: 'primary', id: 'btn-submit', onclick: function () { judgeAndGo(item); } }, '提交答案'),
         q.type === 'choice' ? null : h('button', { id: 'btn-peek', onclick: function () { S.ui.phase = 'self'; S.ui.verdict = null; renderQuestion(item); } }, '看参考答案并自评'),
-        h('button', { id: 'btn-skip', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiRequested = false; renderQuestion(item); } }, '不会')));
+        h('button', { id: 'btn-skip', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiNotice = null; S.ui.aiRequested = false; renderQuestion(item); } }, '不会')));
     } else if (S.ui.phase === 'auto') {
       const ok = S.ui.verdict.verdict === 'correct';
       const nextResult = ok ? 'correct' : 'wrong';
@@ -692,7 +692,7 @@ function renderQuestion(item) {
         h('div', { class: 'verdict ' + (ok ? 'ok' : 'no') }, ok ? '自动判定：正确' : '自动判定：不正确'),
         feedbackBlock(q),
         h('div', { class: 'row' },
-          ok ? null : h('button', { class: 'primary', id: 'btn-explain', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiRequested = false; renderQuestion(item); } }, '为什么错了？一起想想'),
+          ok ? null : h('button', { class: 'primary', id: 'btn-explain', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiNotice = null; S.ui.aiRequested = false; renderQuestion(item); } }, '为什么错了？一起想想'),
           h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer(nextResult); } }, ends ? '看结果' : '下一题'),
           h('button', { id: 'btn-flip', onclick: function () { finishAnswer(ok ? 'wrong' : 'correct'); } }, ok ? '判错了，我其实没做对' : '判错了，我其实做对了'),
           h('button', { onclick: function () { S.ui.phase = 'ask'; renderQuestion(item); } }, '重新作答')));
@@ -728,8 +728,8 @@ function renderQuestion(item) {
         feedbackBlock(q),
         h('div', { class: 'row' },
           h('button', { class: 'good', id: 'btn-right', onclick: function () { finishAnswer('correct'); } }, '对（我做对了）'),
-          h('button', { class: 'bad', id: 'btn-wrong', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiRequested = false; renderQuestion(item); } }, '不对'),
-          h('button', { id: 'btn-skip2', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiRequested = false; renderQuestion(item); } }, '不会'))]);
+          h('button', { class: 'bad', id: 'btn-wrong', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiNotice = null; S.ui.aiRequested = false; renderQuestion(item); } }, '不对'),
+          h('button', { id: 'btn-skip2', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiNotice = null; S.ui.aiRequested = false; renderQuestion(item); } }, '不会'))]);
     }
 
     card.append(h('div', { class: 'notice' }, '提示：自动判题只是近似的（数字、分数、多个答案会做规范化后比较），一切以参考答案为准；判错了可以手动更正。'));
@@ -756,31 +756,105 @@ function renderQuestion(item) {
     else if (inp) inp.focus();
   }
 
+/* 是否配置了 LLM：唯一判据是 LLMConfig.isConfigured()（base+model+key 三者齐）。
+ * 绝不能把「请求失败」当成「没配置」——前者只是一次调用没成功，后者是确定没有模型可用。 */
+function llmConfigured() {
+    return !!(window.LLMConfig && typeof window.LLMConfig.isConfigured === 'function' && window.LLMConfig.isConfigured());
+}
+
+/* 中性等待面板：只告诉学生「AI 正在看」，不出现任何引导/模板文本，也不提前渲染模型内容。
+ * 灰条只是占位骨架，避免等待期页面塌成一片空白。 */
+function aiPendingPanel() {
+    return h('div', { class: 'ai-pending', id: 'ai-pending' },
+      h('div', { class: 'ai-pending-text' }, 'AI 正在看你的答案…'),
+      h('div', { class: 'ai-skel', 'aria-hidden': 'true' },
+        h('span', { class: 'ai-skel-bar' }),
+        h('span', { class: 'ai-skel-bar' }),
+        h('span', { class: 'ai-skel-bar ai-skel-short' })));
+}
+
+/* 对错判定只在自动判题后存在；从「不会 / 看参考答案并自评」进来没有判定，就不渲染这行。 */
+function verdictLine() {
+    const v = S.ui.verdict && S.ui.verdict.verdict;
+    if (v !== 'correct' && v !== 'wrong') return null;
+    return h('div', { class: 'verdict ' + (v === 'correct' ? 'ok' : 'no') },
+      v === 'correct' ? '自动判定：正确' : '自动判定：不正确');
+}
+
+function redoExplainButton(item) {
+    return h('button', { class: 'good', id: 'btn-explain-redo', onclick: function () {
+      S.ui.phase = 'ask'; S.ui.answer = ''; S.ui.explainStep = 0;
+      S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiNotice = null; S.ui.aiRequested = false;
+      renderQuestion(item);
+    } }, '我想出来了，重新做一遍');
+}
+
+/* 没配置 LLM / 配置了但本次调用失败时的「解析直达」：对错 + 参考答案 + 解析原文。
+ * 直接复用 feedbackBlock（已含 .refans 与 #explain），不复制一份解析 DOM。 */
+function directExplainPanel(item) {
+    return h('div', { class: 'explain-direct', id: 'explain-direct' },
+      verdictLine(),
+      feedbackBlock(item.question),
+      h('div', { class: 'row' }, redoExplainButton(item)));
+}
+
+/* 配了 LLM 但这次失败：解析照样直达，另给一句 noticeFor 的失败原因和「再问一次」。
+ * 不自动重试、也不回模板三步 —— 学生要的是能看懂的解析，不是一条假的引导。 */
+function failedExplainPanel(item) {
+    return h('div', { class: 'explain-direct', id: 'explain-direct' },
+      verdictLine(),
+      feedbackBlock(item.question),
+      h('div', { class: 'explain-fail', id: 'explain-fail' },
+        h('span', null, S.ui.aiNotice || 'AI 讲解这次没取到，先看解析。'),
+        h('button', { id: 'btn-ai-retry', onclick: function () {
+          S.ui.aiRequested = false; S.ui.aiState = 'idle'; S.ui.aiSteps = null;
+          S.ui.aiNotice = null; S.ui.explainStep = 0;
+          renderQuestion(item);
+        } }, '再问一次')));
+}
+
 function explainPanel(item) {
     const id = item.topicId;
     const q = item.question;
     const t = S.D.graph.byId[id];
-    const steps = (S.ui.aiSteps && S.ui.aiSteps.length === 3) ? S.ui.aiSteps : eng().socraticSteps(t, q);
     const show = S.ui.explainStep || 0;      // 0=prompt 1=hint 2=reveal
-    /* 讲解模块（explain.js）不在首屏链上：第一次进讲解面板才加载，到货后重渲染一次。
-     * 没到货时下面用 window.Explain 守卫，先显示静态三步讲解 —— 学生看不到空白。 */
+    /* LLMConfig 模块还没到货（深链的 aux 批可能晚一拍）：补载并给中性占位。
+     * 这时不能判「没配置」——模块都没到，isConfigured 无从谈起。 */
+    if (!window.LLMConfig) {
+      if (!S.lazyFailed.llmcfg) Lazy.load(['llm-config.js']).then(function () { renderQuestion(item); }, lazyFail('llmcfg'));
+      return aiPendingPanel();
+    }
+    /* 没配置 LLM：按上游口径直达「参考答案 + 解析原文」，不请求模型、不加载 explain.js，
+     * 也不渲染 askBox —— 没配置时「问 AI 老师」只会失败，别给假入口。 */
+    if (!llmConfigured()) return directExplainPanel(item);
+    /* 配了 LLM：Explain 不在首屏链上，第一次进讲解面板才加载，到货后重渲染一次。 */
     if (!window.Explain && !S.lazyFailed.explain) {
       Lazy.load(LAZY_EXPLAIN).then(function () { renderQuestion(item); }, lazyFail('explain'));
     }
     if (window.Explain && S.ui.aiState === 'idle' && !S.ui.aiRequested) {
       S.ui.aiRequested = true;
       S.ui.aiState = 'loading';
+      S.ui.aiNotice = null;
       const tick = ++explainTick;
       window.Explain.generate(t, q, S.ui.answer, S.ui.labDesc || null).then(function (res) {
         if (tick !== explainTick || !S.ui || S.ui.phase !== 'explain') return;
-        if (res.from === 'llm') { S.ui.aiSteps = res.steps; S.ui.aiState = 'done'; }
-        else { S.ui.aiSteps = null; S.ui.aiState = 'static'; }   // 网关挂了，保持静态模板
+        if (res.from === 'llm' && Array.isArray(res.steps) && res.steps.length === 3) {
+          S.ui.aiSteps = res.steps; S.ui.aiState = 'done'; S.ui.aiNotice = null;
+        } else {
+          /* 失败：解析直达 + 失败原因 + 再问一次；不自动重试，也不回模板三步。 */
+          S.ui.aiSteps = null; S.ui.aiState = 'failed'; S.ui.aiNotice = res.notice || '';
+        }
         renderQuestion(item);
       });
     }
-    const aiTag = (S.ui.aiSteps && S.ui.aiSteps.length === 3)
-      ? h('span', { class: 'ai-tag' }, 'AI 讲解')
-      : h('span', { class: 'ai-tag static' }, S.ui.aiState === 'loading' ? 'AI 正在生成…' : '基础讲解');
+    if (S.ui.aiState === 'failed') return failedExplainPanel(item);
+    /* 只有 done 且模型确实给了三步，才渲染苏格拉底面板；loading / idle 一律中性等待。
+     * 「三步」不再是「是否模板」的判据，而是「模型成功结果」的形状校验。 */
+    if (S.ui.aiState !== 'done' || !Array.isArray(S.ui.aiSteps) || S.ui.aiSteps.length !== 3) {
+      return aiPendingPanel();
+    }
+    const steps = S.ui.aiSteps;
+    const aiTag = h('span', { class: 'ai-tag' }, 'AI 讲解');
     const box = h('div', { class: 'socratic' },
       h('div', { class: 'soc-head' },
         h('h3', null, '苏格拉底引导：我们一起想'), aiTag),
