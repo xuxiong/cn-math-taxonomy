@@ -23,9 +23,13 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const http = require('http');
-const { spawn } = require('child_process');
+
+/* 共用小模块：
+ *   chrome-guard —— Chrome 进程级兜底回收（抛错 / SIGKILL / 外部超时都不留进程、不留临时目录）
+ *   wait         —— until 统一超时口径（超时=失败上限，不是性能断言） */
+const guard = require('./lib/chrome-guard');
+const { until, reportReady, chromePort, devtoolsJson } = require('./lib/wait');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -33,19 +37,9 @@ const tests = [];
 let passed = 0;
 let failed = 0;
 function test(name, fn) { tests.push({ name: name, fn: fn }); }
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function until(fn, label, timeout) {
-  const end = Date.now() + (timeout || 20000);
-  while (Date.now() < end) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(100);
-  }
-  throw new Error('Timeout: ' + label);
-}
 
 /* ------------------------------------------------------------ 测试服务器 */
-const out = fs.mkdtempSync(path.join(os.tmpdir(), 'cnm-deeplink-aux-'));
+const out = guard.tempDir('cnm-deeplink-aux-');
 const server = http.createServer(function (req, res) {
   let file = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
   if (file.endsWith('/')) file += 'index.html';
@@ -68,6 +62,12 @@ class CDP {
     this.id = 0;
     this.pending = new Map();
     this.handlers = [];
+    /* 连接断开（页面崩了 / 浏览器被杀）时把未完成的请求全部 reject：
+     * 否则 await 一个永远不回来的响应，测试进程既不失败也不退出，Chrome 就一直留在机器上。 */
+    ws.addEventListener('close', () => {
+      for (const p of this.pending.values()) p.reject(new Error(p.method + ': CDP 连接已关闭'));
+      this.pending.clear();
+    });
     ws.addEventListener('message', (e) => {
       const m = JSON.parse(e.data);
       if (m.id) {
@@ -80,10 +80,21 @@ class CDP {
       }
     });
   }
+  /* 每个请求 25s 上限：这是「无响应」的失败上限，不是性能断言（页面正常时一次 eval 是毫秒级）。
+   * 旧写法没有上限，浏览器一旦不响应，整个测试文件就永久挂住 —— 假红之外的另一种不可诊断状态。 */
   send(method, params) {
     const id = ++this.id;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve, reject: reject, method: method });
+      const timer = setTimeout(() => {
+        if (!this.pending.has(id)) return;
+        this.pending.delete(id);
+        reject(new Error('CDP 无响应（25s 上限）: ' + method));
+      }, 25000);
+      this.pending.set(id, {
+        method: method,
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); }
+      });
       this.ws.send(JSON.stringify({ id: id, method: method, params: params || {} }));
     });
   }
@@ -109,15 +120,17 @@ async function openBrowser() {
     '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'
   ].find(function (p) { return p && fs.existsSync(p); });
   if (!chromePath) throw new Error('找不到 Chrome/Chromium，请设置 CHROME 环境变量');
-  chrome = spawn(chromePath, [
+  /* guard.launch：spawn 之后立刻登记 pid —— 后面等 DevToolsActivePort 超时抛错时，
+   * 收尾照样杀得掉（旧写法要等 `chrome = spawn(...)` 赋值成功，抛错时 chrome 还是 null）。 */
+  chrome = guard.launch(chromePath, [
     '--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     '--disable-background-networking', '--disable-sync', '--disable-extensions', '--disable-component-update',
     '--remote-debugging-port=0', '--user-data-dir=' + profileDir, 'about:blank'
-  ], { stdio: ['ignore', 'ignore', fs.openSync(path.join(out, 'chrome.log'), 'w')] });
+  ], { logFile: path.join(out, 'chrome.log') });
   const activePort = path.join(profileDir, 'DevToolsActivePort');
-  await until(function () { return fs.existsSync(activePort); }, 'Chrome 调试端口');
-  const port = fs.readFileSync(activePort, 'utf8').split('\n')[0];
-  const tabs = await fetch('http://127.0.0.1:' + port + '/json').then(function (r) { return r.json(); });
+  /* 等端口「写完整」（文件刚创建时内容可能还是 0 字节），再等 HTTP 端点能应答：见 wait.chromePort。 */
+  const port = await chromePort(activePort);
+  const tabs = await devtoolsJson(port);
   const tab = tabs.find(function (t) { return t.type === 'page'; });
   const ws = new WebSocket(tab.webSocketDebuggerUrl);
   await new Promise(function (resolve, reject) { ws.addEventListener('open', resolve); ws.addEventListener('error', reject); });
@@ -171,7 +184,7 @@ async function freshNavigate(cdp, url) {
 /* 照抄 test_resume_engine.js 的 seedSession：从引擎取正确答案，choice 点 #choice-<answer>，
  * 填空写 #ans 后派发 input，点 #btn-submit 判题，再点 #btn-next 落定（commit → save）。 */
 async function answerOne(cdp) {
-  await until(function () { return cdp.eval('!!document.getElementById("q-text")'); }, '出题', 12000);
+  await until(function () { return cdp.eval('!!document.getElementById("q-text")'); }, '出题');
   const item = await cdp.eval([
     '(() => { const it = window.DiagCore.E.nextItem(window.DiagCore.S.D.graph, window.DiagCore.S.session);',
     '  return it ? { type: it.question.type, answer: it.question.answer } : null; })()'
@@ -184,7 +197,7 @@ async function answerOne(cdp) {
       '; el.dispatchEvent(new Event("input", { bubbles: true })); })()');
   }
   await cdp.eval('document.getElementById("btn-submit").click()');
-  await until(function () { return cdp.eval('!!document.getElementById("btn-next")'); }, '「下一题」按钮', 12000);
+  await until(function () { return cdp.eval('!!document.getElementById("btn-next")'); }, '「下一题」按钮');
   await cdp.eval('document.getElementById("btn-next").click()');
 }
 
@@ -204,7 +217,7 @@ test('深链答题后 children.js / blindspots.js / stats.js 被请求，CnmChil
       const list = await resourceUrls(cdp);
       const has = function (name) { return list.some(function (u) { return u.indexOf('/' + name) >= 0; }); };
       return (has('assets/children.js') && has('assets/blindspots.js') && has('assets/stats.js')) ? list : null;
-    }, '深链后 children.js / blindspots.js / stats.js 必须被请求', 10000);
+    }, '深链后 children.js / blindspots.js / stats.js 必须被请求');
     assert.ok(urls.some(function (u) { return u.indexOf('/assets/children.js') >= 0; }), 'children.js 必须被请求');
     assert.ok(urls.some(function (u) { return u.indexOf('/assets/blindspots.js') >= 0; }), 'blindspots.js 必须被请求');
     assert.ok(urls.some(function (u) { return u.indexOf('/assets/stats.js') >= 0; }), 'stats.js 必须被请求');
@@ -212,7 +225,7 @@ test('深链答题后 children.js / blindspots.js / stats.js 被请求，CnmChil
     const errs = await pageErrors(cdp);
     assert.deepStrictEqual(errs, [], '深链补载过程零报错');
   } finally {
-    chrome && chrome.kill('SIGKILL');
+    guard.kill(chrome);
     chrome = null;
   }
 });
@@ -223,15 +236,23 @@ test('limit=1 深链答完后报告页出现 #child-bar 且孩子档案真的写
   try {
     await freshNavigate(cdp, '/diagnose/?target=cnm_221&limit=1&seed=sg450mxq');
     /* 先等辅助模块到货，再造孩子：saveToChild() 只在 CC 到货且有「当前孩子」时才写记录。 */
-    await until(async function () { return (await cdp.eval('typeof window.CnmChildren')) === 'object'; },
-      '深链下 CnmChildren 到货', 10000);
+    /* 等辅助模块整批到货，而不是只等 children.js：app.js 是在这批脚本的 Promise.all 之后
+     * 才把内部引用 CC 指向 CnmChildren 的（diagnose/app.js scheduleAuxLoad）。只等
+     * window.CnmChildren 会出现「文件到了、CC 还没接上」的窗口，那一刻报告页的 childBar()
+     * 返回 null，#child-bar 永远不出现 —— 全量连跑 + 高负载下实测踩到过。
+     * 判据是这批模块各自挂的全局都在场（超时 30s 只是失败上限）。 */
+    await until(async function () {
+      return await cdp.eval('!!(window.CnmChildren && window.CnmBlind && window.cnmTrack' +
+        ' && window.LLMConfig && window.CNM_STATS)');
+    }, '深链下辅助模块整批到货（CnmChildren / CnmBlind / cnmTrack / LLMConfig / CNM_STATS）');
     const added = await cdp.eval([
       '(() => { const r = window.CnmChildren.add({ name: "测试娃", grade: "三年级" });',
       '  return r && r.ok ? r.child.id : null; })()'
     ].join('\n'));
     assert.ok(added, '必须在页面里成功建一个孩子');
     await answerOne(cdp);
-    await until(function () { return cdp.eval('!!document.getElementById("summary")'); }, 'limit=1 答完后进入报告页', 12000);
+    /* 等报告页渲染完成（#summary + 标题 + 四状态统计 + 路径图落定），超时 30s 只是失败上限 */
+    await reportReady(cdp, 'limit=1 答完后进入报告页');
     const bar = await cdp.eval([
       '(() => { const el = document.getElementById("child-bar");',
       '  return el ? { exists: true, text: el.innerText.replace(/\\s+/g, " ").trim() } : { exists: false, text: "" }; })()'
@@ -244,7 +265,7 @@ test('limit=1 深链答完后报告页出现 #child-bar 且孩子档案真的写
     const errs = await pageErrors(cdp);
     assert.deepStrictEqual(errs, [], '深链报告页与档案写入过程零报错');
   } finally {
-    chrome && chrome.kill('SIGKILL');
+    guard.kill(chrome);
     chrome = null;
   }
 });
@@ -255,17 +276,17 @@ test('不带参数进 /diagnose/：选题页正常 + 辅助模块照常到货', 
   try {
     await freshNavigate(cdp, '/diagnose/');
     await until(function () { return cdp.eval('!!document.getElementById("search") && !!document.getElementById("target-list")'); },
-      '选题页（搜索框 + 目标列表）', 12000);
+      '选题页（搜索框 + 目标列表）');
     const urls = await until(async function () {
       const list = await resourceUrls(cdp);
       return list.some(function (u) { return u.indexOf('/assets/children.js') >= 0; }) ? list : null;
-    }, '普通入口 children.js 必须被请求', 10000);
+    }, '普通入口 children.js 必须被请求');
     assert.ok(urls.some(function (u) { return u.indexOf('/assets/children.js') >= 0; }), 'children.js 必须被请求');
     assert.strictEqual(await cdp.eval('typeof window.CnmChildren'), 'object', '普通入口 CnmChildren 必须到货');
     const errs = await pageErrors(cdp);
     assert.deepStrictEqual(errs, [], '普通入口零报错');
   } finally {
-    chrome && chrome.kill('SIGKILL');
+    guard.kill(chrome);
     chrome = null;
   }
 });
@@ -283,7 +304,7 @@ test('不带参数进 /diagnose/：选题页正常 + 辅助模块照常到货', 
     }
   }
   try { server.close(); } catch (e) { /* 未监听 */ }
-  if (chrome) chrome.kill('SIGKILL');
+  if (chrome) guard.kill(chrome);
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   if (failed) process.exitCode = 1;
 })();

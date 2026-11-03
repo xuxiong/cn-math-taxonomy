@@ -7,21 +7,21 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const http = require('http');
 const assert = require('assert');
-const { spawn } = require('child_process');
+const guard = require('./lib/chrome-guard');
+const { until, chromePort, devtoolsJson } = require('./lib/wait');
 const root = path.resolve(__dirname, '..');
-const out = fs.mkdtempSync(path.join(os.tmpdir(), 'cnm-backup-browser-'));
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function until(fn, label) {
-  const end = Date.now() + 15000;
-  while (Date.now() < end) { const v = await fn(); if (v) return v; await sleep(100); }
-  throw new Error('Timeout: ' + label);
-}
+/* 临时目录走 guard.tempDir：退出/被打断时只删这一个自己 mkdtemp 出来的目录 */
+const out = guard.tempDir('cnm-backup-browser-');
 class CDP {
   constructor(ws) {
     this.ws = ws; this.id = 0; this.pending = new Map(); this.handlers = [];
+    /* 连接断开时把未完成请求全部 reject，避免 await 永远挂着（挂死会留下空转的 Chrome） */
+    ws.addEventListener('close', () => {
+      for (const p of this.pending.values()) p.reject(new Error(p.method + ": CDP 连接已关闭"));
+      this.pending.clear();
+    });
     ws.addEventListener('message', e => {
       const m = JSON.parse(e.data);
       if (m.id) {
@@ -30,9 +30,18 @@ class CDP {
       } else this.handlers.forEach(fn => fn(m));
     });
   }
+  /* 25s 无响应上限：失败上限，不是性能断言 */
   send(method, params = {}) {
     const id = ++this.id;
-    return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject, method }); this.ws.send(JSON.stringify({ id, method, params })); });
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (!this.pending.has(id)) return;
+        this.pending.delete(id);
+        reject(new Error('CDP 无响应（25s 上限）: ' + method));
+      }, 25000);
+      this.pending.set(id, { method, resolve: v => { clearTimeout(timer); resolve(v); }, reject: e => { clearTimeout(timer); reject(e); } });
+      this.ws.send(JSON.stringify({ id, method, params }));
+    });
   }
   async eval(expression) {
     const r = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
@@ -58,23 +67,24 @@ let chrome, source, target, browser;
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   const chromePath = [process.env.CHROME, '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(p => p && fs.existsSync(p));
   if (!chromePath) throw new Error('找不到 Chrome/Chromium，请设置 CHROME 环境变量');
-  chrome = spawn(chromePath, [
+  /* guard.launch：spawn 之后立刻登记 pid，失败路径也杀得掉 */
+  chrome = guard.launch(chromePath, [
     '--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     '--disable-background-networking', '--disable-sync', '--disable-extensions', '--disable-component-update',
     '--remote-debugging-port=0', '--user-data-dir=' + path.join(out, 'profile'), 'about:blank'
-  ], { stdio: ['ignore', 'ignore', fs.openSync(path.join(out, 'chrome.log'), 'w')] });
+  ], { logFile: path.join(out, 'chrome.log') });
   const activePort = path.join(out, 'profile', 'DevToolsActivePort');
-  await until(() => fs.existsSync(activePort), 'Chrome debugger');
-  const port = fs.readFileSync(activePort, 'utf8').split('\n')[0];
+  /* 等端口「写完整」（文件刚创建时内容可能还是 0 字节），再等 HTTP 端点能应答：见 wait.chromePort。 */
+  const port = await chromePort(activePort, 'Chrome debugger');
   async function connect(targetId) {
-    const tabs = await fetch('http://127.0.0.1:' + port + '/json').then(r => r.json());
+    const tabs = await devtoolsJson(port);
     const tab = targetId ? tabs.find(t => t.id === targetId) : tabs.find(t => t.type === 'page');
     const ws = new WebSocket(tab.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => { ws.addEventListener('open', resolve); ws.addEventListener('error', reject); });
     return new CDP(ws);
   }
   source = await connect();
-  const browserInfo = await fetch('http://127.0.0.1:' + port + '/json/version').then(r => r.json());
+  const browserInfo = await devtoolsJson(port, '/json/version');
   const browserSocket = new WebSocket(browserInfo.webSocketDebuggerUrl);
   await new Promise((resolve,reject) => { browserSocket.addEventListener('open',resolve); browserSocket.addEventListener('error',reject); });
   browser = new CDP(browserSocket);
@@ -204,6 +214,6 @@ let chrome, source, target, browser;
   console.log('PASS: quota-failure rollback, malformed/unknown-version/oversized files, 375px layout and light/dark themes; no page exceptions');
   console.log('Downloads and fixtures: '+out);
 })().catch(e=>{console.error(e.stack);process.exitCode=1;}).finally(async()=>{
-  if(browser)browser.ws.close();if(target)target.ws.close();if(source)source.ws.close();if(chrome)chrome.kill();
+  if(browser)browser.ws.close();if(target)target.ws.close();if(source)source.ws.close();if(chrome)guard.kill(chrome);
   await new Promise(resolve=>server.close(resolve));
 });

@@ -21,9 +21,13 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const http = require('http');
-const { spawn } = require('child_process');
+
+/* 共用小模块：
+ *   chrome-guard —— Chrome 进程级兜底回收（抛错 / SIGKILL / 外部超时都不留进程、不留临时目录）
+ *   wait         —— until 统一超时口径（超时=失败上限，不是性能断言） */
+const guard = require('./lib/chrome-guard');
+const { until, sleep, chromePort, devtoolsJson } = require('./lib/wait');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -31,19 +35,9 @@ const tests = [];
 let passed = 0;
 let failed = 0;
 function test(name, fn) { tests.push({ name: name, fn: fn }); }
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function until(fn, label, timeout) {
-  const end = Date.now() + (timeout || 20000);
-  while (Date.now() < end) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(100);
-  }
-  throw new Error('Timeout: ' + label);
-}
 
 /* ------------------------------------------------------------ 静态站 + mock LLM */
-const out = fs.mkdtempSync(path.join(os.tmpdir(), 'cnm-ask-reason-'));
+const out = guard.tempDir('cnm-ask-reason-');
 
 /* 静态站：把仓库当静态根，/assets/stats-config.js 特判（同 test_result_deadend.js 套路） */
 const staticServer = http.createServer(function (req, res) {
@@ -140,6 +134,12 @@ class CDP {
     this.id = 0;
     this.pending = new Map();
     this.handlers = [];
+    /* 连接断开（页面崩了 / 浏览器被杀）时把未完成的请求全部 reject：
+     * 否则 await 一个永远不回来的响应，测试进程既不失败也不退出，Chrome 就一直留在机器上。 */
+    ws.addEventListener('close', () => {
+      for (const p of this.pending.values()) p.reject(new Error(p.method + ': CDP 连接已关闭'));
+      this.pending.clear();
+    });
     ws.addEventListener('message', (e) => {
       const m = JSON.parse(e.data);
       if (m.id) {
@@ -152,10 +152,21 @@ class CDP {
       }
     });
   }
+  /* 每个请求 25s 上限：这是「无响应」的失败上限，不是性能断言（页面正常时一次 eval 是毫秒级）。
+   * 旧写法没有上限，浏览器一旦不响应，整个测试文件就永久挂住 —— 假红之外的另一种不可诊断状态。 */
   send(method, params) {
     const id = ++this.id;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve, reject: reject, method: method });
+      const timer = setTimeout(() => {
+        if (!this.pending.has(id)) return;
+        this.pending.delete(id);
+        reject(new Error('CDP 无响应（25s 上限）: ' + method));
+      }, 25000);
+      this.pending.set(id, {
+        method: method,
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); }
+      });
       this.ws.send(JSON.stringify({ id: id, method: method, params: params || {} }));
     });
   }
@@ -175,15 +186,17 @@ async function openBrowser() {
     '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'
   ].find(function (p) { return p && fs.existsSync(p); });
   if (!chromePath) throw new Error('找不到 Chrome/Chromium，请设置 CHROME 环境变量');
-  chrome = spawn(chromePath, [
+  /* guard.launch：spawn 之后立刻登记 pid —— 后面等 DevToolsActivePort 超时抛错时，
+   * 收尾照样杀得掉（旧写法要等 `chrome = spawn(...)` 赋值成功，抛错时 chrome 还是 null）。 */
+  chrome = guard.launch(chromePath, [
     '--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     '--disable-background-networking', '--disable-sync', '--disable-extensions', '--disable-component-update',
     '--remote-debugging-port=0', '--user-data-dir=' + profileDir, 'about:blank'
-  ], { stdio: ['ignore', 'ignore', fs.openSync(path.join(out, 'chrome.log'), 'w')] });
+  ], { logFile: path.join(out, 'chrome.log') });
   const activePort = path.join(profileDir, 'DevToolsActivePort');
-  await until(function () { return fs.existsSync(activePort); }, 'Chrome 调试端口');
-  const port = fs.readFileSync(activePort, 'utf8').split('\n')[0];
-  const tabs = await fetch('http://127.0.0.1:' + port + '/json').then(function (r) { return r.json(); });
+  /* 等端口「写完整」（文件刚创建时内容可能还是 0 字节），再等 HTTP 端点能应答：见 wait.chromePort。 */
+  const port = await chromePort(activePort);
+  const tabs = await devtoolsJson(port);
   const tab = tabs.find(function (t) { return t.type === 'page'; });
   const ws = new WebSocket(tab.webSocketDebuggerUrl);
   await new Promise(function (resolve, reject) { ws.addEventListener('open', resolve); ws.addEventListener('error', reject); });
@@ -241,16 +254,16 @@ async function gotoAsk(cdp) {
     '  document.head.appendChild(s);',
     '})()'
   ].join('\n'));
-  await until(function () { return cdp.eval('!!window.LLMConfig'); }, 'LLMConfig 加载（手动注入）', 10000);
+  await until(function () { return cdp.eval('!!window.LLMConfig'); }, 'LLMConfig 加载（手动注入）');
   /* 卡 t_6bfdf8c2 起，只有 isConfigured() 为真才会请求讲解、成功后渲染 askBox；
    * 仅靠 ?llm=<base> 只覆盖基址，三字段不全仍算「未配置」。这里补一条直连配置，
    * 让 gotoAsk 走「配了 LLM → 三步成功 → 追问区」这条路径（mock 不校验 key）。 */
   await cdp.eval('localStorage.setItem(' + JSON.stringify('cnmDiagnose.llm') + ', JSON.stringify({base:'
     + JSON.stringify(llmBase) + ',model:"mock-model",key:"mock-key"}))');
-  await until(function () { return cdp.eval('window.LLMConfig.isConfigured() === true'); }, 'LLMConfig 已配置', 10000);
+  await until(function () { return cdp.eval('window.LLMConfig.isConfigured() === true'); }, 'LLMConfig 已配置');
   await cdp.eval('document.getElementById("btn-skip").click()');
   await until(function () { return cdp.eval('!!document.getElementById("ask-input")'); }, '进讲解面板出追问输入框');
-  await until(function () { return cdp.eval('!!window.Explain'); }, 'Explain 模块加载', 10000);
+  await until(function () { return cdp.eval('!!window.Explain'); }, 'Explain 模块加载');
 }
 
 /* 输入 + 点问 AI 老师，合成一次 eval 防止中间重渲染丢值 */
@@ -290,7 +303,7 @@ test('追问 500：离线气泡文案含 500、含 ask-retry 按钮、不含栈/
   try {
     await gotoAsk(cdp);
     await typeAndAsk(cdp, '什么叫移项？');
-    await until(function () { return cdp.eval('!!document.querySelector(".ask-a.offline")'); }, '离线气泡出现', 10000);
+    await until(function () { return cdp.eval('!!document.querySelector(".ask-a.offline")'); }, '离线气泡出现');
     const v = await lastBubble(cdp);
     assert.ok(v && v.text, '离线气泡应有文案');
     assert.ok(v.text.indexOf('500') >= 0, '文案应含 500：' + v.text);
@@ -300,7 +313,7 @@ test('追问 500：离线气泡文案含 500、含 ask-retry 按钮、不含栈/
     const errs = await pageErrors(cdp);
     assert.deepStrictEqual(errs, [], '页面零报错');
   } finally {
-    chrome && chrome.kill('SIGKILL'); chrome = null;
+    guard.kill(chrome); chrome = null;
   }
 });
 
@@ -317,13 +330,13 @@ test('追问 4xx 降级：第一次带 response_format 回 400，第二次不带
     await typeAndAsk(cdp, '什么叫移项？');
     await until(function () {
       return cdp.eval('(() => { const a = document.querySelector(".ask-item:last-child .ask-a"); return a && !a.classList.contains("offline") && !a.classList.contains("pending") && a.textContent.indexOf("老师：") >= 0; })()');
-    }, '降级重试成功后应显示正常回答', 10000);
+    }, '降级重试成功后应显示正常回答');
     const ab = askBodies();
     assert.ok(ab.length >= 2, '应至少收到 2 次追问请求，实际 ' + ab.length);
     assert.ok(ab[0].response_format, '第 1 次追问请求应带 response_format');
     assert.ok(!ab[1].response_format, '第 2 次追问请求不应带 response_format（降级去掉）');
   } finally {
-    chrome && chrome.kill('SIGKILL'); chrome = null;
+    guard.kill(chrome); chrome = null;
   }
 });
 
@@ -336,14 +349,14 @@ test('追问 200 但 content 空：离线气泡必须是 llm 档文案（含「�
   try {
     await gotoAsk(cdp);
     await typeAndAsk(cdp, '什么叫移项？');
-    await until(function () { return cdp.eval('!!document.querySelector(".ask-a.offline")'); }, '离线气泡出现', 10000);
+    await until(function () { return cdp.eval('!!document.querySelector(".ask-a.offline")'); }, '离线气泡出现');
     const v = await lastBubble(cdp);
     assert.ok(v && v.text, '离线气泡应有文案');
     assert.ok(v.text.indexOf('空') >= 0, 'llm 档文案应含「空」：' + v.text);
     assert.ok(v.text !== 'AI 老师暂时离线，没回答上。稍后再问一次试试。', '不得等于通用文案');
     assert.ok(!/Error|http:\/\/|127\.0\.0\.1/.test(v.text), '文案不得含 Error/URL：' + v.text);
   } finally {
-    chrome && chrome.kill('SIGKILL'); chrome = null;
+    guard.kill(chrome); chrome = null;
   }
 });
 
@@ -358,7 +371,7 @@ test('再问一次：先 500 后 200 → 重试期间 pending、成功后正常�
   try {
     await gotoAsk(cdp);
     await typeAndAsk(cdp, '什么叫移项？');
-    await until(function () { return cdp.eval('!!document.querySelector(".ask-a.offline")'); }, '第一次追问离线气泡出现', 10000);
+    await until(function () { return cdp.eval('!!document.querySelector(".ask-a.offline")'); }, '第一次追问离线气泡出现');
     const before = askBodies().length;
     /* 点「再问一次」 */
     await cdp.eval('document.querySelector(".ask-retry").click()');
@@ -373,11 +386,11 @@ test('再问一次：先 500 后 200 → 重试期间 pending、成功后正常�
     /* 重试成功后应替换成正常回答 */
     await until(function () {
       return cdp.eval('(() => { const a = document.querySelector(".ask-item:last-child .ask-a"); return a && !a.classList.contains("offline") && !a.classList.contains("pending") && a.textContent.indexOf("老师：") >= 0; })()');
-    }, '重试成功后应显示正常回答', 10000);
+    }, '重试成功后应显示正常回答');
     const after = askBodies().length;
     assert.ok(after >= before + 1, '重试后追问请求次数应 +1：before=' + before + ' after=' + after);
   } finally {
-    chrome && chrome.kill('SIGKILL'); chrome = null;
+    guard.kill(chrome); chrome = null;
   }
 });
 
@@ -449,7 +462,7 @@ test('noticeFor：timeout/network/http/llm/未知 各返回不同文案，http �
   }
   try { staticServer.close(); } catch (e) { /* 未监听 */ }
   try { llmServer.close(); } catch (e) { /* 未监听 */ }
-  if (chrome) chrome.kill('SIGKILL');
+  if (chrome) guard.kill(chrome);
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   if (failed) process.exitCode = 1;
 })();
