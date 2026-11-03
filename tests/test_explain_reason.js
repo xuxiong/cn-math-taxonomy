@@ -394,6 +394,29 @@ test('再问一次：先 500 后 200 → 重试期间 pending、成功后正常�
   }
 });
 
+/* ------------------------------------------------------------ 4b. 429 不触发宽松重试 */
+test('追问 429：不触发宽松重试（fetch 只打一次），气泡含 429 与「设置」', async function () {
+  setMock(function () {
+    return { status: 429, body: { error: 'quota exceeded' }, delay: 0 };
+  });
+  const cdp = await openBrowser();
+  try {
+    await gotoAsk(cdp);
+    await typeAndAsk(cdp, '什么叫移项？');
+    await until(function () { return cdp.eval('!!document.querySelector(".ask-a.offline")'); }, '429 离线气泡出现');
+    const v = await lastBubble(cdp);
+    assert.ok(v && v.text, '离线气泡应有文案');
+    assert.ok(v.text.indexOf('429') >= 0, '文案应含 429：' + v.text);
+    assert.ok(v.text.indexOf('设置') >= 0, '文案应指向家长「设置」：' + v.text);
+    /* 429 与 401 同等对待：带 response_format 也不去掉重发，fetch 只被调用一次 */
+    const ab = askBodies();
+    assert.strictEqual(ab.length, 1, '429 不应触发降级重试，追问请求次数应为 1，实际 ' + ab.length);
+    assert.ok(ab[0].response_format, '首次追问应带 response_format（证明前提成立）');
+  } finally {
+    guard.kill(chrome); chrome = null;
+  }
+});
+
 /* ------------------------------------------------------------ 5. 纯函数级：noticeFor 各 reason 文案不同 */
 const E = require('../diagnose/engine.js');
 const F = require('../diagnose/funclab.js');
@@ -444,6 +467,46 @@ test('noticeFor：timeout/network/http/llm/未知 各返回不同文案，http �
   const httpNoStatus = X._noticeFor('http');
   assert.ok(httpNoStatus.indexOf('重试') >= 0, 'http 不传状态码也应含「重试」：' + httpNoStatus);
   assert.ok(!/\d{3}/.test(httpNoStatus), 'http 不传状态码不应出现三位数字：' + httpNoStatus);
+});
+
+test('noticeFor 分档：401/429 指向家长换 key，llm 拆成 truncated/badjson/mismatch 五句互不相同', function () {
+  const X = loadExplain();
+  const def = X._noticeFor('llm');
+  const n401 = X._noticeFor('http', 401);
+  const n429 = X._noticeFor('http', 429);
+  const truncated = X._noticeFor('llm', null, false, 'truncated');
+  const badjson = X._noticeFor('llm', null, false, 'badjson');
+  const mismatch = X._noticeFor('llm', null, false, 'mismatch');
+  const all = [n401, n429, truncated, badjson, mismatch];
+
+  /* 401 / 429：带错误码 + 指向「设置」，不再是「再问一次」就能解决的口气 */
+  assert.ok(n401.indexOf('401') >= 0, '401 文案应含 401：' + n401);
+  assert.ok(n401.indexOf('设置') >= 0, '401 文案应指向家长「设置」：' + n401);
+  assert.ok(n401.indexOf('重试') >= 0, '401 文案应含「重试」（既有断言约束）：' + n401);
+  assert.ok(n429.indexOf('429') >= 0, '429 文案应含 429：' + n429);
+  assert.ok(n429.indexOf('设置') >= 0, '429 文案应指向家长「设置」：' + n429);
+  assert.ok(n429.indexOf('重试') >= 0, '429 文案应含「重试」（既有断言约束）：' + n429);
+  assert.notStrictEqual(n401, n429, '401 与 429 文案应不同');
+
+  /* llm 三个 detail 各自不同，且都不同于默认 llm 句（定稿文案用的是「再问一次」而非「重试」二字） */
+  [truncated, badjson, mismatch].forEach(function (t) {
+    assert.ok(t !== def, 'detail 文案不得等于默认 llm 句：' + t);
+    assert.ok(t.indexOf('再问一次') >= 0, 'detail 文案应给出「再问一次」下一步：' + t);
+  });
+  /* empty / 未传 detail 仍是原句 */
+  assert.strictEqual(X._noticeFor('llm', null, false, 'empty'), def, "'empty' 应走原句");
+  assert.strictEqual(X._noticeFor('llm', null, false, 'whatever'), def, '未知 detail 应走原句');
+
+  /* 五句两两不同 */
+  for (let i = 0; i < all.length; i++) {
+    for (let j = i + 1; j < all.length; j++) {
+      assert.notStrictEqual(all[i], all[j], '五句应两两不同：' + all[i] + ' vs ' + all[j]);
+    }
+  }
+  /* 都不得泄漏 Error/URL，也不得拼进任何字符串 */
+  all.forEach(function (t) {
+    assert.ok(!/Error|https?:\/\//.test(t), '文案不得含 Error/URL：' + t);
+  });
 });
 
 /* ------------------------------------------------------------ 跑 */
