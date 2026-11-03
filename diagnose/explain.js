@@ -39,8 +39,36 @@
   }
 
   /* 失败原因标记：timeout / network / http / llm。
-   * 只有 reason 区分原因，给学生的文案统一一条（可操作、不让孩子对着「生成中」干等）。 */
+   * 只有 reason 区分原因，给学生的文案统一一条（可操作、不让孩子对着「生成中」干等）。
+   * FAIL_NOTICE 供 generate() 路径使用（讲解失败回退静态讲解，文案要求含「看答案」），
+   * 追问路径用 noticeFor() 按 reason 区分文案 —— 两者职责分离，不要改 FAIL_NOTICE 的内容。 */
   const FAIL_NOTICE = '讲解没取到：可以重试，或先看答案。';
+
+  /* 追问离线气泡按 reason 选文案：学生可见文案**只**从这里取，
+   * 不拼 err.message / 栈 / URL / base —— 4 种故障各说各话，让孩子知道下一步能做什么。
+   * 未知 reason 逐字保留旧通用文案（不破坏既有体验，也是 fail-closed 的兜底）。
+   * timeout 的秒数从 LLMConfig.timeouts.chat 现算（chatTimeoutMs() 为 null 时不写秒数，不写死超时值）。 */
+  function noticeFor(reason, status, degraded) {
+    if (reason === 'timeout') {
+      const ms = chatTimeoutMs();
+      const sec = ms ? Math.max(1, Math.round(ms / 1000)) : 0;
+      return sec > 0
+        ? 'AI 老师这次没赶上（等了 ' + sec + ' 秒），请点「再问一次」重试。'
+        : 'AI 老师这次没赶上，请点「再问一次」重试。';
+    }
+    if (reason === 'network') {
+      return '网络没通 / 没收到你的问题，请点「再问一次」重试。';
+    }
+    if (reason === 'http') {
+      /* 错误码只允许三位数字（/^\d{3}$/），不合法就不写错误码 —— 不把任何字符串拼进去 */
+      const code = /^\d{3}$/.test(String(status)) ? '（错误码 ' + status + '）' : '';
+      return 'AI 服务这边出了点问题' + code + '，请点「再问一次」重试。';
+    }
+    if (reason === 'llm') {
+      return '答了但内容空了，请点「再问一次」重试。';
+    }
+    return 'AI 老师暂时离线，没回答上。稍后再问一次试试。';
+  }
 
   function _isAbort(err) {
     const name = err && err.name;
@@ -55,9 +83,32 @@
 
   /** 发一次 chat 请求并解析 JSON。超时覆盖「连接 + 响应体」：
    *  超时即 abort（AbortError），错误统一打上 reason 标记后抛给调用方。
-   *  AbortController 不可用（很老的浏览器）时退化为无超时，行为与改动前一致。 */
+   *  AbortController 不可用（很老的浏览器）时退化为无超时，行为与改动前一致。
+   *
+   *  4xx 降级重试（spec 第 5 条）：reason==='http' 且 400≤status<500 且 status≠401 且
+   *  本次请求体带过 response_format → 去掉该字段重发一次（宽松模式），最多重试一次。
+   *  讲解请求不带 response_format，自然不会触发降级；5xx / 401 也不降级。
+   *  第二次仍失败 → err.degraded=true，对外 reason 按第二次的实际失败类型。 */
   function postChat(body) {
     if (typeof fetch !== 'function') return Promise.reject(_markFail(new Error('fetch 不可用'), 'network'));
+    return _postChatOnce(body).catch(function (err) {
+      if (err && err.reason === 'http' && typeof err.httpStatus === 'number'
+          && err.httpStatus >= 400 && err.httpStatus < 500 && err.httpStatus !== 401
+          && body && body.response_format) {
+        const relaxed = Object.assign({}, body);
+        delete relaxed.response_format;
+        return _postChatOnce(relaxed).catch(function (err2) {
+          if (err2) err2.degraded = true;
+          throw err2;
+        });
+      }
+      throw err;
+    });
+  }
+
+  /* 单次发请求 + 解析。!resp.ok 时读一次 body（截断 ≤200 字符）装到 error 上，
+   * 便于日志 / 文案区分原因；读不到也不改语义（仍抛 reason='http'）。 */
+  function _postChatOnce(body) {
     const timeoutMs = chatTimeoutMs();
     const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     const opts = {
@@ -71,7 +122,20 @@
     let timer = setTimeout(function () { timer = null; try { controller.abort(); } catch (e) { /* 已 abort */ } }, timeoutMs);
     const done = function () { if (timer) { clearTimeout(timer); timer = null; } };
     return fetch(PROXY, opts).then(function (resp) {
-      if (!resp.ok) { done(); throw _markFail(new Error('llm http ' + resp.status), 'http'); }
+      if (!resp.ok) {
+        done();
+        const err = _markFail(new Error('llm http ' + resp.status), 'http');
+        err.httpStatus = resp.status;
+        /* 保留错误详情：读一次 body（截断 ≤200 字符）。读失败 / resp.text 不存在 → 不设 httpBody，仍抛 reason='http'。
+         * body 读取本身可能抛错 / 老 mock 只有 {ok:false,status} → try/catch + Promise 链兜住，失败语义不变。 */
+        const readBody = (typeof resp.text === 'function')
+          ? Promise.resolve().then(function () { return resp.text(); }).catch(function () { return ''; })
+          : Promise.resolve('');
+        return readBody.then(function (txt) {
+          if (typeof txt === 'string' && txt.length) err.httpBody = txt.slice(0, 200);
+          throw err;
+        });
+      }
       return Promise.resolve(resp.json()).then(function (data) { done(); return data; }, function (err) {
         done();
         throw _markFail(err, _isAbort(err) ? 'timeout' : 'network');
@@ -82,10 +146,17 @@
     });
   }
 
-  /** 把失败错误收成 {reason, notice}：给调用方 / UI 的一致失败形状。 */
+  /** 把失败错误收成 {reason, notice, httpStatus, degraded}：给调用方 / UI 的一致失败形状。
+   *  notice 仍是 FAIL_NOTICE（供 generate() 路径）；追问路径用 noticeFor() 另选文案。
+   *  httpStatus（数字）与 degraded（布尔）由 postChat 的 4xx 降级重试 / body 读取带出来。 */
   function failInfo(err) {
     const reason = (err && err.reason) || 'network';
-    return { reason: reason, notice: FAIL_NOTICE };
+    return {
+      reason: reason,
+      notice: FAIL_NOTICE,
+      httpStatus: (err && typeof err.httpStatus === 'number') ? err.httpStatus : null,
+      degraded: !!(err && err.degraded)
+    };
   }
 
   const cache = new Map();   // qid -> {ts, steps, from}
@@ -287,13 +358,21 @@
 
   /** 讲解中追问（单轮）。返回 Promise<{text, graph, from: 'llm'|'offline'}>，永不 reject：
    *   llm    —— AI 老师正常回答（graph 为校验前的原始对象，由 ChatGraph 校验后再挂图）
-   *   offline—— 网关不可用，text/graph 均为 null（UI 显示引导语） */
+   *   offline—— 网关不可用，text/graph 均为 null（UI 显示引导语）
+   *  失败时文案按 reason 区分（noticeFor），并补一条与 generate() 同款的 console.warn 日志 ——
+   *  追问路径以前零日志，出问题查不出原因。日志只放 reason/状态码/文案，不打 body 全文 / Authorization。 */
   function ask(topic, q, userAnswer, steps, question, labDesc) {
     return llmAsk(topic, q, userAnswer, steps, question, labDesc)
       .then(function (res) { return { text: res.text, graph: res.graph, from: 'llm' }; })
       .catch(function (err) {
-        const f = failInfo(err);   // 超时 / 网络失败同一条可操作文案，绝不把 aborted 当空内容
-        return { text: null, graph: null, from: 'offline', reason: f.reason, notice: f.notice };
+        const f = failInfo(err);   // reason/httpStatus/degraded 带出来
+        const notice = noticeFor(f.reason, f.httpStatus, f.degraded);
+        if (global.console && global.console.warn) {
+          const tag = (f.reason === 'http' && f.httpStatus) ? ('http ' + f.httpStatus) : f.reason;
+          const extra = f.degraded ? '（已降级重试）' : '';
+          global.console.warn('Explain.ask 失败（' + tag + extra + '）：' + notice);
+        }
+        return { text: null, graph: null, from: 'offline', reason: f.reason, notice: notice, httpStatus: f.httpStatus, degraded: f.degraded };
       });
   }
 
@@ -370,6 +449,8 @@
     _userPrompt: userPrompt,
     _askUserPrompt: askUserPrompt,
     _systemPrompt: systemPrompt,
-    _askSystemPrompt: askSystemPrompt
+    _askSystemPrompt: askSystemPrompt,
+    /* 追问离线气泡文案选择函数（t_6df579b6）：导出供纯函数级测试断言各 reason 文案两两不同 */
+    _noticeFor: noticeFor
   };
 })(window);

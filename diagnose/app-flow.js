@@ -899,19 +899,37 @@ function askBox(item, steps) {
     const q = item.question;
     const t = S.D.graph.byId[item.topicId];
     const hist = h('div', { class: 'ask-hist', id: 'ask-hist' });
-    /* 追问气泡里可能带 LLM 给的图（Funclab 画）：渲染气泡前先 ensure 画板库；
-     * 没到货就这几条气泡不带图（下面的 window.Funclab 守卫保留），不影响文字回答。 */
-    if (!window.Funclab && !S.lazyFailed.lab) {
-      Lazy.load(LAZY_LAB).then(function () { renderQuestion(item); }, lazyFail('lab'));
-    }
-    (S.ui.askHistory || []).forEach(function (entry) {
+    (S.ui.askHistory || []).forEach(function (entry, idx) {
+      /* 离线气泡文案按 reason 区分（entry.notice 来自 Explain.ask 的 noticeFor），
+       * 不再统一一句；含「再问一次」按钮，点击重发同一条问题（复用 runAsk，不新写一套 HTTP）。 */
+      let answerEl;
+      if (entry.pending) {
+        answerEl = h('div', { class: 'ask-a pending' }, 'AI 老师正在想…');
+      } else if (entry.from === 'offline') {
+        const notice = entry.notice || 'AI 老师暂时离线，没回答上。稍后再问一次试试。';
+        answerEl = h('div', { class: 'ask-a offline' }, notice,
+          h('button', { class: 'ask-retry', onclick: function () {
+            /* 重发同一条问题：复用 runAsk，懒加载守卫在 runAsk 顶部。
+             * 重试期间该条变回 pending；S.ui.askPending = true 防止并发再问。
+             * 不自动重试（除 postChat 内部那一次 4xx 降级）。 */
+            if (S.ui.askPending) return;
+            const cur = (S.ui.askHistory || [])[idx];
+            if (!cur) return;
+            const tick = ++explainTick;
+            runAsk(cur.q, idx, tick);
+          } }, '再问一次'));
+      } else {
+        answerEl = h('div', { class: 'ask-a' }, '老师：' + entry.a);
+      }
       const rowEl = h('div', { class: 'ask-item' },
         h('div', { class: 'ask-q' }, '你：' + entry.q),
-        entry.pending ? h('div', { class: 'ask-a pending' }, 'AI 老师正在想…')
-          : entry.from === 'offline'
-            ? h('div', { class: 'ask-a offline' }, 'AI 老师暂时离线，没回答上。稍后再问一次试试。')
-            : h('div', { class: 'ask-a' }, '老师：' + entry.a));
+        answerEl);
       const g = entry.graph;
+      /* 画板库懒加载：气泡里的图要 Funclab；没到货先触发加载（Lazy.load 去重），
+       * 加载完后重新渲染补图。没图的非 graph 气泡不触发加载，不影响文字回答。 */
+      if (g && !window.Funclab && !S.lazyFailed.lab) {
+        Lazy.load(LAZY_LAB).then(function () { renderQuestion(item); }, lazyFail('lab'));
+      }
       if (g && window.Funclab) {
         let inst = null;
         try {
@@ -926,24 +944,24 @@ function askBox(item, steps) {
       }
       hist.append(rowEl);
     });
-    function sendAsk() {
-      /* 讲解模块懒加载：理论上首帧就到了；没到货就等加载完自动重发这一次提问（输入框内容还在） */
+    /* runAsk：懒加载守卫 + 设 pending + 发请求 + 用 tick 防竞态 + 替换 askHistory 第 idx 项。
+     * sendAsk 首次发和重试按钮都走这里 —— 守卫紧邻 Explain.ask，满足 test_lazy_load 的 25 行约束。 */
+    function runAsk(text, idx, tick) {
+      const entries = (S.ui.askHistory || []).slice();
+      entries[idx] = { q: text, pending: true };
+      S.ui.askHistory = entries;
+      S.ui.askPending = true;
+      S.ui.askScroll = true;   // 刚提问/重试：本次渲染后滚到追问区最后一条，让用户看到自己发的内容
+      renderQuestion(item);
+      /* 懒加载守卫：Explain 未到货先加载，加载完重发这一次（闭包里 text/idx/tick 不变）；
+       * ChatGraph 未到货就先发（回答里的图校验降级为不带图，原有降级逻辑）。 */
       if (!window.Explain) {
-        if (!S.lazyFailed.explain) Lazy.load(LAZY_EXPLAIN).then(sendAsk, lazyFail('explain'));
+        if (!S.lazyFailed.explain) Lazy.load(LAZY_EXPLAIN).then(function () { runAsk(text, idx, tick); }, lazyFail('explain'));
         return;
       }
       if (!window.ChatGraph && !S.lazyFailed.chat) {
-        /* 追问回答里的图校验要 chatgraph.js；没到货这条回答就不带图（原有降级） */
         Lazy.load(LAZY_LAB).then(null, lazyFail('chat'));
       }
-      const inp = document.getElementById('ask-input');
-      const text = (inp && inp.value || '').trim();
-      if (!text || S.ui.askPending) return;
-      S.ui.askHistory = (S.ui.askHistory || []).concat([{ q: text, pending: true }]);
-      S.ui.askPending = true;
-      S.ui.askScroll = true;   // 刚提问：本次渲染后滚到追问区最后一条，让用户看到自己发的内容
-      const tick = ++explainTick;   // 复用竞态令牌：回答只属于当前面板
-      renderQuestion(item);
       window.Explain.ask(t, q, S.ui.answer, steps, text, S.ui.labDesc).then(function (res) {
         if (tick !== explainTick || !S.ui || S.ui.phase !== 'explain') return;
         let graph = null;
@@ -951,13 +969,22 @@ function askBox(item, steps) {
           const v = window.ChatGraph ? window.ChatGraph.verifyChatGraph(res.graph) : { ok: false };
           graph = v && v.ok ? v : null;   // 校验不过/异常一律当没有图，不提示「画图失败」
         } catch (err) { graph = null; }
-        const entries = (S.ui.askHistory || []).slice();
-        entries[entries.length - 1] = { q: text, a: res.text, from: res.from, graph: graph };
-        S.ui.askHistory = entries;
+        const entries2 = (S.ui.askHistory || []).slice();
+        entries2[idx] = { q: text, a: res.text, from: res.from, graph: graph, reason: res.reason, notice: res.notice };
+        S.ui.askHistory = entries2;
         S.ui.askPending = false;
         S.ui.askScroll = true;   // 刚答完：本次渲染后滚到这条问答，否则答案落在折叠线以下看不见
         renderQuestion(item);
       });
+    }
+    function sendAsk() {
+      /* 输入框读取 + askPending 检查 + 调 runAsk；懒加载守卫在 runAsk 顶部 */
+      const inp = document.getElementById('ask-input');
+      const text = (inp && inp.value || '').trim();
+      if (!text || S.ui.askPending) return;
+      const idx = (S.ui.askHistory || []).length;
+      const tick = ++explainTick;   // 复用竞态令牌：回答只属于当前面板
+      runAsk(text, idx, tick);
     }
     const inp = h('input', {
       type: 'text', class: 'ask-input', id: 'ask-input', autocomplete: 'off',
