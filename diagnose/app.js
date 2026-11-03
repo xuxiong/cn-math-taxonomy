@@ -181,6 +181,9 @@
   /* 引擎与按需段不在首屏 <script> 链上（见 index.html）：首次进流程 / 深链 / 恢复前补载。
    * 幂等：同一次页面只 Lazy.load 一次，后续调用复用同一个 Promise（同 src 去重）。 */
   let flowEnginePromise = null;
+  /* 辅助模块补载只调度一次：whenIdle 每调用一次都会挂一组监听 + 一个定时器，
+   * 深链 / ?demo / 普通访问若重复走到调度点，会叠加定时器与监听。 */
+  let auxLoadScheduled = false;
   /* 首屏之外的辅助模块（孩子档案 / 薄弱点 / 统计 / PWA / 模型横幅）推迟到列表画完之后再取：
    * 用户第一次交互立刻取，否则 2s 后取。注意不能用 requestIdleCallback —— 主线程在网络等待期间
    * 本来就是空的，idle 回调会立刻触发，等于照旧抢带宽。慢链路上这 40KB 级辅助件会把
@@ -2082,6 +2085,8 @@
       return;
     }
     renderStart();                          // 阶段 1：知识库清单（topics-lite）到货，选题界面可用
+    /* 首屏已画好，统一调度辅助模块补载：深链 / ?demo 会在下面提前 return，所以必须在这里调用。 */
+    scheduleAuxLoad();
     const params = new URLSearchParams(location.search);
     /* 深链（?target= / ?chapter= / ?grade=）要先出题，而 resolveTargets / 出题都在按需段里，
      * 所以只有这几种 URL 才补载并等 engine/flow；普通访问完全不下载它们。 */
@@ -2117,19 +2122,27 @@
       const en = flow('enter'); if (en) en(resolved.ids, resolved.label, limit, resolved.mode);
       return;
     }
-    /* 其余辅助模块不在首屏链上（见 index.html），也不占首屏带宽：等列表画完、页面空下来再补载。
-     * children.js 提供 CC（孩子档案）、blindspots.js 提供 CnmBlind（薄弱点）、
-     * llm-config.js 提供 LLMConfig（讲解/画板网关）、stats/stats-config/pwa 提供统计与安装。
-     * 慢链路上这些加起来还有 40KB 级，提前抢带宽会把「可搜索列表」推后几秒，所以走 whenIdle：
-     * 空闲时（或用户第一次交互时）再取，到货后若无进行中的会话就重绘首页，把 childBar / 薄弱点卡补上。 */
-    whenIdle(function () {
-      Lazy.load(['../assets/children.js', '../assets/blindspots.js', 'llm-config.js', '../assets/stats-config.js', '../assets/stats.js', '../assets/pwa.js']).then(function () {
-        CC = Browser.CnmChildren;   // children.js 到货后刷新缓存引用
-        if (!S.session && !S.prac && !S.pracLoading) renderStart();
-        maybeLLMBanner();
-      }, function () { /* 辅助模块缺失/加载失败不影响主流程 */ });
-    });
-    /* 没有深链参数：上面的 renderStart() 已经把选题界面画好了，不再重绘一次（避免闪一下） */
+    /* 没有深链参数：上面的 renderStart() 已经把选题界面画好了，不再重绘一次（避免闪一下）。
+     * 辅助模块补载已在 renderStart() 之后由 scheduleAuxLoad() 统一调度，覆盖深链 / ?demo。 */
+
+    /* 辅助模块补载调度（孩子档案 / 薄弱点 / 统计 / PWA / 模型横幅）。
+     * 定义放在 init() 末尾、由上面的 scheduleAuxLoad() 提前调用（函数声明会提升），
+     * 这样静态检查里「init 的 renderStart() 出现在 loadData 之后」仍然成立。
+     * 必须在**所有入口**都必经的位置调用一次：普通访问、深链（?target= / ?chapter= /
+     * ?grade= / ?volume=）与 ?demo 都会在下面提前 return，若把调度放在 init() 末尾，
+     * 深链就永远走不到 —— 这正是 t_a7055f3e 的成因（CnmChildren 恒 undefined）。
+     * 仍走 whenIdle：首次交互或 2s 兜底才真正下载，不占首屏带宽。 */
+    function scheduleAuxLoad() {
+      if (auxLoadScheduled) return;
+      auxLoadScheduled = true;
+      whenIdle(function () {
+        Lazy.load(['../assets/children.js', '../assets/blindspots.js', 'llm-config.js', '../assets/stats-config.js', '../assets/stats.js', '../assets/pwa.js']).then(function () {
+          CC = Browser.CnmChildren;   // children.js 到货后刷新缓存引用
+          if (!S.session && !S.prac && !S.pracLoading) renderStart();
+          maybeLLMBanner();
+        }, function () { /* 辅助模块缺失/加载失败不影响主流程 */ });
+      });
+    }
   }
 
   /* 原 index.html 内联的「未配置模型」引导横幅：llm-config.js 不再在首屏链上，到货后再触发。 */
