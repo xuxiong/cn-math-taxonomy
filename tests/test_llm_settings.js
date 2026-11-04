@@ -754,6 +754,9 @@ asyncTest('testConnection HTTP 404 且真实请求地址与填写基址不同：
     assert.ok(s.indexOf('404') >= 0, '应含 404：\n' + s);
     assert.ok(s.indexOf('服务端原文：') >= 0, '应含「服务端原文：」标签：\n' + s);
     assert.ok(s.indexOf('k-saved-1234567890') < 0, '状态串不得含 API Key：\n' + s);
+    assert.ok(s.indexOf('可能被服务端重定向了') >= 0, '不一致行不应断言单一原因，应给出重定向/基址填错两种可能：\n' + s);
+    assert.ok(s.indexOf('少了或少了一段') < 0, '404 提示不应出现自相矛盾的「少了或少了一段」：\n' + s);
+    assert.ok(s.indexOf('少了或多了一段') >= 0, '404 提示应写「少了或多了一段」：\n' + s);
   } finally {
     env.restore();
   }

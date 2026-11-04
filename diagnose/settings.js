@@ -87,7 +87,7 @@
   function httpHint(status) {
     if (status === 401) return ' —— 可能 API Key 不对或已失效';
     if (status === 403) return ' —— 可能没有权限，或额度已用完';
-    if (status === 404) return ' —— 这个基址上找不到该接口，检查基址是否少了或少了一段（比如 /v1）';
+    if (status === 404) return ' —— 这个基址上找不到该接口，检查基址是否少了或多了一段（比如 /v1）';
     if (status === 429) return ' —— 请求太频繁，或额度已用完';
     if (status >= 500 && status < 600) return ' —— 服务端出错，不是你的配置问题，稍后再试';
     return '';
@@ -99,7 +99,7 @@
     var u = (res && res.url) ? String(res.url) : '';
     if (!u) return '';                       // 拿不到就不硬编
     var out = '真实请求：' + u;
-    if (u !== String(requested)) out += '\n（和填写的地址不一致 —— 基址写错了，注意别用中文输入法打冒号）';
+    if (u !== String(requested)) out += '\n（真实地址和填写的地址不一致 —— 可能被服务端重定向了，也可能基址填错了）';
     return out;
   }
 
