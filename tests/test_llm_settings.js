@@ -451,7 +451,12 @@ async function waitForStatus(elements, predicate, timeoutMs) {
 }
 
 /** 造一个假 fetch 响应：GET /models 返回 200 + 模型列表；POST /chat/completions 按 opts 行为。
- *  opts.ok2 / opts.status2 / opts.body2 控制第 2 步响应；throw2=true 时第 2 步抛错。 */
+ *  opts.ok2 / opts.status2 / opts.body2 控制第 2 步响应；throw2=true 时第 2 步抛错。
+ *  可选扩展（默认行为不变，仅供新增盲点用例使用）：
+ *  - ok1 / status1 / body1 / res1Url：定制第 1 步响应（含 res.url 字段）；
+ *  - throw1 / throw1Error：第 1 步 fetch 直接抛 throw1Error || new TypeError('Failed to fetch')；
+ *  - res2Url：给第 2 步响应加 res.url 字段；
+ *  - throw2Error：配合现有 throw2 覆盖第 2 步抛出的错误对象（不传仍是 Error('mock network error')）。 */
 function makeFetchForTestConnection(opts) {
   opts = opts || {};
   const calls = [];
@@ -459,21 +464,27 @@ function makeFetchForTestConnection(opts) {
     calls.push({ url: String(url), method: init && init.method });
     const u = String(url);
     if (u.indexOf('/models') >= 0 && (!init || init.method === 'GET' || !init.method)) {
-      return {
-        ok: true,
-        status: 200,
-        text: async function () { return JSON.stringify({ data: ['m-a', 'm-b', 'm-c'] }); },
-        json: async function () { return { data: ['m-a', 'm-b', 'm-c'] }; }
+      if (opts.throw1) throw (opts.throw1Error || new TypeError('Failed to fetch'));
+      const modelsBody = opts.body1 != null ? opts.body1 : JSON.stringify({ data: ['m-a', 'm-b', 'm-c'] });
+      const res1 = {
+        ok: opts.ok1 != null ? !!opts.ok1 : true,
+        status: opts.status1 != null ? opts.status1 : 200,
+        text: async function () { return modelsBody; },
+        json: async function () { return JSON.parse(modelsBody); }
       };
+      if (opts.res1Url != null) res1.url = opts.res1Url;
+      return res1;
     }
     /* 第 2 步 POST /chat/completions */
-    if (opts.throw2) throw new Error('mock network error');
-    return {
+    if (opts.throw2) throw (opts.throw2Error || new Error('mock network error'));
+    const res2 = {
       ok: !!opts.ok2,
       status: opts.status2 != null ? opts.status2 : 200,
       text: async function () { return opts.body2 != null ? opts.body2 : JSON.stringify({ choices: [{ message: { content: '通了' }, finish_reason: 'stop' }] }); },
       json: async function () { return JSON.parse(opts.body2 != null ? opts.body2 : JSON.stringify({ choices: [{ message: { content: '通了' }, finish_reason: 'stop' }] })); }
     };
+    if (opts.res2Url != null) res2.url = opts.res2Url;
+    return res2;
   };
   fn.calls = calls;
   return fn;
@@ -641,6 +652,210 @@ asyncTest('doSave 状态串不含模型标注：点保存后状态串是「已�
       'doSave 状态串不应含测试尾注：\n' + s);
     /* 等 setTimeout(500ms) 跑完再 restore，避免 restore 后 setTimeout 触发访问已删 location */
     await new Promise(function (r) { setTimeout(r, 600); });
+  } finally {
+    env.restore();
+  }
+});
+
+/* ================================================================
+ * 10. 「测试连接」盲点修复（kanban t_30c17629）：
+ *     全角冒号归一化 / 非绝对地址不发请求 / 报错显示真实请求 URL / CORS 人话
+ * ================================================================ */
+
+asyncTest('testConnection 全角冒号：归一化后写回输入框，fetch 拿到半角 URL', async () => {
+  const fetchImpl = makeFetchForTestConnection({ ok2: true, status2: 200 });
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'https://t.test/v1', model: PRESET.model, key: 'k-saved-1234567890' },
+    fetchImpl: fetchImpl,
+    afterLoad: function (elements) {
+      /* 家长用中文输入法打出全角冒号 U+FF1A */
+      elements['base-input'].value = 'https\uff1a//api.example.test/v1';
+    }
+  });
+  try {
+    env.elements['test-btn'].click();
+    await waitForStatus(env.elements, function (t) { return t.indexOf('连接成功') >= 0; });
+    assert.ok(fetchImpl.calls.length > 0, '应发出 fetch');
+    assert.strictEqual(fetchImpl.calls[0].url, 'https://api.example.test/v1/models',
+      '第 1 个 fetch 应拿到全角冒号归一化后的半角 URL：' + fetchImpl.calls[0].url);
+    assert.strictEqual(env.elements['base-input'].value, 'https://api.example.test/v1',
+      '归一化结果应写回输入框，当前值：' + env.elements['base-input'].value);
+    assert.ok(env.elements.status.textContent.indexOf('连接成功') >= 0, '状态串应含「连接成功」');
+  } finally {
+    env.restore();
+  }
+});
+
+asyncTest('testConnection 首尾零宽/不换行空格 + 全角斜杠：归一化后写回输入框', async () => {
+  const fetchImpl = makeFetchForTestConnection({ ok2: true, status2: 200 });
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'https://t.test/v1', model: PRESET.model, key: 'k-saved-1234567890' },
+    fetchImpl: fetchImpl,
+    afterLoad: function (elements) {
+      /* 首部零宽空格 + 不换行空格，尾部普通空格 + BOM，全角冒号和全角斜杠混在里面 */
+      elements['base-input'].value = '\u200b\u00a0https\uff1a//api.example.test\uff0fv1 \ufeff';
+    }
+  });
+  try {
+    env.elements['test-btn'].click();
+    await waitForStatus(env.elements, function (t) { return t.indexOf('连接成功') >= 0; });
+    assert.ok(fetchImpl.calls.length > 0, '应发出 fetch');
+    assert.ok(/\/v1\/models$/.test(fetchImpl.calls[0].url),
+      '第 1 个 fetch url 应以 /v1/models 结尾：' + fetchImpl.calls[0].url);
+    assert.strictEqual(env.elements['base-input'].value, 'https://api.example.test/v1',
+      '归一化结果应写回输入框，当前值：' + env.elements['base-input'].value);
+  } finally {
+    env.restore();
+  }
+});
+
+asyncTest('testConnection 基址不是 http/https 绝对地址：不发请求、提示以 https:// 开头', async () => {
+  const fetchImpl = makeFetchForTestConnection({ ok2: true, status2: 200 });
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'https://t.test/v1', model: PRESET.model, key: 'k-saved-1234567890' },
+    fetchImpl: fetchImpl,
+    afterLoad: function (elements) {
+      elements['base-input'].value = 'api.example.test/v1';
+    }
+  });
+  try {
+    env.elements['test-btn'].click();
+    await waitForStatus(env.elements, function (t) { return t.indexOf('基址要以 https:// 开头') >= 0; });
+    assert.strictEqual(fetchImpl.calls.length, 0, '基址不是绝对地址时不应发出任何 fetch');
+    const s = env.elements.status.textContent;
+    assert.ok(s.indexOf('基址要以 https:// 开头') >= 0, '应提示以 https:// 开头：\n' + s);
+    assert.ok(s.indexOf('请求没有发出去') >= 0, '应说明请求没有发出去：\n' + s);
+    assert.ok(s.indexOf('测试只验证能连通，不验证讲解速度。') >= 0,
+      '校验失败状态串仍应带模型标注尾注（走 setTestStatus）：\n' + s);
+  } finally {
+    env.restore();
+  }
+});
+
+asyncTest('testConnection HTTP 404 且真实请求地址与填写基址不同：显示 res.url 并提示不一致', async () => {
+  /* 复现盲点 1 的后果：全角冒号 URL 被 fetch 当相对路径解析到 pages 自己的域，返回 404 HTML */
+  const res1Url = 'https://pages.example.test/cn-math-taxonomy/diagnose/https%EF%BC%9A//api.example.test/v1/models';
+  const fetchImpl = makeFetchForTestConnection({
+    ok1: false, status1: 404, body1: '<html>404</html>', res1Url: res1Url
+  });
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'https://t.test/v1', model: PRESET.model, key: 'k-saved-1234567890' },
+    fetchImpl: fetchImpl,
+    afterLoad: function (elements) {
+      elements['base-input'].value = 'https://api.example.test/v1';
+    }
+  });
+  try {
+    env.elements['test-btn'].click();
+    await waitForStatus(env.elements, function (t) { return t.indexOf('真实请求：') >= 0; });
+    const s = env.elements.status.textContent;
+    assert.ok(s.indexOf('真实请求：https://pages.example.test/') >= 0, '应显示 res.url（真实请求）：\n' + s);
+    assert.ok(s.indexOf('不一致') >= 0, '真实地址与填写不同时应提示不一致：\n' + s);
+    assert.ok(s.indexOf('404') >= 0, '应含 404：\n' + s);
+    assert.ok(s.indexOf('服务端原文：') >= 0, '应含「服务端原文：」标签：\n' + s);
+    assert.ok(s.indexOf('k-saved-1234567890') < 0, '状态串不得含 API Key：\n' + s);
+    assert.ok(s.indexOf('可能被服务端重定向了') >= 0, '不一致行不应断言单一原因，应给出重定向/基址填错两种可能：\n' + s);
+    assert.ok(s.indexOf('少了或少了一段') < 0, '404 提示不应出现自相矛盾的「少了或少了一段」：\n' + s);
+    assert.ok(s.indexOf('少了或多了一段') >= 0, '404 提示应写「少了或多了一段」：\n' + s);
+  } finally {
+    env.restore();
+  }
+});
+
+asyncTest('testConnection fetch 抛 TypeError（跨域被拦）：说请求没有发出去 + 补 CORS 人话', async () => {
+  const fetchImpl = makeFetchForTestConnection({ throw1: true, throw1Error: new TypeError('Failed to fetch') });
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'https://t.test/v1', model: PRESET.model, key: 'k-saved-1234567890' },
+    fetchImpl: fetchImpl
+  });
+  try {
+    env.elements['test-btn'].click();
+    await waitForStatus(env.elements, function (t) { return t.indexOf('请求没有发出去') >= 0; });
+    const s = env.elements.status.textContent;
+    assert.ok(s.indexOf('请求没有发出去（未到达任何服务器）') >= 0, '应说明请求没有发出去：\n' + s);
+    assert.ok(s.indexOf('CORS') >= 0, 'TypeError 应补 CORS 人话：\n' + s);
+    assert.ok(s.indexOf('compatible-mode/v1') >= 0, 'CORS 人话应指向标准端点 compatible-mode/v1：\n' + s);
+  } finally {
+    env.restore();
+  }
+});
+
+asyncTest('testConnection fetch 抛普通 Error：说请求没有发出去，但不补 CORS 人话', async () => {
+  const fetchImpl = makeFetchForTestConnection({ throw1: true, throw1Error: new Error('boom') });
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'https://t.test/v1', model: PRESET.model, key: 'k-saved-1234567890' },
+    fetchImpl: fetchImpl
+  });
+  try {
+    env.elements['test-btn'].click();
+    await waitForStatus(env.elements, function (t) { return t.indexOf('请求没有发出去') >= 0; });
+    const s = env.elements.status.textContent;
+    assert.ok(s.indexOf('请求没有发出去') >= 0, '应说明请求没有发出去：\n' + s);
+    assert.ok(s.indexOf('CORS') < 0, '普通 Error 不是跨域拦截，不应补 CORS 人话：\n' + s);
+  } finally {
+    env.restore();
+  }
+});
+
+asyncTest('testConnection 第 2 步 POST 返回 403：状态串含 res2.url', async () => {
+  const res2Url = 'https://t.test/v1/chat/completions';
+  const fetchImpl = makeFetchForTestConnection({
+    ok2: false, status2: 403, body2: JSON.stringify({ error: 'Free quota exhausted' }), res2Url: res2Url
+  });
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'https://t.test/v1', model: PRESET.model, key: 'k-saved-1234567890' },
+    fetchImpl: fetchImpl
+  });
+  try {
+    env.elements['test-btn'].click();
+    await waitForStatus(env.elements, function (t) { return t.indexOf('403') >= 0; });
+    const s = env.elements.status.textContent;
+    assert.ok(s.indexOf('真实请求：' + res2Url) >= 0, '应含 res2.url（真实请求）：\n' + s);
+    assert.ok(s.indexOf('403') >= 0, '应含 403：\n' + s);
+  } finally {
+    env.restore();
+  }
+});
+
+asyncTest('testConnection 超时（AbortError）：说请求发出去了但没回应，不说「没有发出去」', async () => {
+  /* timeoutSignal() 15s 后 abort，fetch 抛 AbortError —— 请求其实已发出、只是没等到回应，
+   * 不能说「请求没有发出去」（那会让家长去查基址而不是查网络/换端点）。 */
+  const abortErr = new Error('The operation was aborted.');
+  abortErr.name = 'AbortError';
+  const fetchImpl = makeFetchForTestConnection({ throw1: true, throw1Error: abortErr });
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'https://t.test/v1', model: PRESET.model, key: 'k-saved-1234567890' },
+    fetchImpl: fetchImpl
+  });
+  try {
+    env.elements['test-btn'].click();
+    await waitForStatus(env.elements, function (t) { return t.indexOf('请求失败') >= 0; });
+    const s = env.elements.status.textContent;
+    assert.ok(s.indexOf('请求发出去了，但 15 秒内没有回应（超时）') >= 0,
+      '超时应说「请求发出去了，但 15 秒内没有回应（超时）」：\n' + s);
+    assert.ok(s.indexOf('请求没有发出去') < 0,
+      '超时时请求其实已发出，不应说「请求没有发出去」：\n' + s);
+    assert.ok(s.indexOf('CORS') < 0,
+      '超时不是 CORS 拦截，不应出现 CORS 提示：\n' + s);
+  } finally {
+    env.restore();
+  }
+});
+
+asyncTest('testConnection 第 2 步 POST 超时：同样说请求发出去了但没回应', async () => {
+  const abortErr = new Error('The operation was aborted.');
+  abortErr.name = 'AbortError';
+  const fetchImpl = makeFetchForTestConnection({ throw2: true, throw2Error: abortErr });
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'https://t.test/v1', model: PRESET.model, key: 'k-saved-1234567890' },
+    fetchImpl: fetchImpl
+  });
+  try {
+    env.elements['test-btn'].click();
+    await waitForStatus(env.elements, function (t) { return t.indexOf('请求失败') >= 0; });
+    const s = env.elements.status.textContent;
+    assert.ok(s.indexOf('请求发出去了') >= 0, '第 2 步超时应说「请求发出去了」：\n' + s);
+    assert.ok(s.indexOf('请求没有发出去') < 0, '第 2 步超时不应说「请求没有发出去」：\n' + s);
   } finally {
     env.restore();
   }

@@ -83,11 +83,102 @@
     return s.length > n ? s.slice(0, n) + '…' : s;
   }
 
+  /** HTTP 状态码 → 一句人话，拼在「返回 HTTP <status>」之后，让英文正文前面先有句能看懂的。 */
+  function httpHint(status) {
+    if (status === 401) return ' —— 可能 API Key 不对或已失效';
+    if (status === 403) return ' —— 可能没有权限，或额度已用完';
+    if (status === 404) return ' —— 这个基址上找不到该接口，检查基址是否少了或多了一段（比如 /v1）';
+    if (status === 429) return ' —— 请求太频繁，或额度已用完';
+    if (status >= 500 && status < 600) return ' —— 服务端出错，不是你的配置问题，稍后再试';
+    return '';
+  }
+
+  /** 报错时显示 fetch 实际解析后的真实 URL（res.url）：
+   *  基址写成全角冒号等错误时，请求根本没到填写的地址（被当相对路径解析到本站），必须让家长看出来。 */
+  function actualUrlNote(res, requested) {
+    var u = (res && res.url) ? String(res.url) : '';
+    if (!u) return '';                       // 拿不到就不硬编
+    var out = '真实请求：' + u;
+    if (u !== String(requested)) out += '\n（真实地址和填写的地址不一致 —— 可能被服务端重定向了，也可能基址填错了）';
+    return out;
+  }
+
+  /** 网络层错误特征：浏览器断网 / CORS 被拦时 fetch 抛 TypeError: Failed to fetch。 */
+  function isNetworkErrorLike(e) {
+    if (!e) return false;
+    if (String(e.name || '') === 'TypeError') return true;
+    var msg = String(e.message == null ? e : e.message);
+    return msg.indexOf('Failed to fetch') >= 0;
+  }
+
+  /** 超时特征：timeoutSignal() 到 15s 会 abort，fetch 抛 AbortError / TimeoutError ——
+   *  此时请求其实已经发出、只是没等到回应，不能说「没有发出去」。
+   *  兜底匹配 message（老浏览器 / 不同措辞，如 abort() 的 "The operation was aborted"）。 */
+  function isTimeoutLike(e) {
+    if (!e) return false;
+    var name = String(e.name || '');
+    if (name === 'AbortError' || name === 'TimeoutError') return true;   // AbortSignal.timeout / AbortController.abort
+    var msg = String(e.message == null ? e : e.message);
+    return /aborted|timeout|timed out/i.test(msg);                        // 兜底：老浏览器 / 不同措辞
+  }
+
+  /** fetch 抛错时的一句人话，第 1 步 / 第 2 步共用：
+   *  超时 = 请求已发出但 15 秒没等到回应（查网络 / 换端点）；其余 = 请求根本没发出去（查基址）。 */
+  function sendFailureLine(e) {
+    if (isTimeoutLike(e)) return '请求发出去了，但 15 秒内没有回应（超时）—— 检查网络，或换个端点再试。';
+    return '请求没有发出去（未到达任何服务器）。';
+  }
+
+  function pageOrigin() {
+    try {
+      if (typeof location === 'undefined' || !location || !location.href) return null;
+      var u = new URL(location.href);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;   // file:// 也算拿不到
+      return u.origin;
+    } catch (e) { return null; }
+  }
+
+  function isCrossOriginTarget(url) {
+    try {
+      var u = new URL(String(url));                 // 必须是绝对地址；相对地址 new URL 会抛
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+      var origin = pageOrigin();                    // null = 拿不到本页地址（Node 测试环境 / file://）
+      return origin ? u.origin !== origin : true;   // 拿不到本页地址时，绝对 http(s) 目标一律当跨域
+    } catch (e) { return false; }
+  }
+
+  /* 只写「标准 dashscope 端点」和路径段，不写完整域名（静态扫描禁百炼地址字面量）。 */
+  var CORS_HINT = '该端点可能不支持浏览器直连（CORS），请换用标准 dashscope 端点（…/compatible-mode/v1）。';
+
+  /** 归一化基址：去首尾空白类字符，中文输入法全角标点（：／）→ 半角，去尾部斜杠。 */
+  function normalizeBase(raw) {
+    var s = String(raw == null ? '' : raw);
+    // 首尾：普通空白、零宽字符(U+200B/200C/200D)、BOM(U+FEFF)、不换行空格(U+00A0)、全角空格(U+3000)
+    s = s.replace(/^[\s\u200b\u200c\u200d\ufeff\u00a0\u3000]+/, '')
+      .replace(/[\s\u200b\u200c\u200d\ufeff\u00a0\u3000]+$/, '');
+    // 中文输入法全角标点 → 半角
+    s = s.replace(/\uff1a/g, ':').replace(/\uff0f/g, '/');
+    // 沿用原 currentBase 的行为：去尾部斜杠
+    s = s.replace(/\/+$/, '');
+    return s;
+  }
+
   function currentBase() {
-    var raw = baseInput ? String(baseInput.value || '') : '';
-    raw = raw.replace(/\/+$/, '');
-    if (raw) return raw;
-    return PRESET ? PRESET.base : '';
+    var base = normalizeBase(baseInput ? baseInput.value : '');
+    if (!base) base = PRESET ? PRESET.base : '';
+    /* 归一化/回退结果与原值不同时写回输入框，让家长看到被修正的结果（doSave 调用同样受益）。 */
+    if (baseInput && String(baseInput.value) !== base) baseInput.value = base;
+    return base;
+  }
+
+  /** 是否为绝对 http(s) 地址（含 host）。相对地址、全角冒号地址都会在这里被拦下。 */
+  function isAbsoluteHttpUrl(s) {
+    s = String(s == null ? '' : s);
+    if (!/^https?:\/\//i.test(s)) return false;
+    try {
+      var u = new URL(s);
+      return !!u.host && (u.protocol === 'http:' || u.protocol === 'https:');
+    } catch (e) { return false; }
   }
 
   function currentModel() {
@@ -181,49 +272,75 @@
     var model = currentModel();
 
     if (!base) { setTestStatus('基址为空，请先在「高级（家长）」里填写。'); return; }
+    if (!isAbsoluteHttpUrl(base)) {
+      setTestStatus('基址要以 https:// 开头（形如 https://<域名>/compatible-mode/v1）。现在填的是：' + base + '\n请求没有发出去。');
+      return;
+    }
     if (!key) { setTestStatus('请先填入 API Key 再测试。'); return; }
     if (!model) { setTestStatus('模型为空，请先选择或填写模型。'); return; }
 
     var auth = { Authorization: 'Bearer ' + key };
     var modelsUrl = base + '/models';
+    var step1Prefix = '第 1 步 GET ' + modelsUrl;
 
     setTestStatus('正在测试第 1 步：GET ' + modelsUrl + ' …');
     var res1;
     try {
       res1 = await fetch(modelsUrl, { method: 'GET', headers: auth, signal: timeoutSignal() });
     } catch (e) {
-      setTestStatus('第 1 步 GET ' + modelsUrl + ' 请求失败：' + errText(e));
+      setTestStatus([
+        step1Prefix + ' 请求失败：' + errText(e),
+        sendFailureLine(e),
+        (isNetworkErrorLike(e) && isCrossOriginTarget(modelsUrl)) ? CORS_HINT : ''
+      ].filter(Boolean).join('\n'));
       return;
     }
 
     if (!res1.ok) {
       var badBody = await readBody(res1, 300);
-      setTestStatus('第 1 步 GET ' + modelsUrl + ' 返回 HTTP ' + res1.status + '\n' + badBody);
+      setTestStatus([
+        step1Prefix + ' 返回 HTTP ' + res1.status + httpHint(res1.status),
+        '服务端原文：' + badBody,
+        actualUrlNote(res1, modelsUrl)
+      ].filter(Boolean).join('\n'));
       return;
     }
 
     var read1 = await readFull(res1);
     if (!read1.ok) {
-      setTestStatus('第 1 步 GET ' + modelsUrl + ' 返回 HTTP ' + res1.status + '，' + read1.text);
+      setTestStatus([
+        step1Prefix + ' 返回 HTTP ' + res1.status + '，' + read1.text,
+        actualUrlNote(res1, modelsUrl)
+      ].filter(Boolean).join('\n'));
       return;
     }
     var body1 = read1.text;
     var data1 = null;
     try { data1 = JSON.parse(body1); } catch (e) { data1 = null; }
     if (!data1) {
-      setTestStatus('第 1 步 GET ' + modelsUrl + ' 返回 HTTP 200，但响应不是 JSON：\n' + truncate(body1, 300));
+      setTestStatus([
+        step1Prefix + ' 返回 HTTP 200，但响应不是 JSON：',
+        truncate(body1, 300),
+        actualUrlNote(res1, modelsUrl)
+      ].filter(Boolean).join('\n'));
       return;
     }
     var list = (data1 && Array.isArray(data1.data)) ? data1.data
       : (data1 && Array.isArray(data1.models)) ? data1.models
         : Array.isArray(data1) ? data1 : null;
     if (!list) {
-      setTestStatus('第 1 步 GET ' + modelsUrl + ' 返回 HTTP 200，但没列出模型：\n' + truncate(body1, 300));
+      setTestStatus([
+        step1Prefix + ' 返回 HTTP 200，但没列出模型：',
+        truncate(body1, 300),
+        actualUrlNote(res1, modelsUrl)
+      ].filter(Boolean).join('\n'));
       return;
     }
 
     var chatUrl = base + '/chat/completions';
-    setTestStatus('第 1 步通过（' + list.length + ' 个模型）。\n正在测试第 2 步：POST ' + chatUrl + ' （模型 ' + model + '）…');
+    var step1Done = '第 1 步通过（' + list.length + ' 个模型）。';
+    var step2Prefix = '第 2 步 POST ' + chatUrl;
+    setTestStatus(step1Done + '\n正在测试第 2 步：POST ' + chatUrl + ' （模型 ' + model + '）…');
     var started = (typeof Date !== 'undefined' && Date.now) ? Date.now() : 0;
     var res2;
     try {
@@ -238,26 +355,45 @@
         signal: timeoutSignal()
       });
     } catch (e) {
-      setTestStatus('第 1 步通过（' + list.length + ' 个模型）。\n第 2 步 POST ' + chatUrl + ' 请求失败：' + errText(e));
+      setTestStatus([
+        step1Done,
+        step2Prefix + ' 请求失败：' + errText(e),
+        sendFailureLine(e),
+        (isNetworkErrorLike(e) && isCrossOriginTarget(chatUrl)) ? CORS_HINT : ''
+      ].filter(Boolean).join('\n'));
       return;
     }
 
     var elapsed = (typeof Date !== 'undefined' && Date.now) ? (Date.now() - started) : 0;
     var read2 = await readFull(res2);
     if (!read2.ok) {
-      setTestStatus('第 1 步通过（' + list.length + ' 个模型）。\n第 2 步 POST ' + chatUrl + ' 返回 HTTP ' + res2.status + '，' + read2.text);
+      setTestStatus([
+        step1Done,
+        step2Prefix + ' 返回 HTTP ' + res2.status + '，' + read2.text,
+        actualUrlNote(res2, chatUrl)
+      ].filter(Boolean).join('\n'));
       return;
     }
     var body2 = read2.text;
     if (!res2.ok) {
-      setTestStatus('第 1 步通过（' + list.length + ' 个模型）。\n第 2 步 POST ' + chatUrl + ' 返回 HTTP ' + res2.status + '\n' + truncate(body2, 300));
+      setTestStatus([
+        step1Done,
+        step2Prefix + ' 返回 HTTP ' + res2.status + httpHint(res2.status),
+        '服务端原文：' + truncate(body2, 300),
+        actualUrlNote(res2, chatUrl)
+      ].filter(Boolean).join('\n'));
       return;
     }
 
     var data2 = null;
     try { data2 = JSON.parse(body2); } catch (e) { data2 = null; }
     if (!data2) {
-      setTestStatus('第 1 步通过（' + list.length + ' 个模型）。\n第 2 步返回 HTTP 200，但响应不是 JSON：\n' + truncate(body2, 300));
+      setTestStatus([
+        step1Done,
+        '第 2 步返回 HTTP 200，但响应不是 JSON：',
+        truncate(body2, 300),
+        actualUrlNote(res2, chatUrl)
+      ].filter(Boolean).join('\n'));
       return;
     }
     var choice = data2.choices && data2.choices[0];
