@@ -67,6 +67,9 @@
       if (String(status) === '429') {
         return 'AI 老师的额度用完了（429），重试也没用 —— 请让家长点右上角「设置」看看用量或换一次密钥。';
       }
+      if (String(status) === '403') {
+        return 'AI 老师的这个模型用不了了（403），重试也没用 —— 请让家长点右上角「设置」看看免费额度、余额，或这个模型有没有开通。';
+      }
       /* 错误码只允许三位数字（/^\d{3}$/），不合法就不写错误码 —— 不把任何字符串拼进去 */
       const code = /^\d{3}$/.test(String(status)) ? '（错误码 ' + status + '）' : '';
       return 'AI 服务这边出了点问题' + code + '，请点「再问一次」重试。';
@@ -104,7 +107,7 @@
     if (typeof fetch !== 'function') return Promise.reject(_markFail(new Error('fetch 不可用'), 'network'));
     return _postChatOnce(body).catch(function (err) {
       if (err && err.reason === 'http' && typeof err.httpStatus === 'number'
-          && err.httpStatus >= 400 && err.httpStatus < 500 && err.httpStatus !== 401 && err.httpStatus !== 429
+          && err.httpStatus >= 400 && err.httpStatus < 500 && err.httpStatus !== 401 && err.httpStatus !== 429 && err.httpStatus !== 403
           && body && body.response_format) {
         const relaxed = Object.assign({}, body);
         delete relaxed.response_format;

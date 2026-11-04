@@ -417,6 +417,34 @@ test('追问 429：不触发宽松重试（fetch 只打一次），气泡含 429
   }
 });
 
+/* ------------------------------------------------------------ 4c. 追问 403 不触发宽松重试 + 文案指向设置 */
+test('追问 403：不触发宽松重试（fetch 只打 1 次），气泡含额度/余额/开通，不含 Free quota/URL/Error，页面零报错', async function () {
+  setMock(function () {
+    return { status: 403, body: { error: 'Free quota exhausted. To continue accessing the model on a paid basis, please add funds' }, delay: 0 };
+  });
+  const cdp = await openBrowser();
+  try {
+    await gotoAsk(cdp);
+    await typeAndAsk(cdp, '什么叫移项？');
+    await until(function () { return cdp.eval('!!document.querySelector(".ask-a.offline")'); }, '403 离线气泡出现');
+    /* 403 不得触发宽松降级重试：追问请求只发 1 次（改前会是 2 次，因为追问带 response_format）。
+     * 这条放在文案断言之前，确保改前能贴出 length=2 的红证据。 */
+    const ab = askBodies();
+    assert.strictEqual(ab.length, 1, '403 不应触发降级重试，追问请求次数应为 1，实际 ' + ab.length);
+    assert.ok(ab[0].response_format, '首次追问应带 response_format（证明前提成立）');
+    const v = await lastBubble(cdp);
+    assert.ok(v && v.text, '离线气泡应有文案');
+    assert.ok(v.text.indexOf('额度') >= 0 || v.text.indexOf('余额') >= 0 || v.text.indexOf('开通') >= 0,
+      '403 气泡文案应含「额度」或「余额」或「开通」之一：' + v.text);
+    assert.ok(!/Free quota|http:\/\/|127\.0\.0\.1|Error/.test(v.text),
+      '403 气泡文案不应含 Free quota/URL/Error：' + v.text);
+    const errs = await pageErrors(cdp);
+    assert.deepStrictEqual(errs, [], '页面零报错');
+  } finally {
+    guard.kill(chrome); chrome = null;
+  }
+});
+
 /* ------------------------------------------------------------ 5. 纯函数级：noticeFor 各 reason 文案不同 */
 const E = require('../diagnose/engine.js');
 const F = require('../diagnose/funclab.js');
@@ -506,6 +534,33 @@ test('noticeFor 分档：401/429 指向家长换 key，llm 拆成 truncated/badj
   /* 都不得泄漏 Error/URL，也不得拼进任何字符串 */
   all.forEach(function (t) {
     assert.ok(!/Error|https?:\/\//.test(t), '文案不得含 Error/URL：' + t);
+  });
+});
+
+test('noticeFor 403：含额度/余额/开通、含设置、错误码只 403、不含英文/URL/Free quota、与 401/429/500 通用句两两不同', function () {
+  const X = loadExplain();
+  const n403 = X._noticeFor('http', 403);
+  /* 含「额度」或「余额」或「开通」之一 */
+  assert.ok(n403.indexOf('额度') >= 0 || n403.indexOf('余额') >= 0 || n403.indexOf('开通') >= 0,
+    '403 文案应含「额度」或「余额」或「开通」之一：' + n403);
+  /* 含「设置」 */
+  assert.ok(n403.indexOf('设置') >= 0, '403 文案应含「设置」：' + n403);
+  /* 含 403 */
+  assert.ok(n403.indexOf('403') >= 0, '403 文案应含 403：' + n403);
+  /* 错误码只能是 403：去掉 403 后不应有其它三位数字 */
+  const stripped = String(n403).replace(/403/g, '');
+  assert.ok(!/\d{3}/.test(stripped), '403 文案不应含 403 以外的三位数字：' + n403);
+  /* 不含 3+ 连续字母的英文单词（AI 这种 2 字母缩写允许）、不含 Error/URL/127.0.0.1/Free quota */
+  assert.ok(!/[A-Za-z]{3,}/.test(n403), '403 文案不应含 3+ 连续字母的英文单词：' + n403);
+  assert.ok(!/Error|https?:\/\//.test(n403), '403 文案不应含 Error/URL：' + n403);
+  assert.ok(!/127\.0\.0\.1/.test(n403), '403 文案不应含 127.0.0.1：' + n403);
+  assert.ok(!/Free quota/.test(n403), '403 文案不应含 Free quota：' + n403);
+  /* 与 401 / 429 / 500 通用句两两不同 */
+  const n401 = X._noticeFor('http', 401);
+  const n429 = X._noticeFor('http', 429);
+  const n500 = X._noticeFor('http', 500);
+  [n401, n429, n500].forEach(function (other) {
+    assert.notStrictEqual(n403, other, '403 文案应与其它档不同：' + n403 + ' vs ' + other);
   });
 });
 
