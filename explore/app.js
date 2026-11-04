@@ -381,6 +381,16 @@
     toggle.textContent = '知识点目录';
   }
 
+  /* 窄屏把详情面板排到图下方，选中后要把它带进视口；桌面三栏本来就并排可见，不动。 */
+  function revealDetailOnMobile() {
+    if (!window.matchMedia('(max-width: 900px)').matches) return;
+    var detail = $('detail');
+    if (!detail || typeof detail.scrollIntoView !== 'function') return;
+    var top = detail.getBoundingClientRect().top;
+    if (top >= 0 && top <= 2) return;
+    detail.scrollIntoView({ block: 'start' });
+  }
+
   function recomputeAliasHits() {
     aliasHitIds = new Set();
     if (query.length < 2) return;
@@ -988,6 +998,8 @@
     highlight(true);
     renderDetail();
     if (!same) renderGraph();
+    /* 重复选中同一节点完全不动：只有真正换了选中项才把窄屏详情带进视口。 */
+    if (!same) revealDetailOnMobile();
   }
 
   function zoomBy(factor) {
