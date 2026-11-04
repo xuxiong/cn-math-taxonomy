@@ -120,12 +120,18 @@
 
   /** 详情索引：<subject>|<grade>|<chapter> → <slug>.json。每次页面加载只请求一次，内存缓存。 */
   function ensureDetailIndex() {
-    if (detailIndexCache[subject]) return detailIndexCache[subject];
-    detailIndexCache[subject] = fetch('../data/questions-index/' + subject + '.json').then(function (response) {
+    var key = subject; /* 失败回调异步执行，按发起时的学科清缓存 */
+    if (detailIndexCache[key]) return detailIndexCache[key];
+    var promise = fetch('../data/questions-index/' + key + '.json').then(function (response) {
       if (!response.ok) throw new Error('题库索引 ' + response.status);
       return response.json();
+    }).catch(function (error) {
+      /* 失败不能当成功缓存：清掉本次 promise，下次点详情重新请求；错误继续抛给调用方。 */
+      if (detailIndexCache[key] === promise) delete detailIndexCache[key];
+      throw error;
     });
-    return detailIndexCache[subject];
+    detailIndexCache[key] = promise;
+    return promise;
   }
 
   /** 由 lite 行算 (学科,年级,章节) 的索引 key（与 build-questions-split 的 keyOf 同构）。 */
@@ -135,13 +141,16 @@
 
   /** 取某 (学科,年级,章节) 的重字段 bundle，按 slug 缓存。 */
   function fetchDetailBundle(slug) {
-    if (!detailBundleCache[slug]) {
-      detailBundleCache[slug] = fetch('../data/topics-detail/' + slug).then(function (response) {
-        if (!response.ok) throw new Error('详情 ' + response.status);
-        return response.json();
-      });
-    }
-    return detailBundleCache[slug];
+    if (detailBundleCache[slug]) return detailBundleCache[slug];
+    var promise = fetch('../data/topics-detail/' + slug).then(function (response) {
+      if (!response.ok) throw new Error('详情 ' + response.status);
+      return response.json();
+    }).catch(function (error) {
+      if (detailBundleCache[slug] === promise) delete detailBundleCache[slug];
+      throw error;
+    });
+    detailBundleCache[slug] = promise;
+    return promise;
   }
 
   /** 取某 (学科,年级,章节) 的样题 bundle，按 slug 缓存。 */
@@ -200,6 +209,7 @@
         }
         if (!heavy) return;
         topic.__detail = true;
+        delete topic.__detailFailed;
         ['description', 'mastery_criteria', 'diagnostic_question', 'standards', 'root_reason', 'mathLinks'].forEach(function (field) {
           if (field in heavy) topic[field] = heavy[field];
         });
@@ -207,7 +217,13 @@
       });
     }).then(function () {
       if (topic && topic.__detail) { renderDetail(); loadQuestionsFor(topic); }
-    }).catch(function () { /* 任何失败都静默，保留 lite 面板 */ });
+    }).catch(function () {
+      /* 任何失败都静默，保留 lite 面板；只留一个可重试标记（再点同一节点会重新进来）。 */
+      if (topic) {
+        topic.__detailFailed = true;
+        try { renderDetail(true); } catch (e) { /* 只重绘提示；重绘失败也不再向外抛 */ }
+      }
+    });
   }
 
   /** 渲染库（cytoscape + dagre + 布局）按需加载：用 explore 页已有的 Lazy.load 注入。 */
@@ -528,7 +544,7 @@
     return el('div', { class: wide ? 'span-2' : '' }, el('dt', { text: label }), el('dd', { text: value || '—' }));
   }
 
-  function renderDetail() {
+  function renderDetail(skipDetailLoad) {
     var box = $('detail');
     if (!selected || !byId.has(selected)) {
       box.replaceChildren(el('div', { class: 'detail-empty' },
@@ -562,6 +578,7 @@
       metaItem('类型', TYPE_ZH[topic.type] || topic.type),
       metaItem('章节', topic.chapter, true)));
     if (topic.description) parts.push(el('p', { class: 'desc', text: topic.description }));
+    if (!topic.__detail && topic.__detailFailed) parts.push(el('p', { class: 'muted', text: '介绍加载失败，再点一下这个知识点可重试' }));
     if (topic.root_reason) parts.push(el('p', { class: 'root-reason', text: topic.root_reason }));
 
     if (topic.mastery_criteria && topic.mastery_criteria.length) {
@@ -619,7 +636,7 @@
 
     box.replaceChildren.apply(box, parts);
     document.title = topic.name + ' · 知识图谱';
-    if (topic && !topic.__detail) ensureDetail(topic);
+    if (topic && !topic.__detail && !skipDetailLoad) ensureDetail(topic);
   }
 
   function upstream(id, depth) {
