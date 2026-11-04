@@ -431,9 +431,10 @@ function setupSettingsEnv(opts) {
     removeItem: function (k) { delete lsMap[k]; }
   };
 
-  /* 2. 假 document + 假元素 */
+  /* 2. 假 document + 假元素（含 t_bf4135e6 新增的 effective-model「当前生效模型」行） */
   const ids = ['preset-select', 'preset-label', 'model-select', 'api-key', 'toggle-key', 'test-btn',
-    'save-btn', 'saved-line', 'saved-tail', 'clear-btn', 'base-input', 'custom-model', 'status'];
+    'save-btn', 'saved-line', 'saved-tail', 'clear-btn', 'base-input', 'custom-model', 'status',
+    'effective-model'];
   const elements = {};
   for (const id of ids) elements[id] = makeFakeEl();
   const hadDoc = Object.prototype.hasOwnProperty.call(global, 'document');
@@ -450,10 +451,11 @@ function setupSettingsEnv(opts) {
 
   /* 3b. 假 location：doSave 成功路径会 setTimeout(location.href = 'index.html')，
    *     不给假 location 会在 restore 之后抛 ReferenceError（unhandled）。
-   *     这里给一个空壳，setTimeout 改 href 只是设属性，不跳转。 */
+   *     这里给一个空壳，setTimeout 改 href 只是设属性，不跳转。
+   *     t_bf4135e6：支持 opts.location 覆盖（如 {href:'', search:'?llm=…'}），默认仍是 {href:''}。 */
   const hadLoc = Object.prototype.hasOwnProperty.call(global, 'location');
   const prevLoc = global.location;
-  global.location = { href: '' };
+  global.location = opts.location || { href: '' };
 
   /* 4. globalThis.LLMConfig：用上面的假 localStorage 重新加载 llm-config.js */
   delete require.cache[require.resolve(CONFIG_PATH)];
@@ -471,6 +473,8 @@ function setupSettingsEnv(opts) {
   return {
     elements: elements,
     cfg: cfg,
+    /* t_bf4135e6：setItem 调用记录（「没写盘」断言用），只记存储键名、不记值。 */
+    lsWrites: saved,
     restore: function () {
       if (hadLS) global.localStorage = prevLS; else delete global.localStorage;
       if (hadDoc) global.document = prevDoc; else delete global.document;
@@ -1061,6 +1065,206 @@ asyncTest('testConnection 第 2 步 POST 超时：同样说请求发出去了但
   } finally {
     env.restore();
   }
+});
+
+/* ================================================================
+ * 11. 预设识别与 key 隔离（kanban t_bf4135e6）
+ *     a) 预设识别：base 命中优先，否则按已保存 model 认厂商（自定义基址不再误导家长）；
+ *     b) 切厂商隔离 key：只存内存，清空/恢复有提示，不落盘、不进日志/URL；
+ *     c) 「预设」重复行合并为「服务商 · 当前生效模型」一行。
+ * ================================================================ */
+
+console.log('\n--- 预设识别与 key 隔离（kanban t_bf4135e6）---');
+
+test('a-1 已保存 base=自定义端点 + model=deepseek 默认型号 → 按 model 认出 deepseek，下拉选中真实生效值', () => {
+  const PRESETS = loadFresh().PRESETS;
+  const customBase = 'http://127.0.0.1:9303/v1';
+  const saved = { base: customBase, model: PRESETS.deepseek.model, key: 'sk-saved-1234567890' };
+  const env = setupSettingsEnv({ savedConfig: saved, fetchImpl: makeFetchForTestConnection({ ok2: true }) });
+  try {
+    assert.strictEqual(env.elements['preset-select'].value, 'deepseek',
+      '自定义基址匹配不上预设，但已保存 model 应认出 deepseek');
+    assert.deepStrictEqual(optionValues(env.elements['model-select']), PRESETS.deepseek.altModels,
+      '模型下拉应是 deepseek 的 altModels');
+    assert.strictEqual(env.elements['model-select'].value, PRESETS.deepseek.model,
+      '下拉应直接选中真实生效型号，而不是把真值藏在「自定义模型名」里');
+    assert.strictEqual(env.elements['custom-model'].value, '',
+      '型号在下拉里找得到时，「自定义模型名」应为空（下拉选中值 = 真实生效值）');
+    assert.strictEqual(env.elements['base-input'].value, customBase,
+      '已保存 base 仍盖过预设默认基址（localStorage > 预设默认）');
+    assert.deepStrictEqual(env.cfg.getConfig(), saved, '页面加载不得改写已保存配置');
+    assert.strictEqual(env.lsWrites.length, 0, '页面加载不应有任何写盘动作');
+  } finally {
+    env.restore();
+  }
+});
+
+test('a-2 已保存 model 命中 altModels 非默认型号（自定义基址）→ 仍选 deepseek 且下拉选中该型号', () => {
+  const PRESETS = loadFresh().PRESETS;
+  const altModel = PRESETS.deepseek.altModels[1];
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'http://127.0.0.1:9303/v1', model: altModel, key: 'sk-saved-1234567890' },
+    fetchImpl: makeFetchForTestConnection({ ok2: true })
+  });
+  try {
+    assert.strictEqual(env.elements['preset-select'].value, 'deepseek');
+    assert.strictEqual(env.elements['model-select'].value, altModel,
+      '下拉应选中已保存的 altModels 型号');
+    assert.strictEqual(env.elements['custom-model'].value, '');
+  } finally {
+    env.restore();
+  }
+});
+
+test('a-3 base 与 model 指向不同预设 → base 优先定厂商，已保存型号补进下拉并选中', () => {
+  const PRESETS = loadFresh().PRESETS;
+  const env = setupSettingsEnv({
+    savedConfig: { base: PRESETS.dashscope.base, model: PRESETS.deepseek.model, key: 'sk-saved-1234567890' },
+    fetchImpl: makeFetchForTestConnection({ ok2: true })
+  });
+  try {
+    assert.strictEqual(env.elements['preset-select'].value, 'dashscope', 'base 命中应优先于 model 命中');
+    assert.strictEqual(env.elements['model-select'].value, PRESETS.deepseek.model,
+      '已保存型号应补进下拉并选中，不再显示与真实生效值无关的预设默认型号');
+    assert.strictEqual(env.elements['custom-model'].value, PRESETS.deepseek.model,
+      '旧行为保持：customModel 仍持有已保存型号（currentModel() 不变）');
+  } finally {
+    env.restore();
+  }
+});
+
+test('a-4 base 与 model 都不命中任何预设 → 回默认 dashscope，自定义型号补进下拉，生效模型行显示它', () => {
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'https://my-proxy.example.com/v1', model: 'm-custom-x', key: 'sk-saved-1234567890' },
+    fetchImpl: makeFetchForTestConnection({ ok2: true })
+  });
+  try {
+    assert.strictEqual(env.elements['preset-select'].value, 'dashscope');
+    assert.strictEqual(env.elements['model-select'].value, 'm-custom-x');
+    assert.ok(env.elements['effective-model'].textContent.indexOf('m-custom-x') >= 0,
+      '「当前生效模型」应显示 m-custom-x，实际：' + env.elements['effective-model'].textContent);
+  } finally {
+    env.restore();
+  }
+});
+
+test('a-5 ?llm= 仍最优先覆盖基址；预设识别按已保存 model 认出厂商，且不改写已存配置', () => {
+  const PRESETS = loadFresh().PRESETS;
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'https://saved.test/v1', model: PRESETS.deepseek.model, key: 'sk-saved-1234567890' },
+    fetchImpl: makeFetchForTestConnection({ ok2: true }),
+    location: { href: '', search: '?llm=' + encodeURIComponent('https://q.test/v1') }
+  });
+  try {
+    assert.strictEqual(env.elements['base-input'].value, 'https://q.test/v1',
+      '?llm= 应赢得基址（覆盖链最优先）');
+    assert.strictEqual(env.elements['preset-select'].value, 'deepseek',
+      '预设识别按已保存 model 认出 deepseek（?llm= 不参与识别）');
+    assert.strictEqual(env.elements['model-select'].value, PRESETS.deepseek.model);
+    assert.strictEqual(env.cfg.getConfig().base, 'https://saved.test/v1',
+      '已保存 base 未被 ?llm= 改写');
+  } finally {
+    env.restore();
+  }
+});
+
+test('b-6 切厂商清空 key 输入框，提示填该厂商的 key，状态串不回显旧 key', () => {
+  const env = setupSettingsEnv({ savedConfig: null, fetchImpl: makeFetchForTestConnection({ ok2: true }) });
+  try {
+    env.elements['api-key'].value = 'k-dash-1234567890';
+    selectPreset(env.elements, 'deepseek');
+    assert.strictEqual(env.elements['api-key'].value, '', '切厂商后 key 输入框应清空');
+    const s = env.elements.status.textContent;
+    assert.ok(s.indexOf('已切换到 ' + env.cfg.PRESETS.deepseek.label + '，请填入该厂商的 API Key') >= 0,
+      '提示文案应一字不差：\n' + s);
+    assert.ok(s.indexOf('k-dash-1234567890') < 0, '状态串不得回显旧 key：\n' + s);
+  } finally {
+    env.restore();
+  }
+});
+
+asyncTest('b-7 承接 b-6：切厂商后直接点「测试连接」→ 不发任何 fetch，提示先填 API Key', async () => {
+  const fetchImpl = makeFetchForTestConnection({ ok2: true });
+  const env = setupSettingsEnv({ savedConfig: null, fetchImpl: fetchImpl });
+  try {
+    env.elements['api-key'].value = 'k-dash-1234567890';
+    selectPreset(env.elements, 'deepseek');
+    env.elements['test-btn'].click();
+    await waitForStatus(env.elements, function (t) { return t.indexOf('请先填入 API Key') >= 0; });
+    assert.strictEqual(fetchImpl.calls.length, 0,
+      '不许拿一家厂商的 key 打另一家，一个 fetch 都不该发出去');
+    const s = env.elements.status.textContent;
+    assert.ok(s.indexOf('请先填入 API Key') >= 0, '应提示先填 key：\n' + s);
+  } finally {
+    env.restore();
+  }
+});
+
+test('b-8 承接 b-6：切回 dashscope 恢复原 key，状态含「已恢复」', () => {
+  const env = setupSettingsEnv({ savedConfig: null, fetchImpl: makeFetchForTestConnection({ ok2: true }) });
+  try {
+    env.elements['api-key'].value = 'k-dash-1234567890';
+    selectPreset(env.elements, 'deepseek');
+    selectPreset(env.elements, 'dashscope');
+    assert.strictEqual(env.elements['api-key'].value, 'k-dash-1234567890', '原 key 应放回输入框');
+    const s = env.elements.status.textContent;
+    assert.ok(s.indexOf('已恢复') >= 0, '应提示已恢复该厂商的 key：\n' + s);
+  } finally {
+    env.restore();
+  }
+});
+
+test('b-9 同厂商内重选同一项不丢 key', () => {
+  const env = setupSettingsEnv({ savedConfig: null, fetchImpl: makeFetchForTestConnection({ ok2: true }) });
+  try {
+    env.elements['api-key'].value = 'k-dash-1234567890';
+    const sel = env.elements['preset-select'];
+    sel.value = 'dashscope';
+    sel.fire('change');
+    assert.strictEqual(env.elements['api-key'].value, 'k-dash-1234567890', '同厂商重选不应丢 key');
+  } finally {
+    env.restore();
+  }
+});
+
+test('b-10 三厂商来回切：key 各自隔离、只在内存（全程不落盘）', () => {
+  const env = setupSettingsEnv({ savedConfig: null, fetchImpl: makeFetchForTestConnection({ ok2: true }) });
+  try {
+    const keyA = 'k-dash-AAA-1234567890';
+    const keyB = 'k-deep-BBB-1234567890';
+    env.elements['api-key'].value = keyA;               /* dashscope 填 keyA */
+    selectPreset(env.elements, 'deepseek');
+    env.elements['api-key'].value = keyB;               /* deepseek 填 keyB */
+    selectPreset(env.elements, 'siliconflow');           /* siliconflow 没填 */
+    assert.strictEqual(env.elements['api-key'].value, '', '没填过 key 的厂商应为空');
+    assert.ok(env.elements.status.textContent.indexOf('请填入该厂商的 API Key') >= 0,
+      '应提示填新厂商的 key：\n' + env.elements.status.textContent);
+    selectPreset(env.elements, 'dashscope');
+    assert.strictEqual(env.elements['api-key'].value, keyA, '切回 dashscope 应得 keyA');
+    selectPreset(env.elements, 'deepseek');
+    assert.strictEqual(env.elements['api-key'].value, keyB, '切回 deepseek 应得 keyB');
+    selectPreset(env.elements, 'siliconflow');
+    assert.strictEqual(env.elements['api-key'].value, '', '再次切到 siliconflow 仍为空');
+    assert.strictEqual(env.lsWrites.length, 0, 'key 只存内存，全程不得写盘');
+  } finally {
+    env.restore();
+  }
+});
+
+test('b-11 静态扫描：settings.js 不含 console./持久化存储/cookie 字样（key 不进日志/存储）', () => {
+  const text = fs.readFileSync(SETTINGS_PATH, 'utf8');
+  ['console.', 'localStorage', 'sessionStorage', 'document.cookie'].forEach(function (lit) {
+    assert.ok(text.indexOf(lit) < 0,
+      'diagnose/settings.js 不应含「' + lit + '」—— key 不得进日志/持久化存储/cookie（注释里也别写这些词）');
+  });
+});
+
+test('c-12 静态扫描：settings.html 合并状态行含 effective-model，旧的「预设」重复行已删', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'diagnose', 'settings.html'), 'utf8');
+  assert.ok(html.indexOf('id="effective-model"') >= 0,
+    '应含 id="effective-model"（当前生效模型展示）');
+  assert.ok(html.indexOf('<span class="settings-label">预设</span>') < 0,
+    '不应再有与「服务商」下拉信息重复的旧「预设」标签行');
 });
 
 /* ================================================================
