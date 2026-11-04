@@ -814,6 +814,50 @@ asyncTest('testConnection 第 2 步 POST 返回 403：状态串含 res2.url', as
   }
 });
 
+asyncTest('testConnection 超时（AbortError）：说请求发出去了但没回应，不说「没有发出去」', async () => {
+  /* timeoutSignal() 15s 后 abort，fetch 抛 AbortError —— 请求其实已发出、只是没等到回应，
+   * 不能说「请求没有发出去」（那会让家长去查基址而不是查网络/换端点）。 */
+  const abortErr = new Error('The operation was aborted.');
+  abortErr.name = 'AbortError';
+  const fetchImpl = makeFetchForTestConnection({ throw1: true, throw1Error: abortErr });
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'https://t.test/v1', model: PRESET.model, key: 'k-saved-1234567890' },
+    fetchImpl: fetchImpl
+  });
+  try {
+    env.elements['test-btn'].click();
+    await waitForStatus(env.elements, function (t) { return t.indexOf('请求失败') >= 0; });
+    const s = env.elements.status.textContent;
+    assert.ok(s.indexOf('请求发出去了，但 15 秒内没有回应（超时）') >= 0,
+      '超时应说「请求发出去了，但 15 秒内没有回应（超时）」：\n' + s);
+    assert.ok(s.indexOf('请求没有发出去') < 0,
+      '超时时请求其实已发出，不应说「请求没有发出去」：\n' + s);
+    assert.ok(s.indexOf('CORS') < 0,
+      '超时不是 CORS 拦截，不应出现 CORS 提示：\n' + s);
+  } finally {
+    env.restore();
+  }
+});
+
+asyncTest('testConnection 第 2 步 POST 超时：同样说请求发出去了但没回应', async () => {
+  const abortErr = new Error('The operation was aborted.');
+  abortErr.name = 'AbortError';
+  const fetchImpl = makeFetchForTestConnection({ throw2: true, throw2Error: abortErr });
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'https://t.test/v1', model: PRESET.model, key: 'k-saved-1234567890' },
+    fetchImpl: fetchImpl
+  });
+  try {
+    env.elements['test-btn'].click();
+    await waitForStatus(env.elements, function (t) { return t.indexOf('请求失败') >= 0; });
+    const s = env.elements.status.textContent;
+    assert.ok(s.indexOf('请求发出去了') >= 0, '第 2 步超时应说「请求发出去了」：\n' + s);
+    assert.ok(s.indexOf('请求没有发出去') < 0, '第 2 步超时不应说「请求没有发出去」：\n' + s);
+  } finally {
+    env.restore();
+  }
+});
+
 /* ================================================================
  * 收尾：先跑完同步用例（已在文件加载时执行），再顺序跑异步用例，最后合并打印总数。
  * 异步用例的输出格式与同步用例一致（  ok   /  FAIL ），不破坏既有计数。

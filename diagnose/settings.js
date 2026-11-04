@@ -111,6 +111,24 @@
     return msg.indexOf('Failed to fetch') >= 0;
   }
 
+  /** 超时特征：timeoutSignal() 到 15s 会 abort，fetch 抛 AbortError / TimeoutError ——
+   *  此时请求其实已经发出、只是没等到回应，不能说「没有发出去」。
+   *  兜底匹配 message（老浏览器 / 不同措辞，如 abort() 的 "The operation was aborted"）。 */
+  function isTimeoutLike(e) {
+    if (!e) return false;
+    var name = String(e.name || '');
+    if (name === 'AbortError' || name === 'TimeoutError') return true;   // AbortSignal.timeout / AbortController.abort
+    var msg = String(e.message == null ? e : e.message);
+    return /aborted|timeout|timed out/i.test(msg);                        // 兜底：老浏览器 / 不同措辞
+  }
+
+  /** fetch 抛错时的一句人话，第 1 步 / 第 2 步共用：
+   *  超时 = 请求已发出但 15 秒没等到回应（查网络 / 换端点）；其余 = 请求根本没发出去（查基址）。 */
+  function sendFailureLine(e) {
+    if (isTimeoutLike(e)) return '请求发出去了，但 15 秒内没有回应（超时）—— 检查网络，或换个端点再试。';
+    return '请求没有发出去（未到达任何服务器）。';
+  }
+
   function pageOrigin() {
     try {
       if (typeof location === 'undefined' || !location || !location.href) return null;
@@ -272,7 +290,7 @@
     } catch (e) {
       setTestStatus([
         step1Prefix + ' 请求失败：' + errText(e),
-        '请求没有发出去（未到达任何服务器）。',
+        sendFailureLine(e),
         (isNetworkErrorLike(e) && isCrossOriginTarget(modelsUrl)) ? CORS_HINT : ''
       ].filter(Boolean).join('\n'));
       return;
@@ -340,7 +358,7 @@
       setTestStatus([
         step1Done,
         step2Prefix + ' 请求失败：' + errText(e),
-        '请求没有发出去（未到达任何服务器）。',
+        sendFailureLine(e),
         (isNetworkErrorLike(e) && isCrossOriginTarget(chatUrl)) ? CORS_HINT : ''
       ].filter(Boolean).join('\n'));
       return;
