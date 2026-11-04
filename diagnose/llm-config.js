@@ -45,6 +45,20 @@
       base: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       model: 'qwen3.8-flash',
       altModels: ['qwen3.8-flash', 'qwen3.8-27b']
+    },
+    deepseek: {
+      label: 'DeepSeek（深度求索）',
+      base: 'https://api.deepseek.com',
+      model: 'deepseek-flash',
+      altModels: ['deepseek-flash', 'deepseek-v4-pro'],
+      keyHint: 'DeepSeek 的 API Key'
+    },
+    siliconflow: {
+      label: '硅基流动（SiliconFlow）',
+      base: 'https://api.siliconflow.cn/v1',
+      model: 'deepseek-ai/DeepSeek-V4.1-Flash',
+      altModels: ['deepseek-ai/DeepSeek-V4.1-Flash', 'Qwen/Qwen3.8-27B'],
+      keyHint: '硅基流动的 API Key'
     }
   };
 

@@ -14,6 +14,7 @@
 
   function $(id) { return document.getElementById(id); }
 
+  var presetSelect = $('preset-select');
   var presetLabel = $('preset-label');
   var modelSelect = $('model-select');
   var keyInput = $('api-key');
@@ -28,6 +29,7 @@
   var statusEl = $('status');
 
   var PRESET = (CFG && CFG.PRESETS && CFG.PRESETS.dashscope) || null;
+  var presetKey = 'dashscope';
 
   function setStatus(msg) {
     if (statusEl) statusEl.textContent = String(msg == null ? '' : msg);
@@ -147,8 +149,8 @@
     } catch (e) { return false; }
   }
 
-  /* 只写「标准 dashscope 端点」和路径段，不写完整域名（静态扫描禁百炼地址字面量）。 */
-  var CORS_HINT = '该端点可能不支持浏览器直连（CORS），请换用标准 dashscope 端点（…/compatible-mode/v1）。';
+  /* 厂商中立：不点名任何厂商 / 端点，只提示换该厂商官方 https 基址（静态扫描禁厂商字面量）。 */
+  var CORS_HINT = '该端点可能不支持浏览器直连（CORS），请换用该厂商官方给出的 https 基址（形如 https://<域名>/v1）。';
 
   /** 归一化基址：去首尾空白类字符，中文输入法全角标点（：／）→ 半角，去尾部斜杠。 */
   function normalizeBase(raw) {
@@ -221,16 +223,75 @@
     }
   }
 
-  function fillPreset() {
-    if (!PRESET) {
+  /** PRESETS 的 key 顺序即下拉顺序（默认厂商 dashscope 在最前）。 */
+  function presetKeys() {
+    var keys = [];
+    if (!CFG || !CFG.PRESETS) return keys;
+    for (var k in CFG.PRESETS) {
+      if (Object.prototype.hasOwnProperty.call(CFG.PRESETS, k)) keys.push(k);
+    }
+    return keys;
+  }
+
+  /** 服务商下拉：value=预设 key，文本=label；不写任何厂商字面量。 */
+  function buildPresetOptions() {
+    if (!presetSelect || !CFG || !CFG.PRESETS) return;
+    var keys = presetKeys();
+    presetSelect.innerHTML = '';
+    for (var i = 0; i < keys.length; i++) {
+      var opt = document.createElement('option');
+      opt.value = keys[i];
+      opt.textContent = CFG.PRESETS[keys[i]].label;
+      presetSelect.appendChild(opt);
+    }
+    presetSelect.value = presetKey;
+  }
+
+  /** 已保存的基址若正好等于某个预设，就选中那个预设；否则默认仍是 dashscope。 */
+  function initialPresetKey() {
+    var keys = presetKeys();
+    var def = keys.indexOf('dashscope') >= 0 ? 'dashscope' : (keys[0] || '');
+    var saved = null;
+    try {
+      if (CFG && typeof CFG.getConfig === 'function') saved = CFG.getConfig();
+    } catch (e) { saved = null; }
+    if (saved && saved.base) {
+      var base = String(saved.base).replace(/\/+$/, '');
+      for (var i = 0; i < keys.length; i++) {
+        var p = CFG.PRESETS[keys[i]];
+        if (p && p.base && String(p.base).replace(/\/+$/, '') === base) return keys[i];
+      }
+    }
+    return def;
+  }
+
+  /** ?llm=<url> 覆盖链最优先（与 llm-config.js 的 resolveBase 一致）。 */
+  function queryBaseOverride() {
+    try {
+      if (typeof location === 'undefined' || !location || typeof location.search !== 'string') return '';
+      var m = /[?&]llm=([^&]*)/.exec(location.search);
+      if (!m) return '';
+      try { return decodeURIComponent(m[1].replace(/\+/g, ' ')); }
+      catch (e) { return m[1]; }
+    } catch (e) { return ''; }
+  }
+
+  /** 一键切换服务商：地址 / 模型列表 / 标签 / key 提示一起换。 */
+  function applyPreset(key) {
+    if (!CFG || !CFG.PRESETS) {
       setStatus('配置模块 llm-config.js 未加载或没有可用预设，无法设置。');
       if (testBtn) testBtn.disabled = true;
       if (saveBtn) saveBtn.disabled = true;
       return;
     }
-    if (presetLabel) presetLabel.textContent = PRESET.label;
+    var p = CFG.PRESETS[key];
+    if (!p) return;
+    presetKey = key;
+    PRESET = p;
+    if (presetSelect) presetSelect.value = key;
+    if (presetLabel) presetLabel.textContent = p.label || '';
 
-    var models = PRESET.altModels && PRESET.altModels.length ? PRESET.altModels : [PRESET.model];
+    var models = p.altModels && p.altModels.length ? p.altModels : (p.model ? [p.model] : []);
     if (modelSelect) {
       modelSelect.innerHTML = '';
       for (var i = 0; i < models.length; i++) {
@@ -239,9 +300,11 @@
         opt.textContent = models[i];
         modelSelect.appendChild(opt);
       }
-      modelSelect.value = PRESET.model;
+      if (p.model) modelSelect.value = p.model;
     }
-    if (baseInput) baseInput.value = PRESET.base;
+    if (baseInput) baseInput.value = p.base || '';
+    if (keyInput) keyInput.placeholder = p.keyHint || 'sk-...';
+    if (customModel) customModel.value = '';
   }
 
   function prefillSaved() {
@@ -273,7 +336,7 @@
 
     if (!base) { setTestStatus('基址为空，请先在「高级（家长）」里填写。'); return; }
     if (!isAbsoluteHttpUrl(base)) {
-      setTestStatus('基址要以 https:// 开头（形如 https://<域名>/compatible-mode/v1）。现在填的是：' + base + '\n请求没有发出去。');
+      setTestStatus('基址要以 https:// 开头（形如 https://<域名>/v1）。现在填的是：' + base + '\n请求没有发出去。');
       return;
     }
     if (!key) { setTestStatus('请先填入 API Key 再测试。'); return; }
@@ -444,9 +507,14 @@
     toggleBtn.textContent = showing ? '显示' : '隐藏';
   }
 
-  fillPreset();
-  prefillSaved();
+  presetKey = initialPresetKey();
+  buildPresetOptions();
+  applyPreset(presetKey);      /* 先铺预设默认值 */
+  prefillSaved();              /* 已保存配置覆盖预设 */
+  var qBase = queryBaseOverride();
+  if (qBase && baseInput) baseInput.value = qBase;   /* ?llm= 优先级最高 */
 
+  if (presetSelect) presetSelect.addEventListener('change', function () { applyPreset(this.value); });
   if (toggleBtn) toggleBtn.addEventListener('click', toggleKey);
   if (testBtn) testBtn.addEventListener('click', function () { testConnection(); });
   if (saveBtn) saveBtn.addEventListener('click', doSave);
