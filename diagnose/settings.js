@@ -1,8 +1,9 @@
-/* 模型设置页（家长入口）：写入 localStorage['cnmDiagnose.llm']，供 diagnose 页面直连百炼。
+/* 模型设置页（家长入口）：经 LLMConfig.saveConfig 持久化配置，供 diagnose 页面直连模型网关。
  *
  * 安全红线：
  *   - key 只出现在 password 输入框的 value 和 Authorization 头里；
- *   - 不 console.log / console.error key，不把 key 写进 URL（含 fetch query string）；
+ *   - 不把 key 写进日志 / URL / cookie / 任何持久化存储（静态扫描会红）；
+ *   - 换厂商时旧厂商的 key 只暂存内存对象（keysByPreset），刷新即忘；
  *   - 不进 DOM 文本；界面上只显示 maskKey() 的结果。
  *
  * 地址与型号一律从 window.LLMConfig.PRESETS 读，本文件不写任何服务地址字面量。
@@ -27,9 +28,14 @@
   var baseInput = $('base-input');
   var customModel = $('custom-model');
   var statusEl = $('status');
+  var effectiveModelEl = $('effective-model');
 
   var PRESET = (CFG && CFG.PRESETS && CFG.PRESETS.dashscope) || null;
   var presetKey = 'dashscope';
+
+  /* 按厂商暂存的 API Key（t_bf4135e6）：只在内存里，刷新即清空，
+   * 不写任何持久化存储 / 日志 / URL。 */
+  var keysByPreset = {};
 
   function setStatus(msg) {
     if (statusEl) statusEl.textContent = String(msg == null ? '' : msg);
@@ -189,6 +195,11 @@
     return modelSelect ? String(modelSelect.value || '') : '';
   }
 
+  /** 「当前生效模型」展示（t_bf4135e6）：表单怎么变，这一行就跟着变。 */
+  function syncEffectiveModel() {
+    if (effectiveModelEl) effectiveModelEl.textContent = currentModel() || '—';
+  }
+
   /** 15s 超时：优先 AbortSignal.timeout，其次 AbortController + setTimeout。 */
   function timeoutSignal() {
     try {
@@ -233,6 +244,37 @@
     return keys;
   }
 
+  /** 已保存基址命中某预设（双方去尾斜杠逐字比）时返回该预设 key，否则 ''。 */
+  function presetKeyByBase(base) {
+    var b = String(base == null ? '' : base).replace(/\/+$/, '');
+    if (!b || !CFG || !CFG.PRESETS) return '';
+    var keys = presetKeys();
+    for (var i = 0; i < keys.length; i++) {
+      var p = CFG.PRESETS[keys[i]];
+      if (p && p.base && String(p.base).replace(/\/+$/, '') === b) return keys[i];
+    }
+    return '';
+  }
+
+  /** 已保存模型命中某预设（默认型号或 altModels 之一）时返回该预设 key，否则 ''。
+   *  家长把基址改成自定义端点后，靠它仍能认出厂商，界面不再回落误导。 */
+  function presetKeyByModel(model) {
+    var m = String(model == null ? '' : model).replace(/^\s+|\s+$/g, '');
+    if (!m || !CFG || !CFG.PRESETS) return '';
+    var keys = presetKeys();
+    for (var i = 0; i < keys.length; i++) {
+      var p = CFG.PRESETS[keys[i]];
+      if (!p) continue;
+      if (p.model === m) return keys[i];
+      if (p.altModels) {
+        for (var j = 0; j < p.altModels.length; j++) {
+          if (p.altModels[j] === m) return keys[i];
+        }
+      }
+    }
+    return '';
+  }
+
   /** 服务商下拉：value=预设 key，文本=label；不写任何厂商字面量。 */
   function buildPresetOptions() {
     if (!presetSelect || !CFG || !CFG.PRESETS) return;
@@ -247,7 +289,9 @@
     presetSelect.value = presetKey;
   }
 
-  /** 已保存的基址若正好等于某个预设，就选中那个预设；否则默认仍是 dashscope。 */
+  /** 预设识别（t_bf4135e6）：先看已保存 base（逐字比），再看已保存 model
+   *  （自定义基址时按已保存 model 认厂商）；都不命中回默认。
+   *  不读 ?llm= —— 查询参数只覆盖基址，不参与预设识别。 */
   function initialPresetKey() {
     var keys = presetKeys();
     var def = keys.indexOf('dashscope') >= 0 ? 'dashscope' : (keys[0] || '');
@@ -255,13 +299,11 @@
     try {
       if (CFG && typeof CFG.getConfig === 'function') saved = CFG.getConfig();
     } catch (e) { saved = null; }
-    if (saved && saved.base) {
-      var base = String(saved.base).replace(/\/+$/, '');
-      for (var i = 0; i < keys.length; i++) {
-        var p = CFG.PRESETS[keys[i]];
-        if (p && p.base && String(p.base).replace(/\/+$/, '') === base) return keys[i];
-      }
-    }
+    if (!saved || !CFG || !CFG.PRESETS) return def;
+    var byBase = presetKeyByBase(saved.base);
+    if (byBase) return byBase;
+    var byModel = presetKeyByModel(saved.model);
+    if (byModel) return byModel;
     return def;
   }
 
@@ -305,6 +347,51 @@
     if (baseInput) baseInput.value = p.base || '';
     if (keyInput) keyInput.placeholder = p.keyHint || 'sk-...';
     if (customModel) customModel.value = '';
+    syncEffectiveModel();
+  }
+
+  /** 按厂商暂存 key（t_bf4135e6）：trim 后非空才记，空就抹掉该厂商的记录。
+   *  只进内存对象 keysByPreset，不落任何持久化存储。 */
+  function rememberKeyFor(preset, key) {
+    var k = String(key == null ? '' : key).replace(/^\s+|\s+$/g, '');
+    if (k) keysByPreset[preset] = String(key);
+    else delete keysByPreset[preset];
+  }
+
+  /** 切换服务商（t_bf4135e6）：跨厂商时隔离 key —— 旧厂商的 key 暂存进内存，
+   *  新厂商填过的 key 放回来（提示「已恢复」），没填过就清空（提示补填）。
+   *  同厂商内重选不丢 key。 */
+  function switchPreset(newKey) {
+    if (newKey === presetKey) {
+      applyPreset(newKey);
+      syncEffectiveModel();
+      return;
+    }
+    rememberKeyFor(presetKey, keyInput ? String(keyInput.value || '') : '');
+    applyPreset(newKey);
+    var label = (CFG && CFG.PRESETS && CFG.PRESETS[newKey] && CFG.PRESETS[newKey].label) || newKey;
+    var restored = keysByPreset[newKey];
+    if (restored) {
+      if (keyInput) keyInput.value = restored;
+      setStatus('已切换到 ' + label + '，已恢复该厂商之前填过的 API Key。');
+    } else {
+      if (keyInput) keyInput.value = '';
+      setStatus('已切换到 ' + label + '，请填入该厂商的 API Key');
+    }
+    syncEffectiveModel();
+  }
+
+  /** 往模型下拉追加一个 option（去重）：已保存型号不在预设列表时补进去选中，
+   *  让下拉的可见状态与真实生效模型一致。 */
+  function appendModelOption(value) {
+    if (!modelSelect || !value) return;
+    for (var i = 0; i < modelSelect.options.length; i++) {
+      if (modelSelect.options[i].value === value) return;
+    }
+    var opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = value;
+    modelSelect.appendChild(opt);
   }
 
   function prefillSaved() {
@@ -320,8 +407,18 @@
       for (var i = 0; i < modelSelect.options.length; i++) {
         if (modelSelect.options[i].value === cfg.model) { found = true; break; }
       }
-      if (found) modelSelect.value = cfg.model;
-      else if (customModel) customModel.value = cfg.model;
+      if (found) {
+        /* 下拉选中值 = 真实生效值（currentModel() 仍返回同一个值，行为不变）。 */
+        modelSelect.value = cfg.model;
+        if (customModel) customModel.value = '';
+      } else {
+        /* 已保存型号不在预设列表：补进下拉并选中，可见状态不再显示
+         * 与真实生效值无关的预设默认型号；customModel 仍持有它
+         * （旧行为：customModel 优先、currentModel() 不变）。 */
+        appendModelOption(cfg.model);
+        modelSelect.value = cfg.model;
+        if (customModel) customModel.value = cfg.model;
+      }
     }
     if (savedTail) savedTail.textContent = CFG.maskKey(cfg.key);
     if (savedLine) savedLine.hidden = false;
@@ -486,6 +583,7 @@
       setStatus('保存失败：浏览器拒绝了本地存储（可能是隐私模式或空间不足）。');
       return;
     }
+    rememberKeyFor(presetKey, key);
     if (savedTail) savedTail.textContent = CFG.maskKey(key);
     if (savedLine) savedLine.hidden = false;
     setStatus('已保存，正在返回…');
@@ -493,6 +591,7 @@
   }
 
   function doClear() {
+    keysByPreset = {};
     if (CFG && typeof CFG.clearConfig === 'function') CFG.clearConfig();
     if (keyInput) keyInput.value = '';
     if (savedTail) savedTail.textContent = '';
@@ -511,10 +610,18 @@
   buildPresetOptions();
   applyPreset(presetKey);      /* 先铺预设默认值 */
   prefillSaved();              /* 已保存配置覆盖预设 */
+  /* 已保存的 key 也进内存隔离表：换厂商再切回来还能找回。 */
+  rememberKeyFor(presetKey, keyInput ? String(keyInput.value || '') : '');
   var qBase = queryBaseOverride();
-  if (qBase && baseInput) baseInput.value = qBase;   /* ?llm= 优先级最高 */
+  if (qBase && baseInput) baseInput.value = qBase;   /* ?llm= 优先级最高，仍最后覆盖 */
+  syncEffectiveModel();
 
-  if (presetSelect) presetSelect.addEventListener('change', function () { applyPreset(this.value); });
+  if (presetSelect) presetSelect.addEventListener('change', function () { switchPreset(this.value); });
+  if (modelSelect) modelSelect.addEventListener('change', syncEffectiveModel);
+  if (customModel) {
+    customModel.addEventListener('input', syncEffectiveModel);
+    customModel.addEventListener('change', syncEffectiveModel);
+  }
   if (toggleBtn) toggleBtn.addEventListener('click', toggleKey);
   if (testBtn) testBtn.addEventListener('click', function () { testConnection(); });
   if (saveBtn) saveBtn.addEventListener('click', doSave);
