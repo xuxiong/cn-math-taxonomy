@@ -71,16 +71,40 @@ const DEFAULT_MODEL = 'DeepSeek-V4.1-Flash-1017-Unlimited';
 
 console.log('\n--- 预设表 ---');
 
-test('PRESETS 只有百炼一个预设，字段与约定一致', () => {
+test('PRESETS 三家顺序为 dashscope/deepseek/siliconflow，dashscope 字段逐字未变', () => {
   delete global.localStorage;
   const cfg = loadFresh();
   const keys = Object.keys(cfg.PRESETS);
-  assert.deepStrictEqual(keys, ['dashscope']);
+  assert.deepStrictEqual(keys, ['dashscope', 'deepseek', 'siliconflow']);
   const p = cfg.PRESETS.dashscope;
   assert.strictEqual(p.label, PRESET.label);
   assert.strictEqual(p.base, PRESET.base);
   assert.strictEqual(p.model, PRESET.model);
   assert.deepStrictEqual(p.altModels, PRESET.altModels);
+});
+
+test('PRESETS.deepseek：base/model/altModels/label 与官方约定一致', () => {
+  delete global.localStorage;
+  const cfg = loadFresh();
+  const p = cfg.PRESETS.deepseek;
+  assert.ok(p, '应存在 deepseek 预设');
+  assert.strictEqual(p.base, 'https://api.deepseek.com');
+  assert.strictEqual(p.model, 'deepseek-flash');
+  assert.deepStrictEqual(p.altModels, ['deepseek-flash', 'deepseek-v4-pro']);
+  assert.ok(typeof p.label === 'string' && p.label && /[\u4e00-\u9fa5]/.test(p.label),
+    'label 应为非空中文串，实际：' + p.label);
+});
+
+test('PRESETS.siliconflow：base/model/altModels/label 与官方约定一致', () => {
+  delete global.localStorage;
+  const cfg = loadFresh();
+  const p = cfg.PRESETS.siliconflow;
+  assert.ok(p, '应存在 siliconflow 预设');
+  assert.strictEqual(p.base, 'https://api.siliconflow.cn/v1');
+  assert.strictEqual(p.model, 'deepseek-ai/DeepSeek-V4.1-Flash');
+  assert.deepStrictEqual(p.altModels, ['deepseek-ai/DeepSeek-V4.1-Flash', 'Qwen/Qwen3.8-27B']);
+  assert.ok(typeof p.label === 'string' && p.label,
+    'label 应为非空串，实际：' + p.label);
 });
 
 test('未配置时 model 保持默认型号，resolveBase 走 Node 默认地址', () => {
@@ -303,7 +327,8 @@ test('diagnose/*.js（除 llm-config.js）与 scripts/*.js 不含百炼地址/�
     return path.basename(p) !== 'llm-config.js';
   }).concat(jsFiles('scripts'));
   const bad = [];
-  const literals = ['dashscope.aliyuncs.com', 'qwen3.8'];
+  const literals = ['dashscope.aliyuncs.com', 'qwen3.8', 'api.deepseek.com',
+    'api.siliconflow.cn', 'deepseek-ai/', 'deepseek-flash'];
   for (const file of files) {
     const text = fs.readFileSync(file, 'utf8');
     for (const lit of literals) {
@@ -318,7 +343,8 @@ test('diagnose/*.html 也不含百炼地址/型号字面量（设置页只从 PR
     .filter(function (n) { return n.endsWith('.html'); })
     .map(function (n) { return path.join(ROOT, 'diagnose', n); });
   const bad = [];
-  const literals = ['dashscope.aliyuncs.com', 'qwen3.8'];
+  const literals = ['dashscope.aliyuncs.com', 'qwen3.8', 'api.deepseek.com',
+    'api.siliconflow.cn', 'deepseek-ai/', 'deepseek-flash'];
   for (const file of files) {
     const text = fs.readFileSync(file, 'utf8');
     for (const lit of literals) {
@@ -338,25 +364,46 @@ console.log('\n--- testConnection 状态串模型标注 ---');
 
 const SETTINGS_PATH = path.join(ROOT, 'diagnose', 'settings.js');
 
-/** 假元素：覆盖 settings.js 用到的全部 DOM 属性（value/textContent/hidden/options/innerHTML/appendChild/addEventListener/type/disabled）。 */
+/** 假元素：覆盖 settings.js 用到的全部 DOM 属性（value/textContent/hidden/options/innerHTML/appendChild/addEventListener/type/disabled）。
+ *  innerHTML 用 setter 实现：赋空串时同步清空 options/children，模拟真实 <select> 重建。
+ *  fire(type) 用来派发 change（预设下拉切换）。 */
 function makeFakeEl() {
-  return {
+  const el = {
     value: '',
     textContent: '',
-    innerHTML: '',
     hidden: false,
     disabled: false,
     type: 'text',
+    placeholder: '',
     options: [],
+    children: [],
+    _innerHTML: '',
     _listeners: {},
-    appendChild: function (child) { this.options.push(child); return child; },
+    appendChild: function (child) {
+      this.options.push(child);
+      this.children.push(child);
+      return child;
+    },
     addEventListener: function (type, fn) {
       (this._listeners[type] = this._listeners[type] || []).push(fn);
     },
     click: function () {
       (this._listeners.click || []).forEach(function (fn) { fn(); });
+    },
+    fire: function (type) {
+      const self = this;
+      (this._listeners[type] || []).forEach(function (fn) { fn.call(self); });
     }
   };
+  Object.defineProperty(el, 'innerHTML', {
+    get: function () { return this._innerHTML; },
+    set: function (v) {
+      this._innerHTML = String(v);
+      this.options.length = 0;
+      this.children.length = 0;
+    }
+  });
+  return el;
 }
 
 /**
@@ -385,7 +432,7 @@ function setupSettingsEnv(opts) {
   };
 
   /* 2. 假 document + 假元素 */
-  const ids = ['preset-label', 'model-select', 'api-key', 'toggle-key', 'test-btn',
+  const ids = ['preset-select', 'preset-label', 'model-select', 'api-key', 'toggle-key', 'test-btn',
     'save-btn', 'saved-line', 'saved-tail', 'clear-btn', 'base-input', 'custom-model', 'status'];
   const elements = {};
   for (const id of ids) elements[id] = makeFakeEl();
@@ -489,6 +536,157 @@ function makeFetchForTestConnection(opts) {
   fn.calls = calls;
   return fn;
 }
+
+function optionValues(el) {
+  return el.options.map(function (o) { return o.value; });
+}
+
+function selectPreset(elements, key) {
+  const sel = elements['preset-select'];
+  sel.value = key;
+  sel.fire('change');
+}
+
+/* ================================================================
+ * 9b. 服务商预设下拉（多厂商一键切换）
+ * ================================================================ */
+
+console.log('\n--- 服务商预设 ---');
+
+test('设置页加载：preset-select 选项来自 PRESETS，顺序一致，value=key、文本=label，默认选中 dashscope', () => {
+  const env = setupSettingsEnv({ savedConfig: null, fetchImpl: makeFetchForTestConnection({ ok2: true }) });
+  try {
+    const sel = env.elements['preset-select'];
+    const keys = Object.keys(env.cfg.PRESETS);
+    assert.deepStrictEqual(optionValues(sel), keys, '选项 value 应等于 PRESETS 的 key 顺序');
+    assert.deepStrictEqual(sel.options.map(function (o) { return o.textContent; }),
+      keys.map(function (k) { return env.cfg.PRESETS[k].label; }), '选项文本应等于各预设 label');
+    assert.strictEqual(sel.value, 'dashscope', '默认应选中 dashscope');
+    assert.deepStrictEqual(optionValues(env.elements['model-select']),
+      env.cfg.PRESETS.dashscope.altModels, '初始模型下拉应为百炼 altModels');
+    assert.strictEqual(env.elements['base-input'].value, env.cfg.PRESETS.dashscope.base);
+  } finally {
+    env.restore();
+  }
+});
+
+test('选 deepseek：base 切换、模型下拉换成其 altModels 并选中默认模型、preset-label 同步', () => {
+  const env = setupSettingsEnv({ savedConfig: null, fetchImpl: makeFetchForTestConnection({ ok2: true }) });
+  try {
+    selectPreset(env.elements, 'deepseek');
+    const p = env.cfg.PRESETS.deepseek;
+    assert.strictEqual(env.elements['base-input'].value, p.base);
+    assert.deepStrictEqual(optionValues(env.elements['model-select']), p.altModels);
+    assert.strictEqual(env.elements['model-select'].value, p.model);
+    assert.strictEqual(env.elements['preset-label'].textContent, p.label);
+  } finally {
+    env.restore();
+  }
+});
+
+test('选 siliconflow：base 切换、模型下拉换成其 altModels、key 提示含「硅基流动」且不含任何域名', () => {
+  const env = setupSettingsEnv({ savedConfig: null, fetchImpl: makeFetchForTestConnection({ ok2: true }) });
+  try {
+    selectPreset(env.elements, 'siliconflow');
+    const p = env.cfg.PRESETS.siliconflow;
+    assert.strictEqual(env.elements['base-input'].value, p.base);
+    assert.deepStrictEqual(optionValues(env.elements['model-select']), p.altModels);
+    assert.strictEqual(env.elements['model-select'].value, p.model);
+    const ph = String(env.elements['api-key'].placeholder || '');
+    assert.ok(ph.indexOf('硅基流动') >= 0, 'placeholder 应含「硅基流动」：' + ph);
+    ['dashscope.aliyuncs.com', 'qwen3.8', 'api.deepseek.com', 'api.siliconflow.cn',
+      'deepseek-ai/', 'deepseek-flash'].forEach(function (lit) {
+      assert.ok(ph.indexOf(lit) < 0, 'placeholder 不应含「' + lit + '」：' + ph);
+    });
+  } finally {
+    env.restore();
+  }
+});
+
+test('切回 dashscope：base 回百炼地址，模型项回百炼 altModels（切回一切如旧）', () => {
+  const env = setupSettingsEnv({ savedConfig: null, fetchImpl: makeFetchForTestConnection({ ok2: true }) });
+  try {
+    selectPreset(env.elements, 'deepseek');
+    selectPreset(env.elements, 'siliconflow');
+    selectPreset(env.elements, 'dashscope');
+    const p = env.cfg.PRESETS.dashscope;
+    assert.strictEqual(env.elements['base-input'].value, p.base);
+    assert.deepStrictEqual(optionValues(env.elements['model-select']), p.altModels);
+    assert.strictEqual(env.elements['model-select'].value, p.model);
+    assert.strictEqual(env.elements['preset-label'].textContent, p.label);
+  } finally {
+    env.restore();
+  }
+});
+
+test('加载时已保存 base 命中非默认预设：自动选中该预设（可选加分项）', () => {
+  const p = loadFresh().PRESETS.siliconflow;
+  const env = setupSettingsEnv({
+    savedConfig: { base: p.base, model: p.model, key: 'k-saved-1234567890' },
+    fetchImpl: makeFetchForTestConnection({ ok2: true })
+  });
+  try {
+    assert.strictEqual(env.elements['preset-select'].value, 'siliconflow');
+    assert.strictEqual(env.elements['base-input'].value, p.base);
+    assert.strictEqual(env.elements['model-select'].value, p.model);
+  } finally {
+    env.restore();
+  }
+});
+
+asyncTest('选 deepseek 后手改高级基址：testConnection 用输入框里的自定义基址（逃生门没坏）', async () => {
+  const fetchImpl = makeFetchForTestConnection({ ok2: true, status2: 200 });
+  const env = setupSettingsEnv({ savedConfig: null, fetchImpl: fetchImpl });
+  try {
+    selectPreset(env.elements, 'deepseek');
+    env.elements['api-key'].value = 'k-fake-1234567890';
+    env.elements['base-input'].value = 'https://my-proxy.example.com/v1';
+    env.elements['test-btn'].click();
+    await waitForStatus(env.elements, function (t) { return t.indexOf('连接成功') >= 0; });
+    assert.ok(fetchImpl.calls.length > 0, '应发出 fetch');
+    assert.strictEqual(fetchImpl.calls[0].url, 'https://my-proxy.example.com/v1/models',
+      '自定义基址应盖过预设，实际：' + fetchImpl.calls[0].url);
+  } finally {
+    env.restore();
+  }
+});
+
+asyncTest('选 deepseek 后点保存：写入 localStorage 的 base 为 deepseek 基址、model 为 deepseek-flash', async () => {
+  const env = setupSettingsEnv({ savedConfig: null, fetchImpl: makeFetchForTestConnection({ ok2: true }) });
+  try {
+    selectPreset(env.elements, 'deepseek');
+    env.elements['api-key'].value = 'sk-new-1234567890XYZ';
+    env.elements['save-btn'].click();
+    const stored = env.cfg.getConfig();
+    assert.ok(stored, '保存后应能从假 localStorage 读回配置');
+    assert.strictEqual(stored.base, env.cfg.PRESETS.deepseek.base);
+    assert.strictEqual(stored.model, 'deepseek-flash');
+    await new Promise(function (r) { setTimeout(r, 600); });
+  } finally {
+    env.restore();
+  }
+});
+
+asyncTest('CORS 提示只在 TypeError + 跨域时出现：同源 TypeError 不出现', async () => {
+  const fetchImpl = makeFetchForTestConnection({ throw1: true, throw1Error: new TypeError('Failed to fetch') });
+  const env = setupSettingsEnv({
+    savedConfig: { base: 'https://t.test/v1', model: PRESET.model, key: 'k-saved-1234567890' },
+    fetchImpl: fetchImpl,
+    afterLoad: function () {
+      /* 把本页 origin 设成与基址同源，锁住「非跨域不提示 CORS」的原触发条件。 */
+      global.location.href = 'https://t.test/settings.html';
+    }
+  });
+  try {
+    env.elements['test-btn'].click();
+    await waitForStatus(env.elements, function (t) { return t.indexOf('请求没有发出去') >= 0; });
+    const s = env.elements.status.textContent;
+    assert.ok(s.indexOf('请求没有发出去') >= 0, '应说明请求没有发出去：\n' + s);
+    assert.ok(s.indexOf('CORS') < 0, '同源 TypeError 不应补 CORS 提示：\n' + s);
+  } finally {
+    env.restore();
+  }
+});
 
 asyncTest('testConnection 成功态 + 一致：状态串含两行模型标注 + 尾注，不含不一致警告', async () => {
   const fetchImpl = makeFetchForTestConnection({ ok2: true, status2: 200 });
@@ -774,7 +972,11 @@ asyncTest('testConnection fetch 抛 TypeError（跨域被拦）：说请求没�
     const s = env.elements.status.textContent;
     assert.ok(s.indexOf('请求没有发出去（未到达任何服务器）') >= 0, '应说明请求没有发出去：\n' + s);
     assert.ok(s.indexOf('CORS') >= 0, 'TypeError 应补 CORS 人话：\n' + s);
-    assert.ok(s.indexOf('compatible-mode/v1') >= 0, 'CORS 人话应指向标准端点 compatible-mode/v1：\n' + s);
+    /* 改断言原因：CORS 提示已改为厂商中立（多厂商预设），不再点名 dashscope 的 compatible-mode/v1
+     * （settings.js 静态扫描也禁止出现这些厂商字面量）。改为断言中立表述。 */
+    assert.ok(s.indexOf('https://') >= 0, 'CORS 人话应给出 https 基址示例：\n' + s);
+    assert.ok(s.indexOf('dashscope') < 0, 'CORS 人话不应点名 dashscope：\n' + s);
+    assert.ok(s.indexOf('compatible-mode') < 0, 'CORS 人话不应出现 compatible-mode：\n' + s);
   } finally {
     env.restore();
   }
