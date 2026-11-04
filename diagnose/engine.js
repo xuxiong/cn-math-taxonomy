@@ -1101,10 +1101,10 @@
       while ((m = re.exec(seg)) !== null) {
         const before = m.index > 0 ? seg.charAt(m.index - 1) : '';
         if (/[0-9a-z*\/^+\-.=]/.test(before)) { re.lastIndex = m.index + 1; continue; }
-        const concluding = CONCLUSION.test(seg.slice(0, m.index));
         let i = m.index + 2;
         let raw = '';
         while (i < seg.length && !VALUE_STOP.test(seg.charAt(i)) && raw.length < 24) { raw += seg.charAt(i); i++; }
+        const concluding = CONCLUSION.test(seg.slice(0, m.index)) || (m.index === 0 && i >= seg.length);
         const cv = claimValueKeys(raw);
         if (cv && concluding) claims.push({ variable: m[1], raw: m[1] + '=' + raw, keys: cv.keys, unit: cv.unit });
         re.lastIndex = i;
@@ -1114,8 +1114,16 @@
       if (am) {
         const rest = normalizeText(rawSeg.slice(am.index + am[0].length)).replace(/^[是为等于:：]+/, '');
         rest.split(/[或,]/).forEach(function (tok) {
-          const cv = claimValueKeys(tok.trim());
-          if (cv) claims.push({ variable: '', raw: tok.trim(), keys: cv.keys, unit: cv.unit });
+          const trimmed = tok.trim();
+          // 支持「答案：x = 5」「答案：x1 = 2，x2 = -6」：剥掉变量前缀再解析值
+          const vm = /^([a-z][a-z0-9]{0,2})=(.+)$/.exec(trimmed);
+          if (vm) {
+            const cv = claimValueKeys(vm[2]);
+            if (cv) claims.push({ variable: vm[1], raw: trimmed, keys: cv.keys, unit: cv.unit });
+          } else {
+            const cv = claimValueKeys(trimmed);
+            if (cv) claims.push({ variable: '', raw: trimmed, keys: cv.keys, unit: cv.unit });
+          }
         });
       }
     });
@@ -1223,13 +1231,17 @@
       return { ok: false, reason: 'mismatch', claim: candidates[0].raw, expected: expected };
     }
 
-    if (!claims.length) return { ok: null, reason: 'no-claim' };
-    for (let i = 0; i < claims.length; i++) {
-      if (!claimHits(claims[i], refParts, byVar)) {
-        return { ok: false, reason: 'mismatch', claim: claims[i].raw, expected: expected };
+    const candidates = claims.concat(computedValues(revealText));
+    if (!candidates.length) return { ok: null, reason: 'no-claim' };
+    // 有变量/答案声明时以 claims 为准（维持现有 all-match 语义，绝不把 computedValues 混进 all-match，
+    // 否则「2+3=5，所以 x=1 或 x=-7」这种中途算式会把正确解析判死）
+    const judged = claims.length ? claims : candidates;
+    for (let i = 0; i < judged.length; i++) {
+      if (!claimHits(judged[i], refParts, byVar)) {
+        return { ok: false, reason: 'mismatch', claim: judged[i].raw, expected: expected };
       }
     }
-    return { ok: true, reason: 'match', claims: claims.length };
+    return { ok: true, reason: 'match', claims: judged.length };
   }
 
   /**

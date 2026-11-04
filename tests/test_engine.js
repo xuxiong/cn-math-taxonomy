@@ -2326,6 +2326,40 @@ test('verifyReveal：参考答案不是数值（字母/文字）-> ok:null', () 
   assert.strictEqual(E.verifyReveal('选B，因为移项要变号。', 'B').ok, null);
 });
 
+/* ---------- 答案：x = … 也算解值声明；整段只写 x=v 也算；多解补 computedValues 兜底 ---------- */
+
+test('verifyReveal：答案：x = <错值> -> ok:false（不再 no-claim 放行）', () => {
+  assert.strictEqual(E.verifyReveal('答案：x = 5', '4').ok, false, JSON.stringify(E.verifyReveal('答案：x = 5', '4')));
+  assert.strictEqual(E.verifyReveal('解得 x = 5。\n答案：x = 5', '4').ok, false, JSON.stringify(E.verifyReveal('解得 x = 5。\n答案：x = 5', '4')));
+  assert.strictEqual(E.verifyReveal('答案：5', '4').ok, false, JSON.stringify(E.verifyReveal('答案：5', '4')));
+  assert.strictEqual(E.verifyReveal('所以 x = 5', '4').ok, false, JSON.stringify(E.verifyReveal('所以 x = 5', '4')));
+  assert.strictEqual(E.verifyReveal('答案：x1 = 2，x2 = -6', '1,-7').ok, false, JSON.stringify(E.verifyReveal('答案：x1 = 2，x2 = -6', '1,-7')));
+  assert.strictEqual(E.verifyReveal('x = 5', '4').ok, false, JSON.stringify(E.verifyReveal('x = 5', '4')));
+});
+
+test('verifyReveal：答案：x = <正确值> -> ok:true', () => {
+  assert.strictEqual(E.verifyReveal('答案：x = 4', '4').ok, true, JSON.stringify(E.verifyReveal('答案：x = 4', '4')));
+  assert.strictEqual(E.verifyReveal('解得 x = 4。\n答案：x = 4', '4').ok, true, JSON.stringify(E.verifyReveal('解得 x = 4。\n答案：x = 4', '4')));
+  assert.strictEqual(E.verifyReveal('答案：x1 = 1，x2 = -7', '1,-7').ok, true, JSON.stringify(E.verifyReveal('答案：x1 = 1，x2 = -7', '1,-7')));
+  assert.strictEqual(E.verifyReveal('x = 4', '4').ok, true, JSON.stringify(E.verifyReveal('x = 4', '4')));
+});
+
+test('verifyReveal：既有语义不能坏（中途赋值/无声明/非数值/多解中途算式/单位）', () => {
+  // 中途赋值不算解值，12 作为算式右边 -> 判对
+  assert.strictEqual(E.verifyReveal('解析：17-5=12，2x=12，得x=6。', '12').ok, true, JSON.stringify(E.verifyReveal('解析：17-5=12，2x=12，得x=6。', '12')));
+  // 无声明 -> null + no-claim
+  var v1 = E.verifyReveal('先想想移项要变号，再合并同类项。', '3');
+  assert.strictEqual(v1.ok, null, JSON.stringify(v1));
+  assert.strictEqual(v1.reason, 'no-claim', JSON.stringify(v1));
+  // 非数值答案 -> null
+  assert.strictEqual(E.verifyReveal('选B，因为移项要变号。', 'B').ok, null, JSON.stringify(E.verifyReveal('选B，因为移项要变号。', 'B')));
+  // 多解中途算式 2+3=5 不能进 all-match 把正确解析判死
+  assert.strictEqual(E.verifyReveal('2+3=5，所以 x=1 或 x=-7。', '1,-7').ok, true, JSON.stringify(E.verifyReveal('2+3=5，所以 x=1 或 x=-7。', '1,-7')));
+  // 单位题
+  assert.strictEqual(E.verifyReveal('答案是3cm。', '3cm').ok, true, JSON.stringify(E.verifyReveal('答案是3cm。', '3cm')));
+  assert.strictEqual(E.verifyReveal('答案是3m。', '3cm').ok, false, JSON.stringify(E.verifyReveal('答案是3m。', '3cm')));
+});
+
 /* ---------- O2-3：代入验证段误杀修复 ---------- */
 
 test('verifyReveal：reveal 含代入验证段 2×(5-3)=4 时不误杀正确解 x=3', () => {
