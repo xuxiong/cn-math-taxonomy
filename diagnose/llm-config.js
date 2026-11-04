@@ -50,7 +50,7 @@
       label: 'DeepSeek（深度求索）',
       base: 'https://api.deepseek.com',
       model: 'deepseek-flash',
-      altModels: ['deepseek-flash', 'deepseek-v4-pro'],
+      altModels: ['deepseek-flash'],
       keyHint: 'DeepSeek 的 API Key'
     },
     siliconflow: {

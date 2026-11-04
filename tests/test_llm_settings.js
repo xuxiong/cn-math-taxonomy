@@ -90,7 +90,7 @@ test('PRESETS.deepseek：base/model/altModels/label 与官方约定一致', () =
   assert.ok(p, '应存在 deepseek 预设');
   assert.strictEqual(p.base, 'https://api.deepseek.com');
   assert.strictEqual(p.model, 'deepseek-flash');
-  assert.deepStrictEqual(p.altModels, ['deepseek-flash', 'deepseek-v4-pro']);
+  assert.deepStrictEqual(p.altModels, ['deepseek-flash']);
   assert.ok(typeof p.label === 'string' && p.label && /[\u4e00-\u9fa5]/.test(p.label),
     'label 应为非空中文串，实际：' + p.label);
 });
@@ -1099,15 +1099,15 @@ test('a-1 已保存 base=自定义端点 + model=deepseek 默认型号 → 按 m
   }
 });
 
-test('a-2 已保存 model 命中 altModels 非默认型号（自定义基址）→ 仍选 deepseek 且下拉选中该型号', () => {
+test('a-2 已保存 model 命中 altModels 非默认型号（自定义基址）→ 仍选 siliconflow 且下拉选中该型号', () => {
   const PRESETS = loadFresh().PRESETS;
-  const altModel = PRESETS.deepseek.altModels[1];
+  const altModel = PRESETS.siliconflow.altModels[1];
   const env = setupSettingsEnv({
     savedConfig: { base: 'http://127.0.0.1:9303/v1', model: altModel, key: 'sk-saved-1234567890' },
     fetchImpl: makeFetchForTestConnection({ ok2: true })
   });
   try {
-    assert.strictEqual(env.elements['preset-select'].value, 'deepseek');
+    assert.strictEqual(env.elements['preset-select'].value, 'siliconflow');
     assert.strictEqual(env.elements['model-select'].value, altModel,
       '下拉应选中已保存的 altModels 型号');
     assert.strictEqual(env.elements['custom-model'].value, '');
