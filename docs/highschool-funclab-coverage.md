@@ -920,3 +920,133 @@ git stash pop
 的括号内题号是 80b5454 时写死的说明，计数是动态的、题号不是；`quadratic-roots` 的「与x轴交点的个数」与
 「与x轴交点的横坐标」是两个不同 intent（前者的读数动作是数点，后者是读坐标），LLM 若把「几个交点」答成「横坐标」
 会被闸3 拒——这是**有意**的严格，不是缺口。
+
+## 11. 批2 三角族上线（t_08488879，2026-11-05，分支 `wt/hs-funclab-batch2`）
+
+基点 `5262d12`（批1.6 已合入）。两个提交：`23f28c1` 测试先红、`7c822a6` 实现落地（三角解析 + 5 块画板 + labmatch/answer-gate + 白名单 +9 + 2902 一行修）。
+
+### 11.1 测算口径回归（`node scripts/measure_highschool_funclab_coverage.js`，脚本本身一字未改）
+
+| 指标 | 基点 `5262d12` | 本卡分支 | 判定 |
+| --- | --- | --- | --- |
+| `labFor` 挂载（384 题主口径） | **14** | **23** | +9，全部是三角题 |
+| gated ok（族内可行，与白名单无关） | 34 | **34** | 不降（三角 9 条本来就算在 34 里） |
+| 误挂风险（literal − gated） | 31 | **31** | 不增；三角族内仍是 1 条 |
+| literal 能解析 | 47 | **57** | +10（三角族 10 题全解析，含不进白名单的 h069_q4） |
+
+三角函数族（族内 10 题）：`ok 9 / 要新增标注 0 / 误挂 1 / 解析失败 0`——与 §3 的 9/10 判定逐条对得上。
+族内那 1 条 misleading 是 `cnm_h069_q4`（y=tan x 在 x=90° 处，答案「没有定义」），**按严读不进白名单**，批2 测试里有一条断言钉住它「线上必须挂不上」。
+
+### 11.2 逐题清单（题面原文 / 参考答案 / 判定，均取自 `data/questions.json`）
+
+| 题 id | 题面原文 | 参考答案 | 测算判定 | 挂的画板 |
+| --- | --- | --- | --- | --- |
+| `cnm_h066_q1` | y=sin x 的最大值是多少？ | 1 | ok | `trig-extremum` |
+| `cnm_h066_q2` | y=sin x 的最小值是多少？ | -1 | ok | `trig-extremum` |
+| `cnm_h066_q3` | y=sin x（x 为弧度）的最小正周期除以 π，结果是多少？ | 2 | ok | `trig-period` |
+| `cnm_h066_q4` | y=sin x 的定义域是？ | C（全体实数） | ok | `trig-domain` |
+| `cnm_h067_q1` | y=sin x 在 [−π/2，π/2] 上是？ | A（增函数） | ok | `trig-monotonic` |
+| `cnm_h067_q4` | y=sin x 在 [π/2，3π/2] 上整体是？ | D（减函数） | ok | `trig-monotonic` |
+| `cnm_h068_q4` | y=cos x 的奇偶性是？ | A（偶函数） | ok | `trig-parity` |
+| `cnm_h075_q1` | y=2sin x 的最大值是多少？ | 2 | ok | `trig-extremum` |
+| `cnm_h075_q2` | y=sin(2x) 的最小正周期除以 π，结果是多少？ | 1 | ok | `trig-period` |
+| `cnm_h069_q4` | y=tan x 在 x=90° 处？ | B（没有定义） | misleading（不上白名单） | — |
+
+实数是 9 条，不是凑数：三角族 10 题里能挂的就是这 9 条。
+
+### 11.3 解析语义零改动（可复跑的硬证据）
+
+对题库全量 12135 题逐题跑 `fromPrompt`，把 `JSON.stringify(解析结果)` 取 md5、按题 id 生成清单，基点与分支各跑一次对比：
+
+- 基点：`parsed=187`（quadratic 122 / linear 53 / inverse 12）
+- 分支：`parsed=197`（同前三类计数一模一样，新增 `trig: 10`）
+- 逐题对比：`missing 0`、`changed 0`、`new 10`（10 条全是 `trig`）
+- 既有 187 题摘要按 id 拼串后的汇总 md5：`3a0e3ce138f18a989f6c2ed8c46e5c5d` **前后逐字相等**（本次复核在 `git archive 5262d12` 的干净树上重跑，逐字复现同一 digest）
+
+卡面点名的「既有能解析的 47 题（一次/二次/反比例/方程段）」不是抽样、是这 187 的子集：主口径 384 题里、基点上 `fromPrompt` 能解析的题恰好 **47 条**（按 id 排序拼串的 md5 = `4c45a56958cd7aecfa9d1d2993f86406`，可自证同一批 id），逐题摘要全部落在 `changed 0` 之内；高中 `cnm_h*` 前缀能解析的 61 题也一并 `changed 0`。
+
+即：三角分支是纯新增，一次/二次/反比例的解析与区间归一化一个字没动。方法可复跑：`node <scratch>/b2_md5.js <root> <out>`（对每题的 `JSON.stringify(fromPrompt(prompt))` 取 md5，按 id 排序），基树/分支各一次后按 id 比对。
+
+### 11.4 画板标注口径（周期 2 题的标注原文）
+
+`trig-period` 的画板文案（真浏览器 E2E 抓的渲染后 `textContent`）：
+
+- `cnm_h066_q3`（w=1）：`…图上两条竖直虚线之间的蓝色实线正好是一个周期：T = 2π。**把这个周期除以 π，商是多少？**…`
+- `cnm_h075_q2`（w=2）：`…图上两条竖直虚线之间的蓝色实线正好是一个周期：T = π。**把这个周期除以 π，商是多少？**…`
+
+周期数值直接印在图上（2π / π），答案要的「除以 π 后的数」一步心算可得；x 轴刻度用 π 单位（π/2、π、3π/2、2π），不是抽象符号。
+`trig-extremum` 只把极值点标红、文案写「最大值 = ?」不泄露答案；`trig-monotonic` 只标区间端点与底纹；`trig-parity` 只画对折虚线、不写结论。
+
+### 11.5 先红后绿（新断言在 `5262d12` 的干净树上挂）
+
+- **RED**：`git archive 5262d12` 解到临时目录，**只**把 `tests/test_funclab_hs_batch2.js` 拷进 `tests/`（实现一行未动），跑 `node tests/test_funclab_hs_batch2.js` → **16 passed, 36 failed**。挂的正是新契约：HS_ITEMS 仍是 14 条（断言 23）、三角 9 题 `labFor` 返回 null、5 个 `trig-*` 画板未注册、`promptInterval` 不认 π 端点、带空格字面量仍在。
+- **GREEN**：同一文件在分支 `7c822a6` 上 → **52 passed, 0 failed**。
+
+### 11.6 全量回归与计数口径
+
+`tests/test_*.js` **34 个文件逐个跑，全部 rc=0（0 fail）**。关键计数：`test_funclab.js 163`、`test_funclab_curves.js 63`、`test_funclab_labels.js 22`、`test_funclab_hs_batch1.js 28`、`test_funclab_hs_batch16.js 22`、`test_funclab_hs_batch2.js 52`、`test_labmatch.js 59`；其余 27 个文件同样全绿（含 `test_engine.js 190`、`test_route.js 101`、`test_geomlab.js 118`、`test_llm_variants.js 97`）。
+
+既有测试只改**计数期望**（加 9，不是放宽），逐处在文件里点名，便于抽查：
+
+- `tests/test_funclab_hs_batch1.js:179`「HS_ITEMS 是逐题表，键集合与契约表一致（23 题）」、`:207` / `:216` 的 23 题挂载断言、`:513` `… = 白名单 23 题，一题都不许漏账`
+- 「高中挂载恰好 26 题（23 + 既有 `cnm_h172` 三题）」：`tests/test_funclab_hs_batch1.js:293`、`tests/test_funclab_hs_batch16.js:112`、`tests/test_funclab_hs_batch2.js:133`
+- 旧 14 条清单（`OLD14` 与 `LEDGER` 里 `since=1.5|1.6` 的行）逐字未动；`tests/test_funclab_hs_batch2.js:91` 直接把「旧 14 条逐字不动 + 三角 9 条」写成断言。
+
+### 11.7 已可见 14 题复测台账（真浏览器，390 / 1280 双视口）
+
+真 Chrome 加载真 diagnose 页面，逐题过「表 + intent + 代回」三道闸；两视口的 23 行台账逐字段完全相同（`390 == 1280: True`）。
+
+| 题 id | 接通批次 | 390 可见 | 1280 可见 | 卡在哪道闸 | 画板 |
+| --- | --- | --- | --- | --- | --- |
+| `cnm_h029_q2` | 1.5 | ✅ | ✅ | — | `quadratic-vertex` |
+| `cnm_h034_q3` | 1.5 | ✅ | ✅ | — | `quadratic-vertex` |
+| `cnm_h049_q1` | 1.5 | ✅ | ✅ | — | `quadratic-roots` |
+| `cnm_h226_q1` | 1.5 | ✅ | ✅ | — | `quadratic-vertex` |
+| `cnm_h032_q1` | 1.5 | ✅ | ✅ | — | `linear-trend` |
+| `cnm_h032_q2` | 1.5 | ✅ | ✅ | — | `linear-trend` |
+| `cnm_h049_q2` | 1.5 | ✅ | ✅ | — | `linear-intercepts` |
+| `cnm_h028_q3` | 1.5 | ✅ | ✅ | — | `inverse-domain` |
+| `cnm_h023_q4` | 1.6 | ✅ | ✅ | — | `quadratic-roots` |
+| `cnm_h032_q4` | 1.6 | ✅ | ✅ | — | `quadratic-monotonic` |
+| `cnm_h035_q1` | 1.6 | ✅ | ✅ | — | `quadratic-parity` |
+| `cnm_h036_q4` | 1.6 | ✅ | ✅ | — | `quadratic-parity` |
+| `cnm_h034_q2` | 1.6 | ✅ | ✅ | — | `quadratic-range-on-interval` |
+| `cnm_h227_q2` | 1.6 | ✅ | ✅ | — | `quadratic-range-on-interval` |
+
+零回退：14/14 可见、`gate` 列全空；三角 9 题同时全上（合计 23/23）。`cnm_h069_q4` 不在台账内 —— E2E 里直接调 `Funclab.labForScene(topicId, prompt, { itemId: 'cnm_h069_q4' })` 断言 `null`。
+
+### 11.8 三角 9 题：画板真渲染、标注可读（真浏览器）
+
+- 9 块画板全部 `canvas 560×320`（CSS 宽 376 @390 / 1266 @1280），着色像素 14,723–50,691（1.5 万–5.1 万），ink 2,953–15,560，`溢出=false`，`console error: 无`。
+- 周期题的图上标注（渲染后 `textContent` 抓取，`trig-period`）：
+  - `cnm_h066_q3`（w=1）：`…图上两条竖直虚线之间的蓝色实线正好是一个周期：T = 2π。**把这个周期除以 π，商是多少？** 从图上数一数两条虚线之间横跨了几个 π，自己算出来。` → 2π ÷ π = 2，一步心算
+  - `cnm_h075_q2`（w=2）：同句式 `T = π` → π ÷ π = 1，一步心算
+  - x 轴刻度用 π 记法（π/2、π、3π/2、2π），不是抽象符号
+- 其余画板的分寸：`trig-extremum` 只标波峰/波谷红点，文案是「最大值 = ?」不报数值；`trig-monotonic` 只画区间底纹（橙 36k 像素）+ 端点；`trig-parity` 只画对折虚线；`trig-domain` 只讲「曲线有没有断开」，不写结论。
+
+### 11.9 真 LLM 网关抽验（9 题全过 `Labmatch.resolve`）
+
+**6/9 一次挂上**：`cnm_h066_q1`（trig-extremum/最大值）、`cnm_h066_q2`（trig-extremum/最小值）、`cnm_h066_q3`（trig-period/最小正周期除以 π 后的值）、`cnm_h067_q1`（trig-monotonic/单调性）、`cnm_h068_q4`（trig-parity/奇偶性）、`cnm_h075_q1`（trig-extremum/最大值）。
+
+另 3 条是**模型自己给错参数**、被 `verifyParams` fail-closed 拒掉（设计如此，不是缺陷，也没有放宽去凑 9/9）：
+
+- `cnm_h066_q4`：`intent 不在 trig-domain.canAnswer: 定义域、渐近线`
+- `cnm_h067_q4`：`参数缺失或非数值: xMin`
+- `cnm_h075_q2`：`fn 参数必须是 sin/cos/tan 之一: sin(2x)`
+
+### 11.10 「31 条误挂」重算（三角分支上线后）
+
+- 测算脚本 dump 出来的 `misleading` 恰好 **31 条**，其中三角族 1 条 = `cnm_h069_q4`；该清单与 `tests/test_funclab_hs_batch2.js` 的 `MISLEADING`（31 个 id）逐条一致。
+- 逐条探针（`fromPrompt` → `answer-gate.misfitOf` → `labFor` / `labForScene`）：`upstream-parse-gate=15`、`semantic-gate=16`、**MOUNTED=0**。
+- 翻转点只有一个：`cnm_h069_q4` 在批1.5 时点「解析不出」（算在上游挡里），本卡三角解析上线后**能解析、但被答案语义门禁挡下**（转入语义挡）。所以拆分从「16 上游 + 15 语义」变成「15 上游 + 16 语义」，总数仍是 31，**没有任何一条因为新分支被放上线**。
+  - `tests/test_funclab_hs_batch1.js:595` 的测试标题仍写批1.5 时点的「15 条语义门禁挡下 + 16 条解析闸上游挡」。本卡不动既有测试（红线：既有断言一字不改），口径以本节为准。
+- `cnm_h069_q4` 另有独立两道钉住：`tests/test_funclab_hs_batch2.js:126`（不进 HS_ITEMS、`labFor`/`labForScene` 均 null）、`:659`（即使解析出 trig 也过不了门禁），外加 §11.7 的真浏览器断言。
+
+### 11.11 2902 一行修（批1.6 复核遗留）
+
+- 修前（基点 `5262d12`，`funclab.js:2902`）：`rootCount: type === 'quadratic' && intent === '与 x 轴交点的个数'` —— `intent` 已被 `intentKey()` 去空白，这个字面量恒 false。
+- 修后（本分支，行号因三角分支插入而上移）：`funclab.js:3392` → `rootCount: type === 'quadratic' && intent === '与x轴交点的个数'`。
+- 证据：
+  - `grep -n "与 x 轴交点的个数" diagnose/funclab.js` → **无输出**（`grep -c` = 0，exit=1）
+  - `grep -n "与x轴交点的个数" diagnose/funclab.js` → 命中 **9 处**：659 / 661 / 840 / 1731 / 1735 / 1976 / 1978 / 1981 / 3392（含 `canAnswer`、`NOTE_INTENT`、`labAnswerParts` 与 `rootCount`）
+- 测试钉住 3 条（`tests/test_funclab_hs_batch2.js` 第 11 组）：`intentKey` 归一化、源码里带空格字面量清零（含注释）、`canAnswer` / `NOTE_INTENT` / `labAnswerParts` 三处键口径一致。
