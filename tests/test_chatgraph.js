@@ -26,7 +26,7 @@ function bad(g, baseline, reason) {
   assert.strictEqual(r.reason, reason, '拒绝原因应为 ' + reason + '，实际 ' + r.reason);
 }
 
-/* 21 lab 矩阵用：按 type 的 defaults 造一份合法参数，滑块键缺失时在滑块范围内取值 */
+/* 能力矩阵用：按 type 的 defaults 造一份合法参数，滑块键缺失时在滑块范围内取值 */
 function matrixParams(type) {
   const def = F.TYPE_DEF[type] || {};
   const p = {};
@@ -178,9 +178,30 @@ test('absentNotice：无 Funclab 时不抛错，降级为固定陈述', function
   assert.strictEqual(CG.absentNotice({ type: 'trig', lab: 'trig-domain', fn: 'sin', A: 1, w: 1, phi: 0, k: 0 }, null), '本次回答没有配图。');
 });
 
-test('21 lab 能力矩阵全部可挂', function () {
+/* 画板契约清单：CAPABILITIES 的键（新增 / 改名画板时同步这里）。
+ * lab 数量一律运行时取（Object.keys(F.CAPABILITIES).length），测试里不写字面量 ——
+ * 批4 新增了两个三次画板 cubic-parity / cubic-extremum。 */
+const LAB_NAMES = [
+  'quadratic-vertex', 'quadratic-roots', 'quadratic-monotonic', 'quadratic-parity',
+  'quadratic-inequality', 'quadratic-range-on-interval',
+  'linear-intercepts', 'linear-trend', 'linear-equation',
+  'inverse-quadrants', 'inverse-area', 'inverse-domain',
+  'trig-extremum', 'trig-period', 'trig-parity', 'trig-domain', 'trig-monotonic',
+  'exp-curve', 'log-curve', 'power-curve',
+  'cubic-parity', 'cubic-extremum',
+  'two-curves-intersect'
+];
+
+test('能力矩阵：CAPABILITIES 的每个 lab 都可挂', function () {
   const labs = Object.keys(F.CAPABILITIES);
-  assert.strictEqual(labs.length, 21, 'CAPABILITIES 应正好 21 个 lab，实际 ' + labs.length);
+  const declared = Object.keys(F.CAP_TYPE);
+  /* 数量从 CAPABILITIES 动态取：两边数量必须一致（每个 lab 都要有类型声明），
+   * 且 lab 集合必须与清单逐个对上（含 cubic-parity / cubic-extremum）。 */
+  assert.strictEqual(labs.length, declared.length,
+    'CAPABILITIES 与 CAP_TYPE 的 lab 数应一致，实际 ' + labs.length + ' / ' + declared.length);
+  assert.deepStrictEqual(labs.slice().sort(), LAB_NAMES.slice().sort(),
+    'CAPABILITIES 的 lab 集合应与清单一致（实际 ' + labs.length + ' 个：' + labs.join(',') + '）');
+  let checked = 0;
   labs.forEach(function (lab) {
     const type = F.CAP_TYPE[lab];
     const intent = F.CAPABILITIES[lab].canAnswer[0];
@@ -194,7 +215,9 @@ test('21 lab 能力矩阵全部可挂', function () {
       assert.fail(lab + ' / ' + intent + ' / ' + r.reason);
     }
     console.log('  ok   matrix: ' + lab + ' / ' + intent + ' / ok');
+    checked++;
   });
+  assert.strictEqual(checked, labs.length, '每个 lab 都要过矩阵，实际 ' + checked + ' / ' + labs.length);
 });
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
