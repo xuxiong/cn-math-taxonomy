@@ -560,7 +560,7 @@ test('第2件：批1 全部 13 题（10 二次 + 3 一次）× 各自全部 inte
   assert.deepStrictEqual(bad, [], bad.slice(0, 6).join(' / '));
 });
 
-test('第3件：31 条 misleading 全部被答案语义门禁挡下（cnm_h220_q2 靠导数语义那条）', function () {
+test('第3件：31 条 misleading 一条都不许挂（15 条语义门禁挡下 + 16 条解析闸上游挡）', function () {
   const passed = [];
   const unparsed = [];
   MISLEADING.forEach(function (id) {
