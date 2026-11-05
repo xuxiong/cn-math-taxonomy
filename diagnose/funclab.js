@@ -238,6 +238,162 @@
     return out;
   }
 
+  /* ========================= 批3（t_3dc2f23b）：指数 / 对数 / 幂根式 =========================
+   * 局部预处理只服务下面三个新分支（famExp / famLog / famPower），**绝不动 normalize()** ——
+   * normalize 被既有 197 题共用，改一个字都会波及一次/二次/反比例/三角。
+   * 只在三族分支内部容忍 `f(x)=` / `g(x)=` 前缀（白名单题走 hsPromptAlias，非白名单靠这条）。
+   * 下标记号 ₂、根号 √、上标 ²/³/⁴ 在这一层归一成 log2 / sqrt(...) / ^2，形态以测算脚本为准。
+   */
+  const FAM_SUP = { '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9' };
+  const FAM_SUB = { '₀': '0', '₁': '1', '₂': '2', '₃': '3', '₄': '4', '₅': '5', '₆': '6', '₇': '7', '₈': '8', '₉': '9' };
+  const FAM_NO_HEAD = {};   // 头没匹配：本分支不管，继续走后面的既有分支
+  const FAM_SKIP = {};      // 头匹配但 p∈{1,2,3}：交回一次/二次既有通道
+
+  function famSeg(prompt) {
+    let t = String(prompt == null ? '' : prompt);
+    t = t.replace(/^\s*[fg]\s*\(\s*x\s*\)\s*=/, 'y=');
+    t = t.replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹⁻]+/g, function (m) {
+      const neg = m.indexOf('⁻') >= 0;
+      const digits = m.replace(/⁻/g, '').split('').map(function (ch) { return FAM_SUP[ch] || ''; }).join('');
+      return (neg ? '^-' : '^') + digits;
+    });
+    t = t.replace(/[₀₁₂₃₄₅₆₇₈₉]+/g, function (m) {
+      return m.split('').map(function (ch) { return FAM_SUB[ch]; }).join('');
+    });
+    t = t.replace(/√\s*\(([^()]*)\)/g, 'sqrt($1)');
+    t = t.replace(/√\s*([0-9a-zA-Z]+)/g, 'sqrt($1)');
+    t = t.replace(/[·×]/g, '*');
+    return t;
+  }
+
+  /** 三族共用的「y= 之后的右式」；没有 y= 返回 null（f(x)= 已在 famSeg 内换掉） */
+  function famRhs(seg) {
+    const m = /(?:^|[^0-9A-Za-z_.])y\s*=/.exec(seg);
+    if (!m) return null;
+    return seg.slice(m.index + m[0].length);
+  }
+
+  /** 数字 / 分数 / 小数 → 数值；解析不出 null（只认纯数值，字母一律 null） */
+  function famNum(tok) {
+    const s = String(tok == null ? '' : tok).replace(/\s+/g, '');
+    if (s === '') return null;
+    const fm = /^([+-]?)(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)$/.exec(s);
+    if (fm) {
+      const v = parseFloat(fm[2]) / parseFloat(fm[3]);
+      return fm[1] === '-' ? -v : v;
+    }
+    if (/^[+-]?\d+(?:\.\d+)?$/.test(s)) return parseFloat(s);
+    return null;
+  }
+
+  /** 对数底数记号：`2` / `1/2` / `(1/2)` / `{1/2}` → { tok, len }（len 含括号，便于切剩余串） */
+  function famBaseToken(s) {
+    const t = String(s);
+    if (t[0] === '(' || t[0] === '{') {
+      const close = t[0] === '(' ? ')' : '}';
+      const i = t.indexOf(close);
+      if (i < 0) return null;
+      return { tok: t.slice(1, i), len: i + 1 };
+    }
+    const m = /^\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?/.exec(t);
+    if (!m) return null;
+    return { tok: m[0], len: m[0].length };
+  }
+
+  /** 指数：y = a·base^(w x + phi) + k。头匹配后任何一项抠不出 → null（不许掉进后面的分支）。 */
+  function famExp(rhs) {
+    if (rhs == null) return FAM_NO_HEAD;
+    const hm = /^\s*([+-]?\d*\.?\d*)\s*\*?\s*(?:\(\s*([0-9.]+(?:\s*\/\s*[0-9.]+)?)\s*\)|([0-9.]+(?:\s*\/\s*[0-9.]+)?))\s*\^/.exec(rhs);
+    if (!hm) return FAM_NO_HEAD;
+    const a = coeffNum(hm[1]);
+    const base = famNum(hm[2] != null ? hm[2] : hm[3]);
+    if (!isFinite(a) || base == null || !isFinite(base)) return null;
+    if (!(base > 0) || Math.abs(base - 1) < 1e-12) return null;
+    let rest = rhs.slice(hm[0].length);
+    const em = /^\s*\(?\s*([+-]?\d*\.?\d*)\s*\*?\s*x(?![⁰¹²³⁴⁵⁶⁷⁸⁹\^])\s*(?:([+-])\s*(\d+\.?\d*))?\s*\)?/.exec(rest);
+    if (!em) return null;
+    const wS = (em[1] === '' || em[1] === '+') ? '1' : (em[1] === '-' ? '-1' : em[1]);
+    if (!/^[+-]?\d*\.?\d*$/.test(wS) && !/^[+-]?\d+(?:\.\d+)?$/.test(wS)) return null;
+    const w = parseFloat(wS);
+    if (!isFinite(w)) return null;
+    const phi = em[2] ? (em[2] === '-' ? -1 : 1) * parseFloat(em[3]) : 0;
+    rest = rest.slice(em[0].length);
+    if (/^\s*\^/.test(rest)) return null;             // y=2^x² 这类上标叠指数 → 画不了
+    const km = /^\s*([+-])\s*(\d+\.?\d*)/.exec(rest);
+    const k = km ? (km[1] === '-' ? -1 : 1) * parseFloat(km[2]) : 0;
+    if (!isFinite(phi) || !isFinite(k)) return null;
+    return { type: 'exp', a: a, base: base, w: w, phi: phi === 0 ? 0 : phi, k: k === 0 ? 0 : k };
+  }
+
+  /** 对数：y = c·log_base(x + shift) + d。底数/真数任一抠不出 → null。 */
+  function famLog(rhs) {
+    if (rhs == null) return FAM_NO_HEAD;
+    const hm = /^\s*([+-]?\d*\.?\d*)\s*\*?\s*(log|lg|ln)/.exec(rhs);
+    if (!hm) return FAM_NO_HEAD;
+    const c = coeffNum(hm[1]);
+    if (!isFinite(c)) return null;
+    const fn = hm[2];
+    let base = fn === 'lg' ? 10 : (fn === 'ln' ? Math.E : null);
+    let rest = rhs.slice(hm[0].length);
+    let bt = null;
+    if (rest[0] === '_') {
+      rest = rest.slice(1).replace(/^\s+/, '');
+      bt = famBaseToken(rest);
+      if (!bt) return null;
+      base = famNum(bt.tok);
+      rest = rest.slice(bt.len);
+    } else if (/^[0-9({]/.test(rest)) {
+      bt = famBaseToken(rest);
+      if (!bt) return null;
+      base = famNum(bt.tok);
+      rest = rest.slice(bt.len);
+    }
+    if (base == null || !isFinite(base)) return null;
+    if (!(base > 0) || Math.abs(base - 1) < 1e-12) return null;
+    const am = /^\s*\(?\s*x(?![⁰¹²³⁴⁵⁶⁷⁸⁹\^a-zA-Z])\s*(?:([+-])\s*(\d+\.?\d*))?\s*\)?/.exec(rest);
+    if (!am) return null;
+    const shift = am[1] ? (am[1] === '-' ? -1 : 1) * parseFloat(am[2]) : 0;
+    rest = rest.slice(am[0].length);
+    if (/^\s*[a-zA-Z\^]/.test(rest)) return null;      // 真数后面还挂字母/幂 → 不是 x±数字
+    const dm = /^\s*([+-])\s*(\d+\.?\d*)/.exec(rest);
+    const d = dm ? (dm[1] === '-' ? -1 : 1) * parseFloat(dm[2]) : 0;
+    if (!isFinite(shift) || !isFinite(d)) return null;
+    return { type: 'log', c: c, base: base, shift: shift === 0 ? 0 : shift, d: d === 0 ? 0 : d };
+  }
+
+  /** 幂根式：y = a·x^p（p∉{1,2,3}）/ y = a·√(bx+c)+k。p∈{1,2,3} → FAM_SKIP 交既有通道。 */
+  function famPower(rhs) {
+    if (rhs == null) return FAM_NO_HEAD;
+    let m = /^\s*([+-]?\d*\.?\d*)\s*\*?\s*x\s*\^\s*(?:\(\s*([+-]?\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?)\s*\)|([+-]?\d+(?:\.\d+)?))/.exec(rhs);
+    if (m) {
+      const a = coeffNum(m[1]);
+      const p = famNum(m[2] != null ? m[2] : m[3]);
+      if (!isFinite(a) || p == null || !isFinite(p)) return null;
+      if (p === 1 || p === 2 || p === 3) return FAM_SKIP;   // x / x² / x³ 交给一次/二次既有分支
+      /* 指数后面紧跟 `/`（y=x^4/8 = 系数被除法约掉）不是 a·x^p，画不了 → null。
+         分数指数只认括号形 x^(1/2)；裸写 x^2/8 必须先落到 p=2 的 FAM_SKIP，由既有二次通道判 bad。 */
+      if (/^\s*[/^*]/.test(rhs.slice(m[0].length))) return null;
+      return { type: 'power', a: a, p: p === 0 ? 0 : p };
+    }
+    m = /^\s*([+-]?\d*\.?\d*)\s*\*?\s*sqrt\s*\(\s*([^()]*)\s*\)/.exec(rhs);
+    if (m) {
+      const a = coeffNum(m[1]);
+      if (!isFinite(a)) return null;
+      const inner = m[2].replace(/\s+/g, '');
+      const im = /^([+-]?\d*\.?\d*)\*?x(?:([+-])(\d+\.?\d*))?$/.exec(inner);
+      if (!im) return null;                            // √(x²+1) / √(x+1)(x-1) → 画不了
+      const b = coeffNum(im[1]);
+      const c = im[2] ? (im[2] === '-' ? -1 : 1) * parseFloat(im[3]) : 0;
+      if (!isFinite(b) || !isFinite(c) || b === 0) return null;
+      let rest = rhs.slice(m[0].length);
+      const km = /^\s*([+-])\s*(\d+\.?\d*)/.exec(rest);
+      const k = km ? (km[1] === '-' ? -1 : 1) * parseFloat(km[2]) : 0;
+      if (!isFinite(k)) return null;
+      return { type: 'power', a: a, root: { b: b, c: c === 0 ? 0 : c }, k: k === 0 ? 0 : k };
+    }
+    return FAM_NO_HEAD;
+  }
+
   /**
    * 从题面解析函数参数 → {type, ...params}，解析不出返回 null。
    * 二次：{type:'quadratic', a, h, k}   一次：{type:'linear', k, b}   反比例：{type:'inverse', k}
@@ -260,6 +416,20 @@
       const k = coeffNum(m[1]);
       if (k !== 0 && isFinite(k)) return { type: 'inverse', k: k };
     }
+
+    // ---------- 批3：指数 / 对数 / 幂根式（t_3dc2f23b）----------
+    // 位置铁律：反比例之后、一次函数之前（三角之前/之后均可，这里放三角之前）。
+    // 三族头匹配成功就必须由本族给出结论（对象或 null），只有「头没匹配」才继续往下走；
+    // 唯一例外是 power 的 p∈{1,2,3}：明确交回既有一次/二次通道（FAM_SKIP），不许截走 y=x²。
+    // famSeg 只在这三支内部做下标/根号/上标/`f(x)=` 前缀的局部归一 —— normalize() 一个字不动。
+    const fam = famSeg(s);
+    const fRhs = famRhs(fam);
+    const fe = famExp(fRhs);
+    if (fe !== FAM_NO_HEAD && fe !== FAM_SKIP) return fe;
+    const fl = famLog(fRhs);
+    if (fl !== FAM_NO_HEAD && fl !== FAM_SKIP) return fl;
+    const fp = famPower(fRhs);
+    if (fp !== FAM_NO_HEAD && fp !== FAM_SKIP) return fp;
 
     // ---------- 三角函数（批2）：y = A·sin(ωx+φ) + k ----------
     // 位置铁律：反比例之后、一次函数之前（y=x² / y=2x+1 / y=k/x 一个都不许被截走 ——
@@ -460,7 +630,18 @@
     'cnm_h067_q4': 'trig',        // y=sin x 在 [π/2,3π/2] 上整体的单调性 → 阴影段走向
     'cnm_h068_q4': 'trig',        // y=cos x 的奇偶性 → 沿 y 轴对折
     'cnm_h075_q1': 'trig',        // y=2sin x 的最大值 → 波峰纵坐标
-    'cnm_h075_q2': 'trig'         // y=sin(2x) 的最小正周期除以 π → 两条虚线间周期
+    'cnm_h075_q2': 'trig',        // y=sin(2x) 的最小正周期除以 π → 两条虚线间周期
+    /* ---- 指数 / 对数 gated ok（7，批3）：值域 / 单调性 / 定义域 / 定点 ----
+     * 来源：scripts/measure_highschool_funclab_coverage.js 判 `gated ok` 的指对族题；
+     * 幂根式族本批 0 题（族内 3 题 ok 0 / extend 2 / misleading 1），画板照做但只进合成用例。
+     * 值与 fromPrompt().type 逐字一致（labFor 的双保险靠这个）。 */
+    'cnm_h029_q4': 'exp',         // y=2^x 的值域 → 曲线在水平渐近线上方
+    'cnm_h042_q1': 'exp',         // y=2^x 在实数集上的增减 → 曲线走向
+    'cnm_h042_q2': 'exp',         // y=(1/2)^x 在实数集上的增减 → 曲线走向
+    'cnm_h046_q2': 'log',         // y=log₂x 的定义域 → 曲线只在竖直渐近线右侧
+    'cnm_h046_q4': 'log',         // y=log₂x 经过的定点 → 红色圆点
+    'cnm_h047_q1': 'log',         // y=log₂x 在 (0,+∞) 上的增减 → 曲线走向
+    'cnm_h047_q2': 'log'          // y=log_(1/2)x 在定义域上的增减 → 曲线走向
   };
 
   /** 高中逐题放行：返回画板类型，未放行返回 null（按题 id，不看章） */
@@ -561,6 +742,8 @@
     }
     /* 批2：三角无「基准曲线」概念（平移对比类题目尚未立项），不叠画 */
     if (type === 'trig') return null;
+    /* 批3：指数 / 对数 / 幂根式同样不叠画基准曲线（画板自带渐近线/定义域边界） */
+    if (type === 'exp' || type === 'log' || type === 'power') return null;
     const s = normalize(prompt);
     const shiftWord = /平移|向左|向右|向上|向下/.test(s);
     const explicitBase = /y\s*=\s*[+-]?\s*x²/.test(s) && !/y\s*=\s*[+-]?\s*\d/.test(s);
@@ -770,6 +953,32 @@
       note: '题面给的区间已用淡色底纹标出：看这一段里曲线是上升还是下降，'
         + '读出这一段是增函数还是减函数。波浪线一段一段地升降，只看区间内那一段。'
     },
+    /* ---- 指数 / 对数 / 幂根式（批3：t_3dc2f23b） ----
+     * 三张画板对应批3白名单 7 题的 4 类 intent。文案铁律见 NOTE_INTENT 同族注释：
+     * 只印题面已知量（{y2} 原函数式）+ 引导提问，不印坐标/渐近线位置/值域范围/增减结论；
+     * 文案里的线型颜色必须与 paintModel / annotate 的实际绘制参数逐字一致。 */
+    'exp-curve': {
+      canAnswer: ['值域', '单调性'],
+      params: ['a', 'base', 'w', 'phi', 'k'],
+      note: '指数函数 y=a·base^(w x+phi)+k 的图象：蓝色实线是曲线，灰色水平虚线是渐近线 y=k，'
+        + '红色圆点标出 x=0 与 x=1 两处的函数值（只标点、不印数值）。'
+        + '曲线整体在渐近线某一侧，上下走向看图；值域与单调性都从图上读。'
+    },
+    'log-curve': {
+      canAnswer: ['定义域', '单调性', '图象经过的定点'],
+      params: ['c', 'base', 'shift', 'd'],
+      note: '对数函数 y=c·log_base(x+shift)+d 的图象：蓝色实线只画在定义域内，'
+        + '浅色底纹标出定义域一侧；灰色竖直虚线是渐近线，曲线在虚线处断开。'
+        + '红色圆点标出图象经过的定点与另一个参考点（只标点、不印数值）。'
+    },
+    'power-curve': {
+      canAnswer: ['定义域', '单调性', '图象经过的定点', '值域'],
+      params: ['a', 'p', 'root', 'k'],
+      note: '幂函数 / 根式函数的图象：蓝色实线是曲线；'
+        + '多项式形 p<0 时画灰色竖直虚线渐近线与灰色水平虚线渐近线，p>0 时红色圆点标出 (0,0) 与 (1,1)；'
+        + '根式形只画在定义域内，红色圆点标出定义域起点，灰色竖直虚线标定义域边界。'
+        + '定义域、值域、单调性与定点都从图上读。'
+    },
     /* ---- 多曲线：一个坐标系里两条曲线 + 它们的交点（t_1d3fe77a） ---- */
     'two-curves-intersect': {
       type: 'curves',
@@ -807,6 +1016,9 @@
     'trig-parity': 'trig',
     'trig-domain': 'trig',
     'trig-monotonic': 'trig',
+    'exp-curve': 'exp',
+    'log-curve': 'log',
+    'power-curve': 'power',
     'two-curves-intersect': 'curves'
   };
 
@@ -923,6 +1135,42 @@
       '单调性': '题面给的区间 {xMin} ≤ x ≤ {xMax} 已用淡色底纹标出：'
         + '**只看这一段，曲线从左往右是往上走还是往下走？** '
         + '波浪线一段一段地升降，读出这一段是增函数还是减函数，自己从图上看。'
+    },
+    /* ---- 指数 / 对数 / 幂根式（批3）：文案只印题面已知量 {y2} + 引导提问 ----
+     * 铁律：不印坐标、渐近线位置数值、值域/定义域范围、增减结论、a/k/shift/d 的数值；
+     * 渲染层是 textContent（不解析 Markdown）→ 新文案不许出现 ** 强调符；
+     * 「灰色水平虚线」「灰色竖直虚线」「蓝色实线」「红色圆点」「浅色底纹」与 paintModel/annotate 同源。 */
+    'exp-curve': {
+      '值域': '题面给的函数是 {y2}。看蓝色实线在整张图上能取到哪些 y 值：'
+        + '曲线会不会越过灰色水平虚线（渐近线）？它向上（或向下）延伸到多远？'
+        + '值域该怎么写？ 自己从图上读，图上不标范围。',
+      '单调性': '题面给的函数是 {y2}。看蓝色实线从左往右的走向：'
+        + '曲线是一直往上，还是一直往下？它在实数集上的增减性如何？ '
+        + '自己从图上读，图上不写结论。'
+    },
+    'log-curve': {
+      '定义域': '题面给的函数是 {y2}。看蓝色实线从哪一处开始有图象：'
+        + '灰色竖直虚线左边还有曲线吗？曲线是不是在虚线处断开？'
+        + '定义域该怎么写？ 自己从图上读，图上不标范围。',
+      '单调性': '题面给的函数是 {y2}。看蓝色实线从左往右的走向：'
+        + '曲线是一直往上，还是一直往下？它在定义域内的增减性如何？ '
+        + '自己从图上读，图上不写结论。',
+      '图象经过的定点': '题面给的函数是 {y2}。看蓝色实线上的红色圆点：'
+        + '曲线固定经过哪个点？这个点的横、纵坐标各是多少？ '
+        + '图上只标了点，坐标留给你读。'
+    },
+    'power-curve': {
+      '定义域': '题面给的函数是 {y2}。看蓝色实线在 x 方向上从哪一范围开始有图象：'
+        + '边界之外还有曲线吗？定义域该怎么写？ 自己从图上读，图上不标范围。',
+      '单调性': '题面给的函数是 {y2}。看蓝色实线在定义域内从左往右的走向：'
+        + '曲线是一直往上，还是一直往下？它的增减性如何？ '
+        + '自己从图上读，图上不写结论。',
+      '图象经过的定点': '题面给的函数是 {y2}。看蓝色实线上标出的红色圆点：'
+        + '曲线固定经过哪个点？这个点的横、纵坐标各是多少？ '
+        + '图上只标了点，坐标留给你读。',
+      '值域': '题面给的函数是 {y2}。看蓝色实线在整张图上能取到哪些 y 值：'
+        + '曲线向上、向下各能延伸到多远？值域该怎么写？ '
+        + '自己从图上读，图上不标范围。'
     },
     /* 多曲线画板（t_1d3fe77a）：两条曲线的表达式是题面已知量，交点坐标是派生量 → 一律留白。
      * 文案里不许出现「根」字（test_labmatch 的通用断言），只说「交点」。 */
@@ -1042,15 +1290,18 @@
           + '图上不标交点（这条画板不在图上给答案）。';
       }
     }
+    /* 批3：指数/对数/幂根式的函数式要带全部结构参数（base/w/phi/c/shift/d/p/root），
+     * 不能只传 a/h/k/b —— 否则文案里会印出 y = ?·?^(?x+?)+? 这类缺参鬼话。 */
+    const formulaParams = Object.assign({}, p, { type: type });
     return fill(noteTemplate(lab, it), {
       /* 已知量：a（二次系数）、b（一次截距）、k（一次斜率/反比例系数）—— 题面原样给出 */
       a: fmtQuad(p.a), k: fmtQuad(p.k), b: fmtQuad(p.b),
-      y: formatFormula({ type: type, a: p.a, h: p.h, k: p.k, b: p.b }),
+      y: formatFormula(formulaParams),
       /* 对称轴题专用：抛物线式里不能带顶点的横坐标（(x - {h})² 的 h 就是对称轴 = 答案），
        * 所以只印「开口与宽窄」（y = a·x² + …），曲线的形状照画，位置留问号。 */
       y2: type === 'quadratic'
         ? ('y = ' + (p.a === 1 ? '' : p.a === -1 ? '-' : fmtQuad(p.a)) + 'x² + …')
-        : formatFormula({ type: type, a: p.a, h: p.h, k: p.k, b: p.b }),
+        : formatFormula(formulaParams),
       xMin: xMin, xMax: xMax,
       /* 批2 trig-period 专用：T = 2π/|ω|（正切是 π/|ω|）。这是唯一可印的派生数值 ——
        * 它是结构常量：ω 扰动后 T 跟着变，题目答案（T/π）不变，审计按结构常量放行。
@@ -1462,6 +1713,22 @@
    * view() 里 y 范围不影响 x 方向裁剪，故这里只算 xMin/xMax。
    */
   function curveWindow(p, base) {
+    const t = p.type || 'quadratic';
+    if (t === 'exp') return { xMin: -3, xMax: 3 };
+    if (t === 'log') {
+      const shift = isFinite(p.shift) ? p.shift : 0;
+      const base = isFinite(p.base) && p.base > 0 ? p.base : 2;
+      const start = -shift;
+      return { xMin: start - 1, xMax: start + Math.max(3, base) + 2 };
+    }
+    if (t === 'power') {
+      if (p.root && isFinite(p.root.b) && p.root.b !== 0) {
+        const start = -p.root.c / p.root.b;
+        return { xMin: start - 1, xMax: start + 6 };
+      }
+      const pw = isFinite(p.p) ? p.p : 1;
+      return pw < 0 ? { xMin: -6, xMax: 6 } : { xMin: -2, xMax: 2 };
+    }
     const refs = [{ h: p.h, k: p.k }];
     if (base) refs.push({ h: base.h, k: base.k });
     let hMin = p.h, hMax = p.h;
@@ -1511,7 +1778,10 @@
       : type === 'inverse' ? '反比例函数图象（双曲线）'
         : type === 'curves' ? '两条函数的图象与它们的交点'
           : type === 'trig' ? '三角函数图象（波浪线）'
-            : '二次函数图象（抛物线）';
+            : type === 'exp' ? '指数函数图象（曲线与水平渐近线）'
+              : type === 'log' ? '对数函数图象（曲线与竖直渐近线）'
+                : type === 'power' ? '幂函数 / 根式函数图象'
+                  : '二次函数图象（抛物线）';
   }
 
   /** 目标曲线描述：只印题面已知量（a/直线的 k,b/反比例 k/trig 的解析式），quadratic 不印 h/k（顶点是派生量） */
@@ -1525,7 +1795,22 @@
     if (type === 'trig') {
       return '题面给出的三角函数图象（' + formatFormula({ type: 'trig', fn: p.fn, A: p.A, w: p.w, phi: p.phi, k: p.k }) + '）';
     }
+    if (type === 'exp') {
+      return '题面给出的指数函数图象（' + formatFormula(Object.assign({ type: 'exp' }, p)) + '）';
+    }
+    if (type === 'log') {
+      return '题面给出的对数函数图象（' + formatFormula(Object.assign({ type: 'log' }, p)) + '）';
+    }
+    if (type === 'power') {
+      return '题面给出的幂函数 / 根式函数图象（' + formatFormula(Object.assign({ type: 'power' }, p)) + '）';
+    }
     return '题面给出的抛物线（a = ' + fmtQuad(p.a) + '，' + (p.a > 0 ? '开口向上' : '开口向下') + '）';
+  }
+
+  /** 哪些画板类型的 base 是「基准曲线」配置：仅这四族。
+   *  exp/log 的 base 是数值底数，power 没有基准曲线；curves 走独立分支。 */
+  function hasBaseCurve(type) {
+    return type === 'quadratic' || type === 'linear' || type === 'inverse' || type === 'trig';
   }
 
   /** 基准曲线描述：也不印派生量（quadratic 基准的顶点横坐标 = 蓝色曲线 = 答案，留白） */
@@ -1608,6 +1893,12 @@
      * 「y = NaN·sin(NaNx)」这类鬼话，宁可不出描述（与 quadratic 空参数同口径返回 null） */
     if (type === 'trig' && (!isFinite(p.A) || !isFinite(p.w) || !isFinite(p.phi) || !isFinite(p.k)
       || p.w === 0 || !(p.fn === 'sin' || p.fn === 'cos' || p.fn === 'tan'))) return null;
+    if (type === 'exp' && (!isFinite(p.a) || !isFinite(p.base) || !isFinite(p.w)
+      || !isFinite(p.phi) || !isFinite(p.k) || !(p.base > 0) || Math.abs(p.base - 1) < 1e-12 || p.w === 0)) return null;
+    if (type === 'log' && (!isFinite(p.c) || !isFinite(p.base) || !isFinite(p.shift) || !isFinite(p.d)
+      || !(p.base > 0) || Math.abs(p.base - 1) < 1e-12)) return null;
+    if (type === 'power' && (!isFinite(p.a) || p.a === 0
+      || !((p.root && isFinite(p.root.b) && isFinite(p.root.c) && p.root.b !== 0) || isFinite(p.p)))) return null;
     /* curves：缺 curves（或不合法）时**照样出描述** —— 通用测试会拿空参数调 describe，
      * 那时只能说「两条曲线」的通用措辞，不能返回 null（返回 null 会让 AI 讲解拿不到画板）。 */
     if (type === 'curves') return paintCurves(it, p);
@@ -1615,7 +1906,8 @@
     const elements = [];
     elements.push({ kind: 'grid-axes', text: '坐标平面：黑色 x 轴与 y 轴、浅灰网格与刻度数字', style: '坐标轴与网格' });
     elements.push({ kind: 'curve', text: '蓝色实线：' + curveDesc(type, p), style: '蓝色实线' });
-    const base = (p.base && (!p.base.type || p.base.type === type)) ? p.base : null;
+    const base = (hasBaseCurve(type) && p.base && typeof p.base === 'object'
+      && (!p.base.type || p.base.type === type)) ? p.base : null;
     if (base) elements.push({ kind: 'base-curve', text: '灰色虚线：' + baseDesc(type, p, base), style: '灰色虚线' });
 
     /* 批2 trig：每个 intent 只叠加对应的标注，与 annotate() 的绘制分支一一同源
@@ -1667,6 +1959,58 @@
           text: '橙色半透明阴影：题面给的区间 ' + fmtPiNum(p.xMin) + ' ≤ x ≤ ' + fmtPiNum(p.xMax)
             + '，只看这一段从左往右是升还是降（是增函数还是减函数？走向 = ?）',
           style: '橙色阴影'
+        });
+      }
+    } else if (type === 'exp') {
+      elements.push({
+        kind: 'asymptote',
+        text: '灰色水平虚线：渐近线，曲线无限逼近它但永不相交；它的位置留给你从 y 轴上读',
+        style: '灰色水平虚线'
+      });
+      elements.push({
+        kind: 'sample-points',
+        text: '红色圆点：x=0 与 x=1 两处的函数值（只标点、不印数值）',
+        style: '红色圆点'
+      });
+    } else if (type === 'log') {
+      elements.push({
+        kind: 'domain-band',
+        text: '浅色底纹：定义域一侧（灰色竖直虚线右侧）的可行区域，虚线位置留给你从 x 轴上读',
+        style: '浅色底纹'
+      });
+      elements.push({
+        kind: 'asymptote',
+        text: '灰色竖直虚线：渐近线，曲线在虚线处断开、只画在定义域一侧；它的位置留给你从 x 轴上读',
+        style: '灰色竖直虚线'
+      });
+      elements.push({
+        kind: 'fixed-point',
+        text: '红色圆点：图象经过的定点与另一个参考点（只标点、不印坐标）',
+        style: '红色圆点'
+      });
+    } else if (type === 'power') {
+      if (p.root && isFinite(p.root.b)) {
+        elements.push({
+          kind: 'domain-boundary',
+          text: '灰色竖直虚线：定义域边界，曲线只画在虚线一侧；边界位置留给你从 x 轴上读',
+          style: '灰色竖直虚线'
+        });
+        elements.push({
+          kind: 'fixed-point',
+          text: '红色圆点：定义域起点（只标点、不印坐标）',
+          style: '红色圆点'
+        });
+      } else if (isFinite(p.p) && p.p < 0) {
+        elements.push({
+          kind: 'asymptote',
+          text: '灰色竖直虚线（x=0）与灰色水平虚线（y=0）：两条渐近线，曲线无限逼近但永不相交',
+          style: '灰色虚线'
+        });
+      } else {
+        elements.push({
+          kind: 'fixed-point',
+          text: '红色圆点：(0,0) 与 (1,1) 两个参考点（只标点、不印数值）',
+          style: '红色圆点'
         });
       }
     } else if (type === 'quadratic') {
@@ -2066,6 +2410,27 @@
         default: return [];
       }
     }
+    /* 批3：指数 / 对数 / 幂根式。值域、定义域、单调性都是判断题 → 不给输入行；
+     * 只有「图象经过的定点」是坐标题（两个数字框）。 */
+    if (type === 'exp') {
+      if (!isFinite(p.a) || !isFinite(p.base) || !isFinite(p.w) || !isFinite(p.phi) || !isFinite(p.k) || p.w === 0) return [];
+      return [];
+    }
+    if (type === 'log') {
+      if (!isFinite(p.c) || !isFinite(p.base) || !isFinite(p.shift) || !isFinite(p.d)) return [];
+      if (it === '图象经过的定点') return [res('定点的横、纵坐标', 'pair', [-p.shift + 1, p.d])];
+      return [];
+    }
+    if (type === 'power') {
+      if (!isFinite(p.a)) return [];
+      if (it === '图象经过的定点') {
+        if (p.root && isFinite(p.root.b) && p.root.b !== 0 && isFinite(p.k)) {
+          return [res('定点的横、纵坐标', 'pair', [-p.root.c / p.root.b, p.k])];
+        }
+        if (isFinite(p.p) && p.p > 0) return [res('定点的横、纵坐标', 'pair', [1, 1])];
+      }
+      return [];
+    }
     return [];
   }
 
@@ -2158,6 +2523,30 @@
         { key: 'k', label: 'k(上下平移)', min: -8, max: 8, step: 0.1 }
       ],
       defaults: { A: 1, w: 1, phi: 0, k: 0 }
+    },
+    /* 批3：指数 / 对数 / 幂根式。w/phi（指数）、shift（对数）、p 或 root/k（幂根式）
+     * 随解析值固定，不做滑块（与任务书 4.4 一致）。 */
+    exp: {
+      sliders: [
+        { key: 'a', label: 'a(纵向伸缩与方向)', min: -4, max: 4, step: 0.1 },
+        { key: 'base', label: 'base(底数,决定升降)', min: 0.1, max: 5, step: 0.1 },
+        { key: 'k', label: 'k(上下平移,渐近线高度)', min: -8, max: 8, step: 0.1 }
+      ],
+      defaults: { a: 1, base: 2, w: 1, phi: 0, k: 0 }
+    },
+    log: {
+      sliders: [
+        { key: 'c', label: 'c(纵向伸缩与方向)', min: -4, max: 4, step: 0.1 },
+        { key: 'base', label: 'base(底数,决定升降)', min: 0.1, max: 5, step: 0.1 },
+        { key: 'd', label: 'd(上下平移)', min: -8, max: 8, step: 0.1 }
+      ],
+      defaults: { c: 1, base: 2, shift: 0, d: 0 }
+    },
+    power: {
+      sliders: [
+        { key: 'a', label: 'a(纵向伸缩与方向)', min: -4, max: 4, step: 0.1 }
+      ],
+      defaults: { a: 1, p: 4, k: 0 }
     }
   };
 
@@ -2547,6 +2936,61 @@
       else if (p.k < 0) s += ' - ' + fmt(-p.k);
       return s;
     }
+    if (type === 'exp') {
+      const a = isFinite(p.a) ? p.a : 1;
+      const base = isFinite(p.base) && p.base > 0 ? p.base : 2;
+      const w = isFinite(p.w) ? p.w : 1;
+      const phi = isFinite(p.phi) ? p.phi : 0;
+      const k = isFinite(p.k) ? p.k : 0;
+      const aPart = a === 1 ? '' : a === -1 ? '-' : fmt(a) + '·';
+      const bPart = Math.abs(base - Math.E) < 1e-12 ? 'e'
+        : (base < 1 && Math.abs(Math.round(1 / base) - 1 / base) < 1e-12
+          ? '(1/' + Math.round(1 / base) + ')' : fmt(base));
+      let arg = w === 1 ? 'x' : w === -1 ? '-x' : fmt(w) + 'x';
+      if (phi > 0) arg += ' + ' + fmt(phi);
+      else if (phi < 0) arg += ' - ' + fmt(-phi);
+      let s = 'y = ' + aPart + bPart + '^' + (arg === 'x' ? 'x' : '(' + arg + ')');
+      if (k > 0) s += ' + ' + fmt(k);
+      else if (k < 0) s += ' - ' + fmt(-k);
+      return s;
+    }
+    if (type === 'log') {
+      const c = isFinite(p.c) ? p.c : 1;
+      const base = isFinite(p.base) && p.base > 0 ? p.base : 2;
+      const shift = isFinite(p.shift) ? p.shift : 0;
+      const d = isFinite(p.d) ? p.d : 0;
+      const cPart = c === 1 ? '' : c === -1 ? '-' : fmt(c) + '·';
+      const bPart = Math.abs(base - Math.E) < 1e-12 ? 'ln '
+        : Math.abs(base - 10) < 1e-12 ? 'lg '
+          : 'log_' + (base < 1 && Math.abs(Math.round(1 / base) - 1 / base) < 1e-12
+            ? '(1/' + Math.round(1 / base) + ')' : fmt(base)) + ' ';
+      let arg = 'x';
+      if (shift > 0) arg += ' + ' + fmt(shift);
+      else if (shift < 0) arg += ' - ' + fmt(-shift);
+      let s = 'y = ' + cPart + bPart + '(' + arg + ')';
+      if (d > 0) s += ' + ' + fmt(d);
+      else if (d < 0) s += ' - ' + fmt(-d);
+      return s;
+    }
+    if (type === 'power') {
+      const a = isFinite(p.a) ? p.a : 1;
+      const aPart = a === 1 ? '' : a === -1 ? '-' : fmt(a) + '·';
+      if (p.root) {
+        const b = isFinite(p.root.b) ? p.root.b : 1;
+        const c = isFinite(p.root.c) ? p.root.c : 0;
+        const k = isFinite(p.k) ? p.k : 0;
+        let inner = (b === 1 ? 'x' : b === -1 ? '-x' : fmt(b) + 'x');
+        if (c > 0) inner += ' + ' + fmt(c);
+        else if (c < 0) inner += ' - ' + fmt(-c);
+        let s = 'y = ' + aPart + '√(' + inner + ')';
+        if (k > 0) s += ' + ' + fmt(k);
+        else if (k < 0) s += ' - ' + fmt(-k);
+        return s;
+      }
+      const pw = isFinite(p.p) ? p.p : 1;
+      const pPart = pw === 0.5 ? '(1/2)' : pw < 0 ? '(' + fmt(pw) + ')' : fmt(pw);
+      return 'y = ' + aPart + 'x^' + pPart;
+    }
     // quadratic
     let aPart;
     if (p.a === 1) aPart = '';
@@ -2579,7 +3023,9 @@
     const def = TYPE_DEF[type];
     const p = Object.assign({}, def.defaults, o);
     p.type = type;
-    delete p.base;      // 原曲线配置只放进 base，不污染目标参数 p（否则滑块/公式会带上它）
+    // 原曲线配置只放进 base，不污染目标参数 p（否则滑块/公式会带上它）。
+    // 但 exp/log 的 base 是**数值底数**，不是基准曲线配置，绝不能删。
+    if (p.base && typeof p.base === 'object') delete p.base;
     const intent = intentKey(o.intent);
     const noteLab = o.lab || null;
     // 类型必须与画板声明的类型一致，且 intent 必须在该画板的 canAnswer 里
@@ -2591,8 +3037,12 @@
     if (type === 'inverse' && p.k === 0) return null;
     // 批2：三角 w=0 退化成常函数 y = A·sin(φ)+k（一条水平线），不再是波浪线，直接不挂
     if (type === 'trig' && p.w === 0) return null;
+    // 批3：指数 w=0 退化成常函数；底数 base≤0 或 base=1 都画不出指数/对数曲线
+    if ((type === 'exp' || type === 'log') && (!(p.base > 0) || Math.abs(p.base - 1) < 1e-12)) return null;
+    if (type === 'exp' && p.w === 0) return null;
     // 原曲线（题目给出/默认参数那条）：只有调用方给了才叠画，没给就降级为单曲线
-    const baseRaw = (o.base && (!o.base.type || o.base.type === type)) ? o.base : null;
+    const baseRaw = (hasBaseCurve(type) && o.base && typeof o.base === 'object'
+      && (!o.base.type || o.base.type === type)) ? o.base : null;
     const base = baseRaw ? Object.assign({}, def.defaults, baseRaw, { type: type }) : null;
     const start = {};
 
@@ -2775,6 +3225,28 @@
           yMin = mid - 2.5; yMax = mid + 2.5;
           if (yMin > 0) yMin = 0; else if (yMax < 0) yMax = 0;
         }
+      } else if (type === 'exp' || type === 'log' || type === 'power') {
+        /* 批3：三族共用 curveWindow 的 x 范围，y 方向按曲线实际取值自适应；
+         * 一律含 0 与关键水平线（指数渐近线 / 幂函数 y=0），保证读数有参照。 */
+        const cw = curveWindow(p);
+        xMin = cw.xMin; xMax = cw.xMax;
+        let lo = Infinity, hi = -Infinity;
+        for (let i = 0; i <= 240; i++) {
+          const x = xMin + (xMax - xMin) * i / 240;
+          const y = fAt(p, x);
+          if (!isFinite(y) || Math.abs(y) > 1e6) continue;
+          lo = Math.min(lo, y); hi = Math.max(hi, y);
+        }
+        if (!isFinite(lo) || !isFinite(hi)) { lo = -4; hi = 4; }
+        lo = Math.min(lo, 0, type === 'exp' ? p.k : 0);
+        hi = Math.max(hi, 0, type === 'exp' ? p.k : 0);
+        const pad = Math.max(1, (hi - lo) * 0.12);
+        yMin = lo - pad; yMax = hi + pad;
+        if (yMax - yMin < 5) {
+          const mid = (yMin + yMax) / 2;
+          yMin = mid - 2.5; yMax = mid + 2.5;
+          if (yMin > 0) yMin = 0; else if (yMax < 0) yMax = 0;
+        }
       } else {
         xMin = -8; xMax = 8; yMin = -8; yMax = 8;
       }
@@ -2793,6 +3265,20 @@
       if (type === 'trig') {
         const fn = q.fn === 'cos' ? Math.cos : (q.fn === 'tan' ? Math.tan : Math.sin);
         return q.A * fn(q.w * x + q.phi) + q.k;
+      }
+      if (type === 'exp') return q.a * Math.pow(q.base, q.w * x + q.phi) + q.k;
+      if (type === 'log') {
+        const arg = x + q.shift;
+        if (!(arg > 0)) return NaN;
+        return q.c * Math.log(arg) / Math.log(q.base) + q.d;
+      }
+      if (type === 'power') {
+        if (q.root) {
+          const arg = q.root.b * x + q.root.c;
+          if (arg < 0) return NaN;
+          return q.a * Math.sqrt(arg) + q.k;
+        }
+        return q.a * Math.pow(x, q.p);
       }
       return q.a * (x - q.h) * (x - q.h) + q.k;
     }
@@ -3173,6 +3659,102 @@
         }
         // 单调性：题面区间阴影 + 端点（drawInterval 自带区间有效性检查与端点 π 记法标注）
         if (intent === '单调性') drawInterval(w, occupied, markers);
+      } else if (type === 'exp') {
+        // 灰色水平虚线渐近线 y=k（够长、够显眼）
+        const AY = sy({ y: p.k }, w);
+        if (AY >= 0 && AY <= w.hp) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(120,120,120,.55)';
+          ctx.lineWidth = 1.6;
+          ctx.setLineDash([8, 5]);
+          ctx.beginPath();
+          ctx.moveTo(0, AY); ctx.lineTo(w.w, AY);
+          ctx.stroke();
+          ctx.restore();
+        }
+        // 红点标 x=0 与 x=1 处的函数值（只标点、不印数值）
+        [0, 1].forEach(function (x) {
+          const y = fAt(p, x);
+          if (!isFinite(y)) return;
+          const X = sx({ x: x }, w), Y = sy({ y: y }, w);
+          if (X < 0 || X > w.w || Y < 0 || Y > w.hp) return;
+          ctx.fillStyle = '#c0392b';
+          ctx.beginPath(); ctx.arc(X, Y, 4.5, 0, Math.PI * 2); ctx.fill();
+          markers.push(markerRect(X, Y, 4.5));
+        });
+      } else if (type === 'log') {
+        const start = -p.shift;
+        const XS = sx({ x: start }, w);
+        // 定义域一侧（x>-shift）加浅色底纹
+        const left = Math.max(0, Math.min(w.w, XS));
+        if (left < w.w) {
+          ctx.save();
+          ctx.fillStyle = 'rgba(46,204,113,.08)';
+          ctx.fillRect(left, 0, w.w - left, w.hp);
+          ctx.restore();
+        }
+        // 灰色竖直虚线渐近线 x=-shift
+        if (XS >= 0 && XS <= w.w) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(120,120,120,.55)';
+          ctx.lineWidth = 1.6;
+          ctx.setLineDash([8, 5]);
+          ctx.beginPath();
+          ctx.moveTo(XS, 0); ctx.lineTo(XS, w.hp);
+          ctx.stroke();
+          ctx.restore();
+        }
+        // 红点标定点 x=-shift+1 与参考点 x=-shift+base
+        [start + 1, start + p.base].forEach(function (x) {
+          const y = fAt(p, x);
+          if (!isFinite(y)) return;
+          const X = sx({ x: x }, w), Y = sy({ y: y }, w);
+          if (X < 0 || X > w.w || Y < 0 || Y > w.hp) return;
+          ctx.fillStyle = '#c0392b';
+          ctx.beginPath(); ctx.arc(X, Y, 4.5, 0, Math.PI * 2); ctx.fill();
+          markers.push(markerRect(X, Y, 4.5));
+        });
+      } else if (type === 'power') {
+        if (p.root && isFinite(p.root.b) && p.root.b !== 0) {
+          const start = -p.root.c / p.root.b;
+          const XS = sx({ x: start }, w);
+          if (XS >= 0 && XS <= w.w) {
+            ctx.save();
+            ctx.strokeStyle = 'rgba(120,120,120,.55)';
+            ctx.lineWidth = 1.4;
+            ctx.setLineDash([6, 4]);
+            ctx.beginPath();
+            ctx.moveTo(XS, 0); ctx.lineTo(XS, w.hp);
+            ctx.stroke();
+            ctx.restore();
+          }
+          const YK = sy({ y: p.k }, w);
+          if (XS >= 0 && XS <= w.w && YK >= 0 && YK <= w.hp) {
+            ctx.fillStyle = '#c0392b';
+            ctx.beginPath(); ctx.arc(XS, YK, 5, 0, Math.PI * 2); ctx.fill();
+            markers.push(markerRect(XS, YK, 5));
+          }
+        } else if (isFinite(p.p) && p.p < 0) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(120,120,120,.55)';
+          ctx.lineWidth = 1.4;
+          ctx.setLineDash([6, 4]);
+          ctx.beginPath();
+          const X0 = sx({ x: 0 }, w), Y0 = sy({ y: 0 }, w);
+          if (X0 >= 0 && X0 <= w.w) { ctx.moveTo(X0, 0); ctx.lineTo(X0, w.hp); }
+          if (Y0 >= 0 && Y0 <= w.hp) { ctx.moveTo(0, Y0); ctx.lineTo(w.w, Y0); }
+          ctx.stroke();
+          ctx.restore();
+        } else {
+          // p>0：红点标 (0,0) 与 (1,1)
+          [{ x: 0, y: 0 }, { x: 1, y: 1 }].forEach(function (pt) {
+            const X = sx(pt, w), Y = sy(pt, w);
+            if (X < 0 || X > w.w || Y < 0 || Y > w.hp) return;
+            ctx.fillStyle = '#c0392b';
+            ctx.beginPath(); ctx.arc(X, Y, 4.5, 0, Math.PI * 2); ctx.fill();
+            markers.push(markerRect(X, Y, 4.5));
+          });
+        }
       } else {
         // inverse：双曲线两支 + 渐近线虚线（文案同样由 intent 生成）
       }
