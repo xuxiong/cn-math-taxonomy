@@ -628,6 +628,17 @@
       params: ['k'],
       note: '点 P 在 y=k/x 上，过 P 作两坐标轴的垂线：矩形面积 = |k|，三角形（原点、P、一个垂足）面积 = |k|/2。'
     },
+    /* 批1.5（t_f752c3df）：定义域 / 渐近线 —— 批1 白名单里的 cnm_h028_q3（f(x)=1/x 的定义域）
+     * 就是撞在这条缺口上：inverse 只有象限/面积两项，LLM 严格按清单判「没有能回答的画板」，
+     * 于是进了白名单也挂不出来。定义域确实能直接从图上读（y 轴处曲线断开、竖直虚线是渐近线），
+     * 属于画板事实，不是硬凑。 */
+    'inverse-domain': {
+      canAnswer: ['定义域', '渐近线'],
+      params: ['k'],
+      note: 'y=k/x（k≠0）的分母不能为 0：x=0 时函数没有值，所以 x=0 不在定义域内'
+        + '（定义域是除 x=0 外的全体实数）。图上过原点的竖直虚线就是渐近线 x=0：'
+        + '两支曲线向左右两端延伸时无限逼近它，但永不相交。'
+    },
     /* ---- 多曲线：一个坐标系里两条曲线 + 它们的交点（t_1d3fe77a） ---- */
     'two-curves-intersect': {
       type: 'curves',
@@ -657,6 +668,7 @@
     'linear-equation': 'linear',
     'inverse-quadrants': 'inverse',
     'inverse-area': 'inverse',
+    'inverse-domain': 'inverse',
     'two-curves-intersect': 'curves'
   };
 
@@ -714,6 +726,10 @@
       '点与坐标轴围成的矩形或三角形面积': '点 P 在 y = k/x 上，k = {k}：过 P 向两条坐标轴作垂线，就围出矩形和三角形。**矩形的面积是多少？三角形（原点、P、一个垂足）的面积是多少？** 用 |k| 的关系自己算，图上不标数值。',
       '由面积反求 |k|': '面积只由 |k| 决定：矩形的面积就等于 |k|，三角形（原点、P、一个垂足）的面积是矩形的一半。**反过来，由题面给的面积求出 |k| 是多少？** 再结合图象落在哪几个象限定符号。'
     },
+    'inverse-domain': {
+      '定义域': 'y = k/x 在 x = 0 处没有值（分母不能为 0），所以 x = 0 不在定义域里 —— 定义域是除 x = 0 外的全体实数。图上两支曲线各自延伸，都在 y 轴处断开，谁也接不上谁：拖动 k 看它们怎么变，断点始终在 x = 0。',
+      '渐近线': '过原点的竖直虚线是渐近线 x = 0（y 轴）：曲线向左右两端延伸时无限逼近这条线，但永不相交 —— 因为 x = 0 时分母为 0，函数没有值，x = 0 也就不在定义域里。**这条渐近线的方程你能从图上读出来吗？**'
+    },
     /* 多曲线画板（t_1d3fe77a）：两条曲线的表达式是题面已知量，交点坐标是派生量 → 一律留白。
      * 文案里不许出现「根」字（test_labmatch 的通用断言），只说「交点」。 */
     'two-curves-intersect': {
@@ -732,9 +748,15 @@
     return s || null;
   }
 
-  /** 归一化后的 intent → 文案模板（不区分画板：模板本身不依赖画板，画板只决定能选哪些 intent）
-   *  键必须走 intentKey()：模板名里带空格（「与 y 轴交点的纵坐标」），LLM 回的 intent 也可能带空格，
-   *  两边不归一化就会出现「清单里有、模板查不到」的假缺失。 */
+  /** 归一化后的 intent → 文案模板（**仅作兼容视图**，查表一律走 noteTemplate(lab, intent)）。
+   *
+   *  ★ 批1.5（t_f752c3df）：这里是「同名 intent 先声明者胜」的串台源头 ——
+   *    '与x轴交点的横坐标' 在 quadratic-roots 与 linear-intercepts 里同名，
+   *    'y 随 x 的增大而增大还是减小' 在 linear-trend 与 inverse-quadrants 里同名。
+   *    拍平之后直线题会印出「抛物线与 x 轴的交点…拖动 h、k」（cnm_h049_q2 实测），
+   *    反比例题会印出「直线从左下往右上」。
+   *    所以：**新代码不许再用这张表查文案**，只留给旧测试/外部脚本读；
+   *    查模板请用 noteTemplate()，它按画板名命名空间取，永远不会串。 */
   const NOTE_BY_INTENT = (function () {
     const m = {};
     Object.keys(NOTE_INTENT).forEach(function (lab) {
@@ -746,6 +768,29 @@
     return m;
   })();
 
+  /** (画板, intent) → 文案模板；按画板命名空间取，杜绝同名 intent 串台。
+   *  返回 null = 这个画板确实没有这套讲法（调用方据此不挂图）。
+   *  键必须走 intentKey()：模板名里带空格（「与 y 轴交点的纵坐标」），LLM 回的 intent 也可能带空格，
+   *  两边不归一化就会出现「清单里有、模板查不到」的假缺失（quadratic-inequality 实测）。 */
+  const NOTE_BY_LAB = (function () {
+    const m = {};
+    Object.keys(NOTE_INTENT).forEach(function (lab) {
+      m[lab] = {};
+      Object.keys(NOTE_INTENT[lab]).forEach(function (it) {
+        const key = intentKey(it);
+        if (key && !m[lab][key]) m[lab][key] = NOTE_INTENT[lab][it];
+      });
+    });
+    return m;
+  })();
+
+  function noteTemplate(lab, intent) {
+    const byLab = NOTE_BY_LAB[String(lab || '')];
+    const it = intentKey(intent);
+    if (!byLab || !it) return null;
+    return byLab[it] || null;
+  }
+
   /** 讲「与 x 轴交点」的 intent（只有这些 intent 的文案才允许出现「根 / 零点」的说法） */
   const ROOT_INTENTS = ['方程的根', '与x轴交点的横坐标', '零点'];
 
@@ -754,7 +799,7 @@
     const c = CAPABILITIES[String(lab || '')];
     const it = intentKey(intent);
     if (!c || !it) return false;
-    return capabilityIntents(lab).indexOf(it) >= 0 && !!NOTE_BY_INTENT[it];
+    return capabilityIntents(lab).indexOf(it) >= 0 && !!noteTemplate(lab, it);
   }
 
   /** 某画板 canAnswer 的归一化副本（「与 y 轴交点的纵坐标」→「与y轴交点的纵坐标」） */
@@ -802,7 +847,7 @@
           + '图上不标交点（这条画板不在图上给答案）。';
       }
     }
-    return fill(NOTE_BY_INTENT[it], {
+    return fill(noteTemplate(lab, it), {
       /* 已知量：a（二次系数）、b（一次截距）、k（一次斜率/反比例系数）—— 题面原样给出 */
       a: fmtQuad(p.a), k: fmtQuad(p.k), b: fmtQuad(p.b),
       y: formatFormula({ type: type, a: p.a, h: p.h, k: p.k, b: p.b }),
@@ -2791,11 +2836,11 @@
   return {
     fromPrompt: fromPrompt, topicSupported: topicSupported, topicKind: topicKind,
     /* t_d3c2ba81 批1：高中逐题放行表（只读导出，供测试/测算脚本核对「白名单只加不删」） */
-    HS_ITEMS: HS_ITEMS, hsItemKind: hsItemKind,
+    HS_ITEMS: HS_ITEMS, hsItemKind: hsItemKind, hsPromptAlias: hsPromptAlias,
     TYPE_DEF: TYPE_DEF,
     labFor: labFor, labForScene: labForScene, baseOf: baseOf, mount: mount, formatFormula: formatFormula,
     /* 任务一：能力清单 + intent 文案（匹配层/审计脚本/测试的唯一来源） */
-    CAPABILITIES: CAPABILITIES, CAP_TYPE: CAP_TYPE, NOTE_BY_INTENT: NOTE_BY_INTENT,
+    CAPABILITIES: CAPABILITIES, CAP_TYPE: CAP_TYPE, NOTE_BY_INTENT: NOTE_BY_INTENT, noteTemplate: noteTemplate,
     intentKey: intentKey, intentSupported: intentSupported, intentUsesRoots: intentUsesRoots,
     capabilityIntents: capabilityIntents,
     noteText: noteText, ROOT_INTENTS: ROOT_INTENTS.slice(),

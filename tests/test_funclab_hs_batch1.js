@@ -387,6 +387,199 @@ test('31 条误挂清单 = 测算脚本实跑判 misleading 的全集（手写�
 });
 
 /* ================================================================
+ * 8. 批1.5（t_f752c3df）：补漏三件
+ *    1. inverse 补「定义域 / 渐近线」能力项 —— 批1 的 cnm_h028_q3 卡在这条缺口上；
+ *       另外 verifyParams 不认 f(x)= 记法，是同一道题的第二道闸（见 LABMATCH 段）。
+ *    2. NOTE_BY_INTENT 拍平导致同名 intent 串台（直线印抛物线文案）。
+ *    3. 测算判 misleading 的 31 题里，cnm_h220_q2 能靠「答案 0 = h 读数 0」蒙过语义门禁。
+ * ================================================================ */
+
+console.log('\n--- 8. 批1.5：反比例能力缺口 / 文案串台 / 门禁漏过 ---');
+
+const L = require('../diagnose/labmatch.js');
+const GATE = require('./lib/answer-gate.js');
+
+test('第1件：inverse 画板补上「定义域 / 渐近线」能力项', function () {
+  const cap = F.CAPABILITIES['inverse-domain'];
+  assert.ok(cap, 'CAPABILITIES 必须有 inverse-domain（反比例的定义域/渐近线）');
+  assert.strictEqual(F.CAP_TYPE['inverse-domain'], 'inverse', 'CAP_TYPE 必须把它归到 inverse');
+  assert.deepStrictEqual(cap.canAnswer, ['定义域', '渐近线'], 'canAnswer 只声明这两项');
+  assert.deepStrictEqual(cap.params, ['k'], '参数仍只有 k（反比例只有一个系数）');
+  /* 匹配层只喂同类画板：inverse 现在应有 3 个候选，少一个就等于这题又被拒 */
+  assert.deepStrictEqual(Object.keys(F.capabilitiesFor('inverse')).sort(),
+    ['inverse-area', 'inverse-domain', 'inverse-quadrants']);
+  assert.ok(F.intentSupported('inverse-domain', '定义域'), '定义域 必须是可渲染组合');
+  assert.ok(F.intentSupported('inverse-domain', '渐近线'), '渐近线 必须是可渲染组合');
+});
+
+test('第1件：定义域读数文案 —— 渐近线 x=0 + 除 x=0 外全体实数，且不串别的图', function () {
+  const d = F.noteText('inverse-domain', '定义域', { k: 1 });
+  assert.ok(d, '定义域文案必须生成得出来');
+  assert.ok(d.indexOf('x = 0') >= 0, '必须点明断点 x = 0（原文字样：' + d + '）');
+  assert.ok(/除 x = 0 外的全体实数/.test(d), '必须给出定义域读数：除 x = 0 外的全体实数');
+  assert.ok(d.indexOf('抛物线') < 0 && d.indexOf('直线') < 0, '反比例文案不许出现抛物线/直线');
+  const a = F.noteText('inverse-domain', '渐近线', { k: -2 });
+  assert.ok(a && a.indexOf('渐近线 x = 0') >= 0, '渐近线文案必须写明渐近线 x = 0（原文字样：' + a + '）');
+  assert.ok(/无限逼近|永不相交/.test(a), '必须讲清「无限逼近、不相交」');
+});
+
+test('第1件：verifyParams 认白名单题的 f(x)= 记法（第二道闸），且别名不扩散', function () {
+  const item = q('cnm_h028_q3');
+  const scene = F.labForScene(item.topicId, item.prompt, { itemId: item.id });
+  assert.ok(scene, 'cnm_h028_q3 应能解析出反比例参数');
+  const choice = { match: 'inverse-domain', intent: '定义域', params: { k: scene.k } };
+  const ok = L.verifyParams(item.prompt, choice, { itemId: item.id });
+  assert.ok(ok.ok, '白名单题必须过代回校验，实际：' + JSON.stringify(ok.why));
+  /* 同题面但表外 itemId：别名不许兜底（与 labFor 同一口径） */
+  const noAlias = L.verifyParams(item.prompt, choice, { itemId: 'cnm_h028_q4' });
+  assert.strictEqual(noAlias.ok, false, '表外 itemId 不许靠别名过校验');
+  const noId = L.verifyParams(item.prompt, choice);
+  assert.strictEqual(noId.ok, false, '不带 itemId 时不许靠别名过校验');
+});
+
+/* 白名单 14 题逐题的「答案语义 → (画板, intent)」契约 —— **修复后能过两道闸的 8 题**。
+ * 这是把板主口径的「N 题可见」落成可复现的机器判据：题在表里（labFor 挂得上）
+ * + intent 有 canAnswer 覆盖 + 参数能过 verifyParams 代回校验，三条全过才算「线上可见」。 */
+const EXPECT_MOUNT = {
+  'cnm_h029_q2': ['quadratic-vertex', '最大值'],
+  'cnm_h034_q3': ['quadratic-vertex', '最大值'],
+  'cnm_h049_q1': ['quadratic-roots', '零点'],
+  'cnm_h226_q1': ['quadratic-vertex', '顶点坐标'],
+  'cnm_h032_q1': ['linear-trend', 'y 随 x 的增大而增大还是减小'],
+  'cnm_h032_q2': ['linear-trend', 'y 随 x 的增大而增大还是减小'],
+  'cnm_h049_q2': ['linear-intercepts', '与 x 轴交点的横坐标'],   // 批1.5：verifyParams 认 f(x)= 才通
+  'cnm_h028_q3': ['inverse-domain', '定义域']                    // 批1.5 新补：修复前这条不存在
+};
+
+/* 已知能力缺口（批1.6 待做）：题在 HS_ITEMS 里、题面也解析得出来，但没有任何画板声明
+ * 「能回答」这个问法 —— 于是 LLM 严格按清单拒挂。
+ *   cnm_h023_q4 问「与 x 轴有几个交点」（画板画了绿点，但没有「交点个数」这个 intent）
+ *   cnm_h032_q4 问单调性（quadratic 只有区间最值，没有单调性 intent）
+ *   cnm_h035_q1 / cnm_h036_q4 问奇偶性（quadratic 没有奇偶性 intent）
+ * 这 4 题是批1「14 题全可见」的账面与实测对不上的真正原因之一，本卡只补反比例那一条。 */
+const KNOWN_CAP_GAPS = ['cnm_h023_q4', 'cnm_h032_q4', 'cnm_h035_q1', 'cnm_h036_q4'];
+
+/* 已知参数缺口（批1.6 待做）：intent 有覆盖，但题面区间是 `x∈[−1，2]` 这种全角逗号写法，
+ * labmatch.promptInterval 解析不出端点 → 代回校验永远说「xMin/xMax 无法校核」。
+ * 属解析侧的区间识别（与本卡「fromPrompt 零改动」红线相邻），本卡不动，只登记。 */
+const KNOWN_INTERVAL_GAPS = ['cnm_h034_q2', 'cnm_h227_q2'];
+
+test('第1件：白名单里 8 题能过「表 + intent + 代回」三道闸（含 cnm_h028_q3）', function () {
+  const bad = [];
+  Object.keys(EXPECT_MOUNT).forEach(function (id) {
+    const pair = EXPECT_MOUNT[id];
+    const item = q(id);
+    const scene = F.labForScene(item.topicId, item.prompt, { itemId: id });
+    if (!scene) { bad.push(id + ' 挂不上'); return; }
+    if (!F.intentSupported(pair[0], pair[1])) { bad.push(id + ' ' + pair.join('/') + ' intent 不支持'); return; }
+    const params = Object.assign({}, scene);
+    delete params.type;
+    delete params.base;
+    const v = L.verifyParams(item.prompt, { match: pair[0], intent: pair[1], params: params }, { itemId: id });
+    if (!v.ok) bad.push(id + ' 代回不过：' + v.why.join(';'));
+    if (!F.noteText(pair[0], pair[1], params)) bad.push(id + ' 没有文案');
+  });
+  assert.deepStrictEqual(bad, [], bad.join(' / '));
+  assert.strictEqual(Object.keys(EXPECT_MOUNT).length, 8, '可挂契约应为 8 题（修复前 4 题）');
+  assert.strictEqual(Object.keys(EXPECT_MOUNT).length + KNOWN_CAP_GAPS.length + KNOWN_INTERVAL_GAPS.length,
+    14, '8 可挂 + 4 能力缺口 + 2 区间缺口 = 白名单 14 题，一题都不许漏账');
+});
+
+test('第1件：4 条已知能力缺口仍在（补上就说明能力清单扩了，请同步本清单）', function () {
+  const still = [];
+  KNOWN_CAP_GAPS.forEach(function (id) {
+    const item = q(id);
+    const kind = F.hsItemKind(id);
+    const labs = Object.keys(F.capabilitiesFor(kind));
+    const covered = labs.some(function (lab) {
+      return F.capabilityIntents(lab).some(function (it) {
+        /* 缺口题的答案语义落在这些「没有对应 intent」的问法上 */
+        return (id === 'cnm_h023_q4' && /交点个数/.test(it))
+          || (id === 'cnm_h032_q4' && /单调|增大而|减小而/.test(it))
+          || (/奇偶/.test(it) && /cnm_h03[56]/.test(id));
+      });
+    });
+    if (!covered) still.push(id);
+  });
+  assert.deepStrictEqual(still.sort(), KNOWN_CAP_GAPS.slice().sort(),
+    '能力缺口清单变了（多/少都算漂移）：' + still.join(','));
+});
+
+test('第1件：2 条区间题仍卡在 promptInterval（全角逗号），且失败原因就是端点', function () {
+  KNOWN_INTERVAL_GAPS.forEach(function (id) {
+    const item = q(id);
+    const scene = F.labForScene(item.topicId, item.prompt, { itemId: id });
+    assert.ok(scene, id + ' 应能解析出抛物线参数（卡的是区间，不是函数）');
+    const params = { a: scene.a, h: scene.h, k: scene.k, xMin: -1, xMax: 2 };
+    const v = L.verifyParams(item.prompt, { match: 'quadratic-range-on-interval', intent: '在给定区间上的最小值', params: params }, { itemId: id });
+    assert.strictEqual(v.ok, false, id + ' 现在应仍被区间校验挡下（修好它要动区间解析，属批1.6）');
+    assert.ok(v.why.join('').indexOf('区间端点') >= 0, id + ' 的失败原因应是区间端点，实际：' + v.why.join(';'));
+  });
+});
+
+test('第2件：同名 intent 各印各的文案（直线不再印抛物线文案）', function () {
+  const line = F.noteText('linear-intercepts', '与 x 轴交点的横坐标', { k: 1, b: -5 });
+  assert.ok(line.indexOf('直线') >= 0, '直线画板必须说「直线」，实际：' + line);
+  assert.ok(line.indexOf('抛物线') < 0, '直线画板不许出现「抛物线」，实际：' + line);
+  assert.ok(line.indexOf('拖动 h、k') < 0, '直线画板不许出现「拖动 h、k」，实际：' + line);
+  assert.ok(line.indexOf('拖动 k、b') >= 0, '直线画板应提示拖动自己的参数 k、b');
+
+  const quad = F.noteText('quadratic-roots', '与 x 轴交点的横坐标', { a: 1, h: 0, k: -4 });
+  assert.ok(quad.indexOf('抛物线') >= 0, '抛物线画板必须说「抛物线」');
+  assert.ok(quad.indexOf('直线') < 0, '抛物线画板不许出现「直线」');
+
+  const inv = F.noteText('inverse-quadrants', 'y 随 x 的增大而增大还是减小', { k: 1 });
+  assert.ok(inv.indexOf('直线') < 0, '反比例画板不许印直线文案，实际：' + inv);
+  assert.ok(/每一支|两支/.test(inv), '反比例画板应讲「每一支 / 两支」');
+});
+
+test('第2件：批1 全部 13 题（10 二次 + 3 一次）× 各自全部 intent，文案不串别的图', function () {
+  /* 只锁「串台」方向（出现别的图的专属名词）。不做正向名词要求：抛物线文案里
+   * 「这条直线是 x = ?」（对称轴）是正当说法，硬要求「抛物线」会把正确文案判红。 */
+  const FORBID = { quadratic: /双曲线/, linear: /抛物线|双曲线/, inverse: /抛物线|直线/ };
+  /* 两处历史串台（同名 intent）必须正向归属正确 —— 这是本卡第 2 件的根因 */
+  const CROSSOVER = {
+    '与x轴交点的横坐标': { quadratic: /抛物线/, linear: /直线/ },
+    'y随x的增大而增大还是减小': { linear: /直线/, inverse: /每一支|两支/ }
+  };
+  const bad = [];
+  Object.keys(F.HS_ITEMS).forEach(function (id) {
+    const kind = F.HS_ITEMS[id];
+    if (!FORBID[kind]) return;                     // curves 不在本批口径内
+    Object.keys(F.capabilitiesFor(kind)).forEach(function (lab) {
+      F.capabilityIntents(lab).forEach(function (it) {
+        const note = F.noteText(lab, it, { a: 1, k: 2, b: -4, xMin: -1, xMax: 2 });
+        if (!note) { bad.push(id + ' ' + lab + '/' + it + ' 无文案'); return; }
+        const hit = note.match(FORBID[kind]);
+        if (hit) bad.push(id + ' ' + lab + '/' + it + ' 串台「' + hit[0] + '」');
+        const want = CROSSOVER[it] && CROSSOVER[it][kind];
+        if (want && !want.test(note)) bad.push(id + ' ' + lab + '/' + it + ' 归属不对');
+      });
+    });
+  });
+  assert.deepStrictEqual(bad, [], bad.slice(0, 6).join(' / '));
+});
+
+test('第3件：31 条 misleading 全部被答案语义门禁挡下（cnm_h220_q2 靠导数语义那条）', function () {
+  const passed = [];
+  const unparsed = [];
+  MISLEADING.forEach(function (id) {
+    const item = q(id);
+    /* 用「假如它被解析出来」的参数去撞门禁：能挂上的题才有误挂风险 */
+    let p = F.fromPrompt(item.prompt);
+    if (!p && F.hsItemKind(id)) p = F.fromPrompt(F.hsPromptAlias(item.prompt));
+    if (!p) { unparsed.push(id); return; }         // 解析不出 = 本来就挂不上，不算漏
+    if (!GATE.misfitOf(item, p)) passed.push(id);  // 门禁放行 = 漏过
+  });
+  assert.deepStrictEqual(passed, [], '这些题能蒙过语义门禁：' + passed.join(','));
+  /* 钉住那一条具体规则：cnm_h220_q2 是「答案 0 撞上切线语义」，不是数值巧合 */
+  const it220 = q('cnm_h220_q2');
+  const why = GATE.misfitOf(it220, F.fromPrompt(it220.prompt));
+  assert.ok(why && why.indexOf('导数语义') >= 0, 'cnm_h220_q2 必须被导数语义那条挡下，实际：' + why);
+  assert.ok(unparsed.length > 0, '31 条里应有解析不出的题（它们由 labFor 那条闸挡）');
+});
+
+/* ================================================================
  * 汇总
  * ================================================================ */
 

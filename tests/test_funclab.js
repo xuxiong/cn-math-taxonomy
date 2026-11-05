@@ -19,6 +19,10 @@ function test(name, fn) {
 }
 
 const F = require('../diagnose/funclab.js');
+/* 批1.5（t_f752c3df）：答案语义门禁抽到 tests/lib/answer-gate.js ——
+ * 同一套口径既要管「实际挂载的题」（本文件），也要管「测算判 misleading 的 31 题」
+ * （tests/test_funclab_hs_batch1.js）。判定本身是纯函数，与画板渲染/LLM 无关。 */
+const GATE = require('./lib/answer-gate.js');
 
 /* ---- 真实题库 ---- */
 const QUESTIONS = require('../data/questions.json');
@@ -1049,49 +1053,11 @@ test('[E-守卫6] 数列记号 a_n=n² 不被当成抛物线（cnm_h199_q2）', 
 
 console.log('\n--- 11b. 答案语义门禁（全库挂载） ---');
 
-/** 画板对该参数会标注出来的数值集合（字符串化，便于与答案数字比对） */
-function annotationValues(p, topicId) {
-  const vals = new Set();
-  const push = function (x) { if (isFinite(x)) vals.add(String(Number(x.toFixed(6)))); };
-  if (p.type === 'quadratic') {
-    push(p.h); push(p.k);
-    push(p.h - Math.sqrt(-p.k / p.a)); push(p.h + Math.sqrt(-p.k / p.a));
-  } else if (p.type === 'linear') {
-    push(p.b);                                    // y 轴截距红点 (0,b)
-    /* x 轴交点绿点：linear 画板对**任何**知识点都画「与 x 轴交点」并标出横坐标
-       （CAPABILITIES.linear-intercepts 的 canAnswer 里就写着这一条），原先只对初中方程章
-       cnm_20x/22x 开放是按「要解的方程」判的，与画板实际画了什么不是一个口径。
-       改成无条件加入：这是把门禁对齐绘制事实，不是放宽 —— 原口径下高中零点题
-       （批1 的 cnm_h049_q2，答案 5 = 绿点横坐标）会被误判成误挂。 */
-    if (p.k) push(-p.b / p.k);
-  } else if (p.type === 'inverse') {
-    push(p.k);                                    // |k| 本身就是答案对象
-  }
-  return vals;
-}
-
-/** 从答案里抠数字（支持 1，-3/2、-2，5、y=2x+1、112.5、m≠1 等） */
-function answerNumbers(answer) {
-  const s = String(answer == null ? '' : answer).replace(/[（）()]/g, '');
-  const out = [];
-  const re = /(-?\d+(?:\.\d+)?)(?:\s*\/\s*(\d+(?:\.\d+)?))?/g;
-  let m;
-  while ((m = re.exec(s))) {
-    const v = m[2] ? Number(m[1]) / Number(m[2]) : Number(m[1]);
-    if (isFinite(v)) out.push(v);
-  }
-  return out;
-}
-
-/** 答案解析不了数字时，允许通过的纯图像可读答案 */
-const IMAGE_READABLE = /象限|增大而|减小而|交点个数|开口|无交点|没有交点/;
-
-/** 答案不是数字、但**就是画板标出来的性质**（比 IMAGE_READABLE 更窄的一张白名单）：
- *  曲线走向（单调）、对称性（奇偶）、定义域边界（渐近线 / 非零实数）。
- *  逐条对应 CAPABILITIES 里的 canAnswer —— linear:『是否是增/减函数』；
- *  quadratic:『奇偶性』（对称轴即 y 轴或原点）；inverse:『定义域 / 渐近线』。
- *  批1（t_d3c2ba81）放行的高中题多数出成选择题，选项正文就是这类性质词。 */
-const READABLE_PROPERTY = /^(增函数|减函数|偶函数|奇函数|非奇非偶|全体非零实数|全体实数)$/;
+/** 画板标注值 / 答案数字 / 可读性白名单 —— 实现见 tests/lib/answer-gate.js（批1.5 抽出） */
+const annotationValues = GATE.annotationValues;
+const answerNumbers = GATE.answerNumbers;
+const IMAGE_READABLE = GATE.IMAGE_READABLE;
+const READABLE_PROPERTY = GATE.READABLE_PROPERTY;
 
 /** 门禁判不过、但已人工定档为"图像可读 / 图像可算"的题（口径偏严的方向），逐条留痕 */
 const GATE_LOOSE_OK = new Set([
@@ -1130,26 +1096,11 @@ test('[E-语义1] 全库挂载题：误挂 = 只允许已知那 9 条（新误�
     mounted++;
     const id = item.id;
     if (KNOWN_MISMOUNT.has(id)) continue;
-    const ansStr = String(item.answer == null ? '' : item.answer);
     if (GATE_LOOSE_OK.has(id)) continue;
-    /* 选择题：题库只存选项字母（A/B/C/D），学生看到的是选项正文 —— 按正文判。
-       原先「答案字母即误挂」等于「凡出成选择题就永远挂不上」，而高中题绝大多数是选择题，
-       按字母挡等于把判定权交给题型而不是答案语义。按正文判仍然严格：正文不是图上可读的
-       数/性质，照样进 misfits（下面「不是可读数字」那条分支）。 */
-    const isLetter = /^[A-D]$/.test(ansStr.trim());
-    const choice = isLetter ? (item.choices || []).filter(function (c) { return c.key === ansStr.trim(); })[0] : null;
-    if (isLetter && !choice) { misfits.push(id + ' 选择题（答案 ' + ansStr + '，选项里找不到正文）'); continue; }
-    const ansText = choice ? String(choice.text == null ? '' : choice.text) : ansStr;
-    const nums = answerNumbers(ansText);
-    if (!nums.length) {
-      if (IMAGE_READABLE.test(ansText)) continue;     // 象限/增减性/交点个数：图像可读
-      if (READABLE_PROPERTY.test(ansText.trim())) continue; // 单调/奇偶/定义域：画板标得出这个结论
-      misfits.push(id + ' 答案「' + ansText + '」不是可读数字');
-      continue;
-    }
-    const ann = annotationValues(p, item.topicId);
-    const ok = nums.some(function (n) { return ann.has(String(Number(n.toFixed(6)))) || ann.has(String(n)); });
-    if (!ok) misfits.push(id + ' 答案 ' + ansText + ' ∉ 画板标注 {' + Array.from(ann).join(',') + '}');
+    /* 判定口径见 tests/lib/answer-gate.js：选择题按选项正文判、数字必须对上画板标注、
+       非数字只放行图像可读/性质类答案；批1.5 起「答案 0 撞上导数语义」一律判误挂。 */
+    const why = GATE.misfitOf(item, p);
+    if (why) misfits.push(id + ' ' + why);
   }
   assert.deepStrictEqual(misfits, [], '新误挂 ' + misfits.length + ' 题（共挂载 ' + mounted + ' 题）');
 });
@@ -1370,7 +1321,8 @@ const DESC_LABS = {
   'linear-trend': { k: 2, b: -4, base: { type: 'linear', k: 2, b: 0 } },
   'linear-equation': { k: 2, b: -4, base: { type: 'linear', k: 2, b: 0 } },
   'inverse-quadrants': { k: 3 },
-  'inverse-area': { k: 3 }
+  'inverse-area': { k: 3 },
+  'inverse-domain': { k: 3 }
 };
 function descParams(lab) {
   const p = Object.assign({}, DESC_LABS[lab]);
@@ -1378,7 +1330,7 @@ function descParams(lab) {
   return p;
 }
 
-test('describe：9 个 lab × 各自全部 intent 都返回非空字符串，且覆盖关键元素词', function () {
+test('describe：每个 lab × 各自全部 intent 都返回非空字符串，且覆盖关键元素词', function () {
   Object.keys(F.CAPABILITIES).forEach(function (lab) {
     F.CAPABILITIES[lab].canAnswer.forEach(function (raw) {
       const it = F.intentKey(raw);
