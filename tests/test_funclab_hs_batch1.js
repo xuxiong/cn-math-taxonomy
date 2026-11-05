@@ -1,19 +1,20 @@
 #!/usr/bin/env node
-/* 高中函数画板 批1（t_d3c2ba81）：二次 10 / 一次 3 / 反比例 1 —— **逐题白名单**测试
+/* 高中函数画板 批1（t_d3c2ba81）：二次 10 / 一次 3 / 反比例 1 + 批2 三角 9 —— **逐题白名单**测试
  *   node tests/test_funclab_hs_batch1.js
  *
- * 本批只做「门禁」：把答案就落在画板标注语义里的高中题逐题放行（diagnose/funclab.js 的
- * HS_ITEMS 表），fromPrompt / 绘制 / 标注渲染一行未改。所以这里锁五件事：
+ * 批1 只做「门禁」：把答案就落在画板标注语义里的高中题逐题放行（diagnose/funclab.js 的
+ * HS_ITEMS 表）。批2（三角函数）沿用同一张表 +9 题，本文件同步把契约口径扩到 23 题。
+ * 这里锁五件事：
  *
- *   1. 表内 14 题**必须挂得上**，且类型与表里写的一致（放行表与实现不许漂移）；
- *   2. 表外高中题**一个都不许挂**——高中全量挂载只允许「本批 14 + 既有 cnm_h172 三题」；
+ *   1. 表内 23 题**必须挂得上**，且类型与表里写的一致（放行表与实现不许漂移）；
+ *   2. 表外高中题**一个都不许挂**——高中全量挂载只允许「本批 23 + 既有 cnm_h172 三题」；
  *      尤其测算判 `misleading` 的那 31 条（切线读数 / 和差组合量 / 概念判断 / 边界读数），
  *      任一条能挂上就是误挂回归，本文件直接红；
- *   3. 敏感项（`f'(x)=0` 三题 + 两条灰区）按板主「严读」口径**不进表**，三角/指对/幂根式
- *      也一条不进（批2/批3 才做）；
+ *   3. 敏感项（`f'(x)=0` 三题 + 灰区 tan 90°）按板主「严读」口径**不进表**，指对/幂根式
+ *      也一条不进（批3 才做）；
  *   4. 初中那 163 条的行为零变化：初中挂载总数、几个典型知识点（直线 / 方程 / 反比例 / 双曲线）
  *      的放行结果原样锁住 —— 白名单只加不删；
- *   5. 表内集合的**来源可复现**：它就是测算脚本判 `gated ok` 的三族题减去敏感项，
+ *   5. 表内集合的**来源可复现**：它就是测算脚本判 `gated ok` 的四族题减去敏感项，
  *      不是人工挑出来的（防止以后有人按喜好加题）。
  *
  * 约定：所有题面都取自 data/questions.json 的真实 prompt（q(id) 取不到直接失败），不臆造题面。
@@ -93,7 +94,17 @@ const WANT = {
   'cnm_h032_q2': 'linear',
   'cnm_h049_q2': 'linear',
   /* 反比例 1：定义域边界 = 渐近线 */
-  'cnm_h028_q3': 'inverse'
+  'cnm_h028_q3': 'inverse',
+  /* 批2 三角 9：最值 / 周期 / 定义域 / 单调 / 奇偶（台账见 test_funclab_hs_batch2.js） */
+  'cnm_h066_q1': 'trig',
+  'cnm_h066_q2': 'trig',
+  'cnm_h066_q3': 'trig',
+  'cnm_h066_q4': 'trig',
+  'cnm_h067_q1': 'trig',
+  'cnm_h067_q4': 'trig',
+  'cnm_h068_q4': 'trig',
+  'cnm_h075_q1': 'trig',
+  'cnm_h075_q2': 'trig'
 };
 
 /* 测算判 `misleading` 的 31 条（docs/highschool-funclab-coverage.md §3/§6）：
@@ -137,21 +148,20 @@ const MISLEADING = [
 /* 敏感项（板主 2026-11-05 裁定「严读」）：
  *   · 三题问 `f'(x)=0` 的横坐标 —— 虽然画板标了极值点横坐标，但凡问导数一律归「切线画板」
  *     （尚未立项），本批不放行；
- *   · 两条灰区（简报 §2）：cnm_h066_q4 的 sin 无边界属性质题、cnm_h069_q4 的 tan 90° 画板
- *     有渐近线可读 —— 一并按敏感项处理，不放进本批。 */
+ *   · 灰区（简报 §2）：cnm_h069_q4 的 tan 90° 画板虽有渐近线，但答案是「无定义」这种
+ *     否定式结论，画板不能替学生下结论 —— 按敏感项处理，不放进白名单。
+ *     （批1 登记过的 cnm_h066_q4「sin 定义域」已随批2 放行，移出本清单。） */
 const SENSITIVE = [
   'cnm_h225_q1', // f(x)=x²−4x，f'(x)=0 → x（二次族，测算判 ok）
   'cnm_h228_q2', // 面积 S=x(10−x)，S'(x)=0 → x（二次族，测算判 ok；且 S= 记法解析不出）
   'cnm_h229_q2', // f(x)=x³−3x，f'(x)=0 → 正的 x（三次族，本批不做）
-  'cnm_h066_q4', // y=sin x 的定义域（三角族，批2 才做）
-  'cnm_h069_q4'  // y=tan x 在 x=90°（三角族，批2 才做；测算判 misleading）
+  'cnm_h069_q4'  // y=tan x 在 x=90°（三角族，批2 仍不放行；测算判 misleading）
 ];
 
-/* 本批明确不做的族（批2/批3 + 永久排除），这些题一条都不许挂。
- * 只取样例：全量由「高中挂载恰好 17 题」那条兜住。 */
+/* 本批明确不做的族（批3 + 永久排除），这些题一条都不许挂。
+ * 只取样例：全量由「高中挂载恰好 26 题」那条兜住。
+ * （批1 登记过的三角样例 cnm_h066_q3 / cnm_h075_q2 已随批2 放行，移出本清单。） */
 const NOT_THIS_BATCH = [
-  'cnm_h066_q3', // 三角 周期 2π（批2；若挂，标注必须把 2π 直接标在图上）
-  'cnm_h075_q2', // 三角 周期 π（批2）
   'cnm_h046_q2', // 对数 定义域（批3）
   'cnm_h025_q3', // 二次 含参母题（永久排除：形状不唯一）
   'cnm_h030_q2', // 只给若干函数值（永久排除）
@@ -166,7 +176,7 @@ const PRE_EXISTING_CURVES = ['cnm_h172_q1', 'cnm_h172_q2', 'cnm_h172_q3'];
  * 1. 放行表 ↔ 实现：一字不差
  * ================================================================ */
 
-test('HS_ITEMS 是逐题表，键集合与契约表一致（14 题）', function () {
+test('HS_ITEMS 是逐题表，键集合与契约表一致（23 题）', function () {
   assert.ok(F.HS_ITEMS, 'funclab 必须导出 HS_ITEMS（放行表），否则测试无法核对');
   const got = Object.keys(F.HS_ITEMS).sort();
   const want = Object.keys(WANT).sort();
@@ -177,10 +187,10 @@ test('HS_ITEMS 是逐题表，键集合与契约表一致（14 题）', function
   });
 });
 
-test('HS_ITEMS 的题族配比 = 二次 10 / 一次 3 / 反比例 1', function () {
-  const cnt = { quadratic: 0, linear: 0, inverse: 0 };
+test('HS_ITEMS 的题族配比 = 二次 10 / 一次 3 / 反比例 1 / 三角 9', function () {
+  const cnt = { quadratic: 0, linear: 0, inverse: 0, trig: 0 };
   Object.keys(F.HS_ITEMS).forEach(function (id) { cnt[F.HS_ITEMS[id]]++; });
-  assert.deepStrictEqual(cnt, { quadratic: 10, linear: 3, inverse: 1 });
+  assert.deepStrictEqual(cnt, { quadratic: 10, linear: 3, inverse: 1, trig: 9 });
 });
 
 test('表内 id 全部真实存在，且题面就在对应知识点下', function () {
@@ -194,7 +204,7 @@ test('表内 id 全部真实存在，且题面就在对应知识点下', functio
  * 2. 表内每题必须挂得上（漏挂 = 本批白干）
  * ================================================================ */
 
-test('表内 14 题 labFor 全部挂得上，类型与表一致', function () {
+test('表内 23 题 labFor 全部挂得上，类型与表一致', function () {
   Object.keys(WANT).forEach(function (id) {
     const item = q(id);
     const got = F.labFor(item.topicId, item.prompt, { itemId: id });
@@ -203,7 +213,7 @@ test('表内 14 题 labFor 全部挂得上，类型与表一致', function () {
   });
 });
 
-test('表内 14 题 labForScene 全部挂得上（学生实际走的入口）', function () {
+test('表内 23 题 labForScene 全部挂得上（学生实际走的入口）', function () {
   Object.keys(WANT).forEach(function (id) {
     const item = q(id);
     const scene = F.labForScene(item.topicId, item.prompt, { itemId: id });
@@ -257,7 +267,7 @@ test('测算判 misleading 的 31 题：labFor 与 labForScene 都必须返回 n
   assert.deepStrictEqual(bad, [], '这些题挂了就是误挂回归：' + bad.join(','));
 });
 
-test('敏感项 5 题（f\'(x)=0 三题 + 两条灰区）不在表内、也挂不上', function () {
+test('敏感项 4 题（f\'(x)=0 三题 + 灰区 tan 90°）不在表内、也挂不上', function () {
   SENSITIVE.forEach(function (id) {
     assert.strictEqual(F.HS_ITEMS[id], undefined, id + ' 不应进 HS_ITEMS（板主严读口径）');
     const item = q(id);
@@ -276,11 +286,11 @@ test('本批不做的族（三角 / 对数 / 含参 / 只给值 / 只给导数 /
 });
 
 /* ================================================================
- * 5. 高中挂载总量：恰好 17 = 本批 14 + 既有 cnm_h172 三题
+ * 5. 高中挂载总量：恰好 26 = 本批 23 + 既有 cnm_h172 三题
  *    （多一条就是「顺手放宽」，少一条就是本批漏挂 —— 两头都算红）
  * ================================================================ */
 
-test('高中（cnm_h*）全量挂载恰好 17 题，逐题可点名', function () {
+test('高中（cnm_h*）全量挂载恰好 26 题，逐题可点名', function () {
   const hs = QUESTIONS.filter(function (x) { return /^cnm_h/.test(x.id); });
   const mounted = hs.filter(function (x) {
     return !!F.labForScene(x.topicId, x.prompt, { itemId: x.id });
@@ -345,12 +355,12 @@ test('初中典型放行口原样：一次/二次/反比例/方程门禁/双曲�
 });
 
 /* ================================================================
- * 7. 来源可复现：表 = 测算判 `gated ok` 的三族题 − 敏感项
+ * 7. 来源可复现：表 = 测算判 `gated ok` 的四族题 − 敏感项
  *    —— 防止以后有人把 extend / misleading 的题塞进表里，或按喜好加题
  * ================================================================ */
 
-test('表内集合 = 三族 gated ok（二次 12 / 一次 3 / 反比例 1）减敏感项', function () {
-  const okFam = { 'existing.quadratic': [], 'existing.linear': [], 'existing.inverse': [] };
+test('表内集合 = 四族 gated ok（二次 12 / 一次 3 / 反比例 1 / 三角 9）减敏感项', function () {
+  const okFam = { 'existing.quadratic': [], 'existing.linear': [], 'existing.inverse': [], 'trig': [] };
   QUESTIONS.filter(function (x) { return /^cnm_h/.test(x.id) && inMain(x); }).forEach(function (item) {
     const m = measureOf(item);
     if (m.j && m.j.verdict === 'ok' && okFam[m.fam]) okFam[m.fam].push(item.id);
@@ -358,12 +368,14 @@ test('表内集合 = 三族 gated ok（二次 12 / 一次 3 / 反比例 1）减�
   assert.strictEqual(okFam['existing.quadratic'].length, 12, '二次 gated ok 应为 12（口径变了？）');
   assert.strictEqual(okFam['existing.linear'].length, 3, '一次 gated ok 应为 3（口径变了？）');
   assert.strictEqual(okFam['existing.inverse'].length, 1, '反比例 gated ok 应为 1（口径变了？）');
+  assert.strictEqual(okFam['trig'].length, 9, '三角 gated ok 应为 9（口径变了？）');
 
   const expect = okFam['existing.quadratic']
     .filter(function (id) { return SENSITIVE.indexOf(id) < 0; })
-    .concat(okFam['existing.linear'], okFam['existing.inverse']).sort();
+    .concat(okFam['existing.linear'], okFam['existing.inverse'],
+      okFam['trig'].filter(function (id) { return SENSITIVE.indexOf(id) < 0; })).sort();
   assert.deepStrictEqual(Object.keys(WANT).sort(), expect,
-    '表内集合与「三族 ok − 敏感项」不一致（多/少都算漂移）');
+    '表内集合与「四族 ok − 敏感项」不一致（多/少都算漂移）');
 });
 
 test('表内每题在测算脚本里都是 gated ok，且不是 extend/misleading', function () {
@@ -437,9 +449,10 @@ test('第1件：verifyParams 认白名单题的 f(x)= 记法（第二道闸）�
   assert.strictEqual(noId.ok, false, '不带 itemId 时不许靠别名过校验');
 });
 
-/* 白名单 14 题逐题的「答案语义 → (画板, intent)」契约 —— **修复后能过两道闸的 8 题**。
+/* 白名单 23 题逐题的「答案语义 → (画板, intent)」契约 —— **能过两道闸的 17 题**。
  * 这是把板主口径的「N 题可见」落成可复现的机器判据：题在表里（labFor 挂得上）
- * + intent 有 canAnswer 覆盖 + 参数能过 verifyParams 代回校验，三条全过才算「线上可见」。 */
+ * + intent 有 canAnswer 覆盖 + 参数能过 verifyParams 代回校验，三条全过才算「线上可见」。
+ * 批1.5 时点 8 题 + 批2 三角 9 题（区间题另见 CLOSED_INTERVAL_GAPS / 批16 台账）。 */
 const EXPECT_MOUNT = {
   'cnm_h029_q2': ['quadratic-vertex', '最大值'],
   'cnm_h034_q3': ['quadratic-vertex', '最大值'],
@@ -448,7 +461,17 @@ const EXPECT_MOUNT = {
   'cnm_h032_q1': ['linear-trend', 'y 随 x 的增大而增大还是减小'],
   'cnm_h032_q2': ['linear-trend', 'y 随 x 的增大而增大还是减小'],
   'cnm_h049_q2': ['linear-intercepts', '与 x 轴交点的横坐标'],   // 批1.5：verifyParams 认 f(x)= 才通
-  'cnm_h028_q3': ['inverse-domain', '定义域']                    // 批1.5 新补：修复前这条不存在
+  'cnm_h028_q3': ['inverse-domain', '定义域'],                    // 批1.5 新补：修复前这条不存在
+  /* 批2：三角 9 题（与 test_funclab_hs_batch2.js / batch16 的 LEDGER 逐条一致） */
+  'cnm_h066_q1': ['trig-extremum', '最大值'],
+  'cnm_h066_q2': ['trig-extremum', '最小值'],
+  'cnm_h066_q3': ['trig-period', '最小正周期除以 π 后的值'],
+  'cnm_h066_q4': ['trig-domain', '定义域'],
+  'cnm_h067_q1': ['trig-monotonic', '单调性'],
+  'cnm_h067_q4': ['trig-monotonic', '单调性'],
+  'cnm_h068_q4': ['trig-parity', '奇偶性'],
+  'cnm_h075_q1': ['trig-extremum', '最大值'],
+  'cnm_h075_q2': ['trig-period', '最小正周期除以 π 后的值']
 };
 
 /* 能力缺口（批1.5 时点登记）→ **批1.6（t_e63a9673）已补齐**：quadratic 画板新增
@@ -465,7 +488,7 @@ const CLOSED_CAP_GAPS = ['cnm_h023_q4', 'cnm_h032_q4', 'cnm_h035_q1', 'cnm_h036_
  * 归一化只作用于区间解析这一个函数，Funclab.fromPrompt 的曲线解析语义零改动。 */
 const CLOSED_INTERVAL_GAPS = ['cnm_h034_q2', 'cnm_h227_q2'];
 
-test('第1件：白名单里 8 题能过「表 + intent + 代回」三道闸（含 cnm_h028_q3）', function () {
+test('白名单里 17 题能过「表 + intent + 代回」三道闸（批1.5 的 8 + 批2 三角的 9）', function () {
   const bad = [];
   Object.keys(EXPECT_MOUNT).forEach(function (id) {
     const pair = EXPECT_MOUNT[id];
@@ -476,14 +499,18 @@ test('第1件：白名单里 8 题能过「表 + intent + 代回」三道闸（�
     const params = Object.assign({}, scene);
     delete params.type;
     delete params.base;
+    /* 区间题（批2 的 trig-monotonic / 批1.6 的 range-on-interval）端点从题面实抠，
+     * 与线上 verifyParams 前置流程、batch16 的 gateAll 同一来源 */
+    const iv = L.promptInterval(item.prompt);
+    if (iv) { params.xMin = iv.xMin; params.xMax = iv.xMax; }
     const v = L.verifyParams(item.prompt, { match: pair[0], intent: pair[1], params: params }, { itemId: id });
     if (!v.ok) bad.push(id + ' 代回不过：' + v.why.join(';'));
     if (!F.noteText(pair[0], pair[1], params)) bad.push(id + ' 没有文案');
   });
   assert.deepStrictEqual(bad, [], bad.join(' / '));
-  assert.strictEqual(Object.keys(EXPECT_MOUNT).length, 8, '批1.5 时点的可挂契约为 8 题');
+  assert.strictEqual(Object.keys(EXPECT_MOUNT).length, 17, '可挂契约应为 17 题（8 + 批2 三角 9）');
   assert.strictEqual(Object.keys(EXPECT_MOUNT).length + CLOSED_CAP_GAPS.length + CLOSED_INTERVAL_GAPS.length,
-    14, '8 可挂（批1.5 时点）+ 4 能力缺口 + 2 区间缺口 = 白名单 14 题，一题都不许漏账');
+    23, '17 可挂 + 4 能力缺口 + 2 区间缺口 = 白名单 23 题，一题都不许漏账');
 });
 
 test('批1.6：4 条原能力缺口现在都有对应 intent（缺口已补齐，退回缺口状态就红）', function () {
@@ -533,10 +560,12 @@ test('第2件：同名 intent 各印各的文案（直线不再印抛物线文�
   assert.ok(/每一支|两支/.test(inv), '反比例画板应讲「每一支 / 两支」');
 });
 
-test('第2件：批1 全部 13 题（10 二次 + 3 一次）× 各自全部 intent，文案不串别的图', function () {
+test('批1+批2 全部 22 题各 × 全部 intent，文案不串别的图', function () {
   /* 只锁「串台」方向（出现别的图的专属名词）。不做正向名词要求：抛物线文案里
-   * 「这条直线是 x = ?」（对称轴）是正当说法，硬要求「抛物线」会把正确文案判红。 */
-  const FORBID = { quadratic: /双曲线/, linear: /抛物线|双曲线/, inverse: /抛物线|直线/ };
+   * 「这条直线是 x = ?」（对称轴）是正当说法，硬要求「抛物线」会把正确文案判红。
+   * trig 不禁「直线」：tan 的渐近线文案要说「竖直的渐近线」，
+   * 且 trig 画板说明里「对称轴」读法也用「直线」一词，属正当用法。 */
+  const FORBID = { quadratic: /双曲线/, linear: /抛物线|双曲线/, inverse: /抛物线|直线/, trig: /抛物线|双曲线/ };
   /* 两处历史串台（同名 intent）必须正向归属正确 —— 这是本卡第 2 件的根因 */
   const CROSSOVER = {
     '与x轴交点的横坐标': { quadratic: /抛物线/, linear: /直线/ },
@@ -548,7 +577,10 @@ test('第2件：批1 全部 13 题（10 二次 + 3 一次）× 各自全部 inte
     if (!FORBID[kind]) return;                     // curves 不在本批口径内
     Object.keys(F.capabilitiesFor(kind)).forEach(function (lab) {
       F.capabilityIntents(lab).forEach(function (it) {
-        const note = F.noteText(lab, it, { a: 1, k: 2, b: -4, xMin: -1, xMax: 2 });
+        /* trig 的 monotonic 文案要把区间端点写成 π 记法（A/w/phi/k 无 w 时用文字占位） */
+        const note = F.noteText(lab, it, kind === 'trig'
+          ? { fn: 'sin', A: 1, w: 1, phi: 0, k: 0, xMin: -1, xMax: 2 }
+          : { a: 1, k: 2, b: -4, xMin: -1, xMax: 2 });
         if (!note) { bad.push(id + ' ' + lab + '/' + it + ' 无文案'); return; }
         const hit = note.match(FORBID[kind]);
         if (hit) bad.push(id + ' ' + lab + '/' + it + ' 串台「' + hit[0] + '」');

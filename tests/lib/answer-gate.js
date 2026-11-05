@@ -30,6 +30,16 @@ function annotationValues(p, topicId) {
     if (p.k) push(-p.b / p.k);
   } else if (p.type === 'inverse') {
     push(p.k);                                    // |k| 本身就是答案对象
+  } else if (p.type === 'trig') {
+    /* 批2：trig 画板实际标注/可读出的派生量 —— 波峰波谷值 k±|A|、周期 T 与 T/π
+     * （extremum 红点旁的「最大值 = ?」、period 虚线间的「T = 2π」）。
+     * w=0 时 T 发散为 Infinity，isFinite 挡掉，与 mount/verifyParams 的拒绝口径一致。 */
+    const A = Math.abs(p.A);
+    const T = (p.fn === 'tan' ? Math.PI : 2 * Math.PI) / Math.abs(p.w);
+    push(p.k + A);
+    push(p.k - A);
+    push(T);
+    push(T / Math.PI);
   }
   return vals;
 }

@@ -113,7 +113,11 @@
     if (typeof e.match !== 'string' || !e.match) return false;
     if (!e.params || typeof e.params !== 'object' || Array.isArray(e.params)) return false;
     if (typeof e.intent !== 'string' || !e.intent) return false;
-    if (Object.keys(e.params).some(function (k) { return !isFinite(Number(e.params[k])); })) return false;
+    if (Object.keys(e.params).some(function (k) {
+      /* 批2：fn 是字符串参数（sin/cos/tan），不参与 Number() —— 否则 trig 缓存条目永远无效 */
+      if (k === 'fn') return ['sin', 'cos', 'tan'].indexOf(String(e.params[k])) < 0;
+      return !isFinite(Number(e.params[k]));
+    })) return false;
     return true;
   }
 
@@ -177,13 +181,42 @@
     const s = normalizeIntervalText(prompt);
     /* 形式一优先（历史写法，行为零变化）：不等式链 2<x<4 / 2≤x≤4
      * 形式二（批1.6 新增）：区间记号 [a,b]，含 x∈[−1，2] / 在 [0，3] 上 这类写法。
-     * 圆括号不认：题库里 (−1，2) 那种是点的坐标，不是区间。 */
+     * 圆括号不认：题库里 (−1，2) 那种是点的坐标，不是区间。
+     * 批2（三角）：两种形式的端点都可能是 π 的倍数（[−π/2，π/2] / -π/2<x<π/2 / [0，2π]），
+     * π 记法的数值化走 Funclab.numPi（解析唯一真源；纯数字端点也认，混合 [0，2π] 一样过）。 */
     const m = /(-?\d+(?:\.\d+)?)<x<(-?\d+(?:\.\d+)?)/.exec(s)
       || /\[(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\]/.exec(s);
-    if (!m) return null;
-    const a = parseFloat(m[1]), b = parseFloat(m[2]);
-    if (!isFinite(a) || !isFinite(b) || !(b > a)) return null;
-    return { xMin: a, xMax: b };
+    if (m) {
+      const a = parseFloat(m[1]), b = parseFloat(m[2]);
+      if (!isFinite(a) || !isFinite(b) || !(b > a)) return null;
+      return { xMin: a, xMax: b };
+    }
+    /* π 记法端点（批2）：形如 -π/2<x<π/2、π/2<x<3π/2、[−π/2，π/2]、[0，2π]、[π/3，5π/6]、[−2π，2π]。
+     * normalizeIntervalText 已把 −→-、全角逗号→半角。 */
+    const PI_TOK = '([+-]?(?:\\d*\\.?\\d*)?π(?:\\/\\d+\\.?\\d*)?|-?\\d+(?:\\.\\d+)?)';
+    const pm = new RegExp(PI_TOK + '<x<' + PI_TOK).exec(s)
+      || new RegExp('\\[' + PI_TOK + ',' + PI_TOK + '\\]').exec(s);
+    if (pm) {
+      const a = piEndpoint(pm[1]), b = piEndpoint(pm[2]);
+      if (a == null || b == null || !(b > a)) return null;
+      return { xMin: a, xMax: b };
+    }
+    return null;
+  }
+
+  /** π 记法端点 → 数值（'π/2' → π/2、'-2π' → -2π、'3' → 3）；认不出 null。
+   *  数值化走 Funclab.numPi（与 fromPrompt 解析 φ 同一实现，避免两处正则漂移）。 */
+  function piEndpoint(tok) {
+    const t = String(tok || '').trim();
+    if (/^[+-]?\d+(?:\.\d+)?$/.test(t)) {
+      const v = parseFloat(t);
+      return isFinite(v) ? v : null;
+    }
+    if (Funclab && typeof Funclab.numPi === 'function') {
+      const v = Funclab.numPi(t);
+      return isFinite(v) ? v : null;
+    }
+    return null;
   }
 
   /** 顶点式 a(x-h)²+k 展开成标准式的系数 (a, b, c)：a=-? 见下 */
@@ -254,11 +287,21 @@
 
     for (let i = 0; i < need.length; i++) {
       const key = need[i];
+      /* 批2：fn 是字符串参数（sin/cos/tan）—— Number('sin') 是 NaN，
+       * 若混进数值检查，LLM 给对了也全被拒。单独校验字面量。 */
+      if (key === 'fn') {
+        if (['sin', 'cos', 'tan'].indexOf(String(p.fn)) < 0) {
+          return { ok: false, why: ['fn 参数必须是 sin/cos/tan 之一: ' + (p.fn == null ? '(缺失)' : p.fn)] };
+        }
+        continue;
+      }
       const v = Number(p[key]);
       if (!isFinite(v)) return { ok: false, why: ['参数缺失或非数值: ' + key] };
     }
     if (type === 'quadratic' && Number(p.a) === 0) return { ok: false, why: ['a=0 不是二次函数'] };
     if ((type === 'linear' || type === 'inverse') && Number(p.k) === 0) return { ok: false, why: ['k=0 画不出图象'] };
+    /* 批2：w=0 时 A·sin(0·x+φ)+k 是常函数，不是三角函数（mount 同口径拒绝） */
+    if (type === 'trig' && Number(p.w) === 0) return { ok: false, why: ['w=0 不是三角函数（退化为常函数）'] };
 
     // 3'. 代回原式：题面规范参数 vs LLM 参数，展开后逐项比对
     let parsed = Funclab.fromPrompt(prompt);
@@ -284,6 +327,16 @@
       }
     } else if (type === 'inverse') {
       if (!close(Number(p.k), parsed.k)) why.push('参数代回不符：LLM k=' + p.k + ' ≠ 题面 k=' + parsed.k);
+    } else if (type === 'trig') {
+      /* 批2：函数名先比（字符串），数值参数逐项 close（φ 是 π 的倍数，浮点安全走 EPS 容差） */
+      if (String(p.fn) !== parsed.fn) {
+        why.push('参数代回不符：函数名 fn=' + p.fn + ' ≠ 题面 ' + parsed.fn);
+      }
+      if (!close(Number(p.A), parsed.A) || !close(Number(p.w), parsed.w)
+        || !close(Number(p.phi), parsed.phi) || !close(Number(p.k), parsed.k)) {
+        why.push('参数代回不符：LLM A=' + p.A + ',w=' + p.w + ',phi=' + p.phi + ',k=' + p.k
+          + ' ≠ 题面 A=' + parsed.A + ',w=' + parsed.w + ',phi=' + parsed.phi + ',k=' + parsed.k);
+      }
     }
 
     // 4. 区间：题面必须真的给了区间，且端点一致
@@ -734,6 +787,12 @@
           const co = coerceCurveSpec(c);
           return co.ok ? co.curve : null;
         }).filter(Boolean);
+        return;
+      }
+      /* 批2：fn 是字符串（sin/cos/tan），原样透传 —— Number('sin') 是 NaN，
+       * mount 拿到 NaN 会画不出曲线（verifyParams 已校验过字面量） */
+      if (k === 'fn') {
+        params.fn = String(choice.params[k]);
         return;
       }
       params[k] = Number(choice.params[k]);

@@ -261,6 +261,16 @@
       if (k !== 0 && isFinite(k)) return { type: 'inverse', k: k };
     }
 
+    // ---------- 三角函数（批2）：y = A·sin(ωx+φ) + k ----------
+    // 位置铁律：反比例之后、一次函数之前（y=x² / y=2x+1 / y=k/x 一个都不许被截走 ——
+    // 三角头要求 sin|cos|tan 字样，那些题面根本匹配不上，这里只是把顺序钉死防回归）。
+    // 解析规则（严读）：头 A·fn，fn 后跟 '(' 走括号形 ωx±φ（ω 纯数字、φ 允许 π 记法/小数、必须含 x），
+    // 裸形只认紧跟的 ωx（'sin x + 2' 的 +2 落到 k，不是 φ）；尾部 ±数字 → k，其余中文说明忽略。
+    // 头匹配了但解析失败（sin²x / 括号内无 x / 含字母参数）→ 直接 null：
+    // 确认是三角题但画不了，不许掉进后面的分支被误解析成别的类型。
+    m = s.match(/y\s*=\s*([+-]?\s*\d*\.?\d*)\s*\*?\s*(sin|cos|tan)/);
+    if (m) return trigFrom(s, m);
+
     // ---------- 一次函数：y = kx + b ----------
     // 排除 y=ax² / ax³ / ax^n 被误匹配：负向断言 x 后不是上标或幂号
     m = s.match(/y\s*=\s*([+-]?\s*\d*\.?\d*)?\s*x(?![\u00B2\u00B3\u00B9^])\s*([+-]\s*\d*\.?\d*)?/);
@@ -332,6 +342,52 @@
     return { type: 'quadratic', a: a, h: h, k: k };
   }
 
+  /** 三角函数解析（批2）：fromPrompt 的三角头已匹配（m[1]=A 系数串、m[2]=fn），这里解析余下部分。
+   *  返回 {type:'trig', fn, A, w, phi, k}；任何不合规形态 → null（含参/无 x/w=0 一律不画）。
+   *  φ 的 π 记法（π/2、-π/6、2π/3）走 numPi；归一化 -0 → 0。 */
+  function trigFrom(s, m) {
+    const A = coeffNum(m[1]);
+    if (!isFinite(A)) return null;
+    const fn = m[2];
+    let w = 1, phi = 0, k = 0;
+    let rest = s.slice(m.index + m[0].length);
+    if (/^\s*\(/.test(rest)) {
+      /* 括号形：ωx±φ。内部含 x²/x³/sin² 这类上标 → null；必须是「ωx」或「ωx±φ」 */
+      const pm = /^\s*\(\s*([^)]*)\)/.exec(rest);
+      if (!pm) return null;
+      const inner = pm[1].replace(/\s+/g, '');
+      if (/²|³|⁴/.test(inner)) return null;
+      const im = /^([+-]?\d*\.?\d*)\*?x(?:([+-])(.+))?$/.exec(inner);
+      if (!im) return null;                          // 'π/2'（无 x）/ 'ωx+φ'（字母）/ '2(x+1)' → null
+      const wS = (im[1] === '' || im[1] === '+') ? '1' : (im[1] === '-' ? '-1' : im[1]);
+      if (/[a-zA-Z]/.test(wS)) return null;
+      w = parseFloat(wS);
+      if (!isFinite(w)) return null;
+      if (im[2]) {
+        const phiV = numPi(im[3]);
+        if (phiV == null || !isFinite(phiV)) return null;
+        phi = im[2] === '-' ? -phiV : phiV;
+      }
+      rest = rest.slice(pm[0].length);
+    } else {
+      /* 裸形：只认紧跟的 ωx（'sin x'、'sin 2x'、'sin2x'）。'sin²x'（² 不是 x）在这里落空 → null */
+      const am = /^\s*\*?\s*([+-]?\d*\.?\d*)?\s*x/.exec(rest);
+      if (!am) return null;
+      const wS = (am[1] == null || am[1] === '' || am[1] === '+') ? '1' : (am[1] === '-' ? '-1' : am[1]);
+      if (/[a-zA-Z]/.test(wS)) return null;
+      w = parseFloat(wS);
+      if (!isFinite(w)) return null;
+      rest = rest.slice(am[0].length);
+    }
+    /* 尾部：紧跟的 ±数字 → k；其余（中文说明、区间、度数）全部忽略 */
+    const km = /^\s*([+-])\s*(\d+\.?\d*)/.exec(rest);
+    if (km) k = (km[1] === '-' ? -1 : 1) * parseFloat(km[2]);
+    if (w === 0) return null;                        // w=0 退化成常函数，不是三角函数
+    if (phi === 0) phi = 0;                          // 归一化 -0
+    if (k === 0) k = 0;
+    return { type: 'trig', fn: fn, A: A, w: w, phi: phi, k: k };
+  }
+
   /** 题型 → 函数类型：分到能挂画布的知识点类别，挂不了返回 null */
   function topicKind(topicId) {
     const id = String(topicId || '');
@@ -390,7 +446,21 @@
     'cnm_h032_q2': 'linear',      // f(x)=−3x+1 在实数集上的增减 → 直线走向
     'cnm_h049_q2': 'linear',      // f(x)=x−5 的零点 → 与 x 轴交点绿点
     /* ---- 反比例 gated ok（1）：定义域边界 = 渐近线 ---- */
-    'cnm_h028_q3': 'inverse'      // f(x)=1/x 的定义域 → 两支与 y 轴渐近线
+    'cnm_h028_q3': 'inverse',     // f(x)=1/x 的定义域 → 两支与 y 轴渐近线
+    /* ---- 三角函数 gated ok（9，批2）：最大最小值 / 周期 / 奇偶 / 单调 / 定义域 ----
+     * 审计口径：5 道可判数值题的答案（1、-1、2、2、1）都不许出现在画板文案里
+     * （trig-period 的 T=2π 属结构常量，审计放行，详见 NOTE_INTENT 三角注释）；
+     * 4 道选择题进审计 undecidable。cnm_h069_q4（y=tan x 在 x=90° 处，答案「没有定义」）
+     * 测算判 misleading，不进白名单。 */
+    'cnm_h066_q1': 'trig',        // y=sin x 的最大值 → 波峰纵坐标
+    'cnm_h066_q2': 'trig',        // y=sin x 的最小值 → 波谷纵坐标
+    'cnm_h066_q3': 'trig',        // y=sin x 的最小正周期除以 π → 两条虚线间周期
+    'cnm_h066_q4': 'trig',        // y=sin x 的定义域 → 整条连续无断点
+    'cnm_h067_q1': 'trig',        // y=sin x 在 [−π/2,π/2] 上的单调性 → 阴影段走向
+    'cnm_h067_q4': 'trig',        // y=sin x 在 [π/2,3π/2] 上整体的单调性 → 阴影段走向
+    'cnm_h068_q4': 'trig',        // y=cos x 的奇偶性 → 沿 y 轴对折
+    'cnm_h075_q1': 'trig',        // y=2sin x 的最大值 → 波峰纵坐标
+    'cnm_h075_q2': 'trig'         // y=sin(2x) 的最小正周期除以 π → 两条虚线间周期
   };
 
   /** 高中逐题放行：返回画板类型，未放行返回 null（按题 id，不看章） */
@@ -489,6 +559,8 @@
     if (type === 'inverse') {
       return { type: 'inverse', k: 1 };
     }
+    /* 批2：三角无「基准曲线」概念（平移对比类题目尚未立项），不叠画 */
+    if (type === 'trig') return null;
     const s = normalize(prompt);
     const shiftWord = /平移|向左|向右|向上|向下/.test(s);
     const explicitBase = /y\s*=\s*[+-]?\s*x²/.test(s) && !/y\s*=\s*[+-]?\s*\d/.test(s);
@@ -584,9 +656,9 @@
       note: '标准式 y=a(x-h)²+k。顶点 (h,k)。a>0 开口向上有最小值 k；a<0 开口向下有最大值 k。'
     },
     'quadratic-roots': {
-      /* 批1.6（t_e63a9673）：补「与 x 轴交点的个数」。画板本来就把交点画成绿色圆点，
+      /* 批1.6（t_e63a9673）：补「与x轴交点的个数」。画板本来就把交点画成绿色圆点，
        * 数点就是答案，属于画板事实（批1.5 同口径：答案真能从图上读出来才收）。 */
-      canAnswer: ['方程的根', '与x轴交点的横坐标', '零点', '与 x 轴交点的个数'],
+      canAnswer: ['方程的根', '与x轴交点的横坐标', '零点', '与x轴交点的个数'],
       params: ['a', 'h', 'k'],
       note: '同上标准式。与 x 轴交点满足 a(x-h)²+k=0，根为 h±√(-k/a)；交点有几个看判别式的符号。'
     },
@@ -657,6 +729,47 @@
         + '（定义域是除 x=0 外的全体实数）。图上过原点的竖直虚线就是渐近线 x=0：'
         + '两支曲线向左右两端延伸时无限逼近它，但永不相交。'
     },
+    /* ---- 三角函数（批2：y=A·sin(ωx+φ)+k） ----
+     * 5 张画板对应批2白名单 9 题的 5 类 intent。文案铁律（scripts/audit_funclab_notes.js 会逐条查）：
+     * 1) 学生文案（NOTE_INTENT）里**不写任何 A/ω/φ/k 的具体数值** —— 审计的 answerKeys 来自题目答案，
+     *    题面 y=sin x 省略形态的 A=1、φ=0、k=0 不算「题面已给」，写「A = 1」对答案就是 1 的题（h066_q1）
+     *    直接判泄漏；只有「题面实给的区间端点」可以用 {xMin}/{xMax} 照印。
+     * 2) NOTE_INTENT['trig-period'] 的 {T} 是唯一数值例外：T=2π/|ω| 是结构常量（扰动后题答不变），审计放行。
+     * 3) 文案不说死结论（「是不是偶函数自己看」），不出现「根」，不串台到抛物线/双曲线。 */
+    'trig-extremum': {
+      canAnswer: ['最大值', '最小值'],
+      params: ['fn', 'A', 'w', 'phi', 'k'],
+      note: '三角函数 y=A·sin(ωx+φ)+k 的图象：整条波浪线的起伏范围由 A 和 k 决定，'
+        + '波峰（图上红色圆点）比波浪中心线高 |A|，波谷比中心线低 |A|。'
+        + '最大值、最小值各是多少，从波峰、波谷对着 y 轴刻度读。'
+    },
+    'trig-period': {
+      canAnswer: ['最小正周期', '最小正周期除以 π 后的值'],
+      params: ['fn', 'A', 'w', 'phi', 'k'],
+      note: '三角函数图象按固定长度平移后与自身重合，这个长度就是一个周期 T。'
+        + '图上两条竖直虚线之间正好是一个周期，周期长度的数值已标在图上，数一数这中间包含几个 π。'
+    },
+    'trig-parity': {
+      canAnswer: ['奇偶性'],
+      params: ['fn', 'A', 'w', 'phi', 'k'],
+      note: '把图象沿 y 轴对折：右半边翻过去若与左半边完全重合，就是偶函数（f(-x)=f(x)）；'
+        + '绕原点旋转 180° 后与自身重合，就是奇函数（f(-x)=-f(x)）；都对不上就两者都不是。'
+        + '图上黑色粗实线是 y 轴（x = 0），蓝色实线是函数图象，是不是关于它对称自己看。'
+    },
+    'trig-domain': {
+      canAnswer: ['定义域', '渐近线'],
+      params: ['fn', 'A', 'w', 'phi', 'k'],
+      note: '从图上读定义域：曲线在每个 x 处是不是都有对应的 y。'
+        + '正弦、余弦的图象是整条连续的波浪线，没有任何断开的地方；'
+        + '正切的图象由一段一段分离的曲线组成，每两段之间被一条竖直的渐近线（虚线）隔开，'
+        + '渐近线处曲线断开、没有定义。'
+    },
+    'trig-monotonic': {
+      canAnswer: ['单调性'],
+      params: ['fn', 'A', 'w', 'phi', 'k', 'xMin', 'xMax'],
+      note: '题面给的区间已用淡色底纹标出：看这一段里曲线是上升还是下降，'
+        + '读出这一段是增函数还是减函数。波浪线一段一段地升降，只看区间内那一段。'
+    },
     /* ---- 多曲线：一个坐标系里两条曲线 + 它们的交点（t_1d3fe77a） ---- */
     'two-curves-intersect': {
       type: 'curves',
@@ -689,6 +802,11 @@
     'inverse-quadrants': 'inverse',
     'inverse-area': 'inverse',
     'inverse-domain': 'inverse',
+    'trig-extremum': 'trig',
+    'trig-period': 'trig',
+    'trig-parity': 'trig',
+    'trig-domain': 'trig',
+    'trig-monotonic': 'trig',
     'two-curves-intersect': 'curves'
   };
 
@@ -719,7 +837,7 @@
       '零点': '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。**这两个横坐标分别是多少？** 图上只标了点，数值留给你读。拖动 h、k 看交点怎么移动。',
       /* 批1.6（t_e63a9673）：问的是「个数」，不是横坐标 —— 读数动作就是数绿点。
        * 注意：文案里不许出现「根」字（非 ROOT_INTENTS 的通用断言），也不许报出个数（那是答案）。 */
-      '与 x 轴交点的个数': '图上的绿色圆点就是抛物线与 x 轴的交点：**数一数有几个绿点**，就是有几个交点。'
+      '与x轴交点的个数': '图上的绿色圆点就是抛物线与 x 轴的交点：**数一数有几个绿点**，就是有几个交点。'
         + '如果整条曲线都在 x 轴上方（或都在下方），一个绿点也没有，那就是没有交点——此时对应的方程无解。'
         + '拖动 h、k 看交点从两个变成一个、再变成一个都没有。'
     },
@@ -766,6 +884,45 @@
     'inverse-domain': {
       '定义域': 'y = k/x 在 x = 0 处没有值（分母不能为 0），所以 x = 0 不在定义域里 —— 定义域是除 x = 0 外的全体实数。图上两支曲线各自延伸，都在 y 轴处断开，谁也接不上谁：拖动 k 看它们怎么变，断点始终在 x = 0。',
       '渐近线': '过原点的竖直虚线是渐近线 x = 0（y 轴）：曲线向左右两端延伸时无限逼近这条线，但永不相交 —— 因为 x = 0 时分母为 0，函数没有值，x = 0 也就不在定义域里。**这条渐近线的方程你能从图上读出来吗？**'
+    },
+    /* ---- 三角函数（批2）：文案铁律见 CAPABILITIES 的三角注释 ——
+     * 不印 A/ω/φ/k 数值（省略形态的 1/0 不算题面已给）、{T} 是唯一数值例外（结构常量，审计放行）、
+     * 区间端点 {xMin}/{xMax} 是题面实给量可照印、结论全部留白让学生从图上读、无「根」字。 ---- */
+    'trig-extremum': {
+      '最大值': '三角函数的图象是整条波浪线，波峰（红色圆点）就是整条曲线最高的那一点——**它的纵坐标是多少？** '
+        + '波峰的 y 就是这个函数的最大值。图上波峰位置已标红、数值以 ? 表示，留给你对着 y 轴刻度读。',
+      '最小值': '波谷（红色圆点）就是整条曲线最低的那一点——**它的纵坐标是多少？** 波谷的 y 就是这个函数的最小值。'
+        + '图上波谷位置已标红、数值以 ? 表示，留给你对着 y 轴刻度读。'
+    },
+    'trig-period': {
+      /* 「最小正周期」是容错承接（LLM 措辞宽一档）；白名单 9 题的周期题都问「除以 π 后的值」。
+       * 两个 intent 的文案都印 {T}：T=2π/|ω| 是结构常量（ω 扰动后 T 跟着变、商不变），审计放行；
+       * 真值只活在 {T}，商/T 与学生输入的关系全部留白。 */
+      '最小正周期': '三角函数图象每隔固定长度就重复一次，这个长度就是最小正周期。'
+        + '图上两条竖直虚线之间的蓝色实线正好是一个周期：T = {T}。'
+        + '**这段长度对照 x 轴的 π 刻度数一数，最小正周期是多少？** 自己从图上读。',
+      '最小正周期除以 π 后的值': '三角函数图象每隔固定长度就重复一次，这个长度就是一个周期。'
+        + '图上两条竖直虚线之间的蓝色实线正好是一个周期：T = {T}。'
+        + '**把这个周期除以 π，商是多少？** 从图上数一数两条虚线之间横跨了几个 π，自己算出来。'
+    },
+    'trig-parity': {
+      '奇偶性': '把图象沿 y 轴对折：右半边翻过去若与左半边完全重合，就是偶函数（f(-x) = f(x)）；'
+        + '绕原点旋转 180° 后与自身重合，就是奇函数（f(-x) = -f(x)）；两种都对不上，就既非偶函数、也非奇函数。'
+        + '图上黑色粗实线是 y 轴（x = 0），蓝色实线是函数图象：**对折之后能重合吗？是奇函数还是偶函数？** 自己看。'
+    },
+    'trig-domain': {
+      '定义域': '从图上读定义域：看曲线在每个 x 处是不是都有对应的 y。'
+        + '正弦、余弦的图象是整条连续的波浪线，任何地方都不断开；'
+        + '正切的图象由一段一段分离的曲线组成，每两段之间被一条竖直的渐近线（虚线）隔开。'
+        + '**这条蓝色实线有没有断开的地方？定义域该怎么写？** 自己从图上读。',
+      '渐近线': '图上的竖直虚线是渐近线：曲线延伸时无限逼近它、但永不到达，虚线处曲线断开。'
+        + '正弦、余弦整条连续，没有渐近线；正切的图象一段一段，段与段之间都有渐近线。'
+        + '**虚线落在 x 轴的哪些位置？渐近线的方程怎么写？** 留给你从图上读。'
+    },
+    'trig-monotonic': {
+      '单调性': '题面给的区间 {xMin} ≤ x ≤ {xMax} 已用淡色底纹标出：'
+        + '**只看这一段，曲线从左往右是往上走还是往下走？** '
+        + '波浪线一段一段地升降，读出这一段是增函数还是减函数，自己从图上看。'
     },
     /* 多曲线画板（t_1d3fe77a）：两条曲线的表达式是题面已知量，交点坐标是派生量 → 一律留白。
      * 文案里不许出现「根」字（test_labmatch 的通用断言），只说「交点」。 */
@@ -871,8 +1028,9 @@
     const p = params || {};
     const it = intentKey(intent);
     const type = CAP_TYPE[String(lab || '')] || 'quadratic';
-    const xMin = p.xMin != null ? p.xMin : '-∞';
-    const xMax = p.xMax != null ? p.xMax : '+∞';
+    /* 批2：三角的区间端点是 π 的倍数（-π/2、π），照印小数没人读得懂 → π 记法优先 */
+    const xMin = p.xMin != null ? (type === 'trig' ? fmtPiNum(p.xMin) : p.xMin) : '-∞';
+    const xMax = p.xMax != null ? (type === 'trig' ? fmtPiNum(p.xMax) : p.xMax) : '+∞';
     /* curves 画板：文案必须与实际画的东西一致 —— 没有交点时图上没有红点，
      * 再说「图上交叉的地方已经画了点」就是骗人（学生对着空图找点）。 */
     if (CAP_TYPE[String(lab || '')] === 'curves') {
@@ -894,6 +1052,15 @@
         ? ('y = ' + (p.a === 1 ? '' : p.a === -1 ? '-' : fmtQuad(p.a)) + 'x² + …')
         : formatFormula({ type: type, a: p.a, h: p.h, k: p.k, b: p.b }),
       xMin: xMin, xMax: xMax,
+      /* 批2 trig-period 专用：T = 2π/|ω|（正切是 π/|ω|）。这是唯一可印的派生数值 ——
+       * 它是结构常量：ω 扰动后 T 跟着变，题目答案（T/π）不变，审计按结构常量放行。
+       * w 缺失/为 0（空参数、审计扰动路径）→ 兜底串「2π/|ω|」，文案不断句、也无小数。 */
+      T: (function () {
+        const fn = p.fn === 'cos' || p.fn === 'tan' ? p.fn : 'sin';
+        const w = Number(p.w);
+        if (!isFinite(w) || w === 0) return '2π/|ω|';
+        return fmtPi((fn === 'tan' ? Math.PI : 2 * Math.PI) / Math.abs(w));
+      })(),
       /* 以下占位符自 P 卡起禁止在模板里使用（它们是派生量 = 答案）；保留键只为兼容旧测试 */
       h: '?', xInt: '?', absK: '?', halfAbsK: '?', dir: '竖直虚线',
       axis: 'x = ?'
@@ -904,6 +1071,56 @@
   function fmtQuad(n) {
     if (n == null || !isFinite(n)) return '?';
     return fmt(n);
+  }
+
+  /* ---- 批2：三角函数的 π 记法（x 轴刻度 / 周期标注 / 区间端点共用） ---- */
+
+  /** 数值 → π 记法字符串：2π → '2π'、π → 'π'、π/2 → 'π/2'、3π/2 → '3π/2'、-π/6 → '-π/6'。
+   *  只认 |分母| ≤ 12、|分子| ≤ 24 的整数比（题库与滑块参数都在这个范围内）；
+   *  不是 π 的整洁倍数 → '?'（调用方按需回退 fmtQuad，见 fmtPiNum）。 */
+  function fmtPi(x) {
+    if (x == null || !isFinite(x)) return '?';
+    if (x === 0) return '0';
+    const r = x / Math.PI;
+    for (let den = 1; den <= 12; den++) {
+      const num = r * den;
+      const near = Math.round(num);
+      if (near !== 0 && Math.abs(num - near) < 1e-9 && Math.abs(near) <= 24) {
+        if (den === 1) return (near === 1 ? '' : near === -1 ? '-' : near) + 'π';
+        const sign = near < 0 ? '-' : '';
+        const abs = Math.abs(near);
+        return sign + (abs === 1 ? '' : abs) + 'π/' + den;
+      }
+    }
+    return '?';
+  }
+
+  /** π 记法优先、失败回退普通数字（区间端点可能不是 π 的倍数） */
+  function fmtPiNum(x) {
+    const s = fmtPi(x);
+    return s === '?' ? fmtQuad(x) : s;
+  }
+
+  /** π 记法 token → 数值：'π'、'-π'、'π/2'、'-π/6'、'2π'、'3π/2'、'2π/3'；纯小数也认；认不出 null。
+   *  计算顺序固定 coef * π / den（与测试的 3 * PI / 2 等表达式同一路径，deepStrictEqual 不抖）。 */
+  function numPi(tok) {
+    if (tok == null) return null;
+    const t = String(tok).replace(/\s+/g, '');
+    if (/^[+-]?\d*\.?\d+$/.test(t)) {
+      const v = parseFloat(t);
+      return isFinite(v) ? v : null;
+    }
+    const m = /^([+-]?)(\d*\.?\d*)π(?:\/(\d+\.?\d*))?$/.exec(t);
+    if (!m) return null;
+    const coef = m[2] === '' ? 1 : parseFloat(m[2]);
+    if (!isFinite(coef)) return null;
+    let v = coef * Math.PI;
+    if (m[3] != null) {
+      const d = parseFloat(m[3]);
+      if (!isFinite(d) || d === 0) return null;
+      v = v / d;
+    }
+    return m[1] === '-' ? -v : v;
   }
 
   /* ============================================================ 已知量 vs 派生量（P 卡）
@@ -957,6 +1174,10 @@
     const t = (p && p.type) || 'quadratic';
     if (t === 'linear') return p.k * x + p.b;
     if (t === 'inverse') return p.k / x;
+    if (t === 'trig') {
+      const fn = p.fn === 'cos' ? Math.cos : (p.fn === 'tan' ? Math.tan : Math.sin);
+      return p.A * fn(p.w * x + p.phi) + p.k;
+    }
     return p.a * (x - p.h) * (x - p.h) + p.k;
   }
 
@@ -1000,7 +1221,33 @@
 
   /** 区间端点标注：「x=2 → ?」（端点 x 是题面已知量，函数值是派生量 → ?） */
   function intervalEndpointText(x, p, shown) {
-    return 'x=' + fmt(x) + ' → ' + (shown ? fmt(fValue(p, x)) : deriveText());
+    /* 批2：三角的区间端点是 π 的倍数（-π/2），照印 -1.57 没人读得懂 */
+    const xLabel = (p && p.type === 'trig') ? fmtPiNum(x) : fmt(x);
+    return 'x=' + xLabel + ' → ' + (shown ? fmt(fValue(p, x)) : deriveText());
+  }
+
+  /* ---- 批2 trig 共享 helper（与 vertexText/axisText 同一防漂移口径） ----
+   * mount 的 annotate() 与 describe 的 paintModel() 都必须调这两个函数：
+   * 新增标注漏更新 describe 时，helper 名不出现在 paintModel 里，防漂移测试立刻红。 */
+
+  /** 周期标注：「一个周期 T = 2π」。T 不走 shown 留白机制 —— T/π 才是答案，
+   *  T 本身是结构常量（ω 扰动后 T 跟着变、题答不变），审计放行（详见 NOTE_INTENT 三角注释），
+   *  而且学生要「数两条虚线之间有几个 π」，不印 T 就没得数。参数不全 → 兜底 2π/|ω|。 */
+  function trigPeriodText(p) {
+    const fn = (p && (p.fn === 'cos' || p.fn === 'tan')) ? p.fn : 'sin';
+    const w = Number(p && p.w);
+    if (!isFinite(w) || w === 0) return '一个周期 T = 2π/|ω|';
+    return '一个周期 T = ' + fmtPi((fn === 'tan' ? Math.PI : 2 * Math.PI) / Math.abs(w));
+  }
+
+  /** 三角最值标注：「最大值 = ?」/「最小值 = ?」（shown 时才印 k±|A|，派生量 → ?）。
+   *  注意 A<0 时波峰是 k-|A|、波谷是 k+|A| —— 极值对不随 A 的符号换位，统一用 |A|。 */
+  function trigExtremumText(intent, p, shown) {
+    const absA = Math.abs(Number(p && p.A));
+    const k = Number(p && p.k);
+    const isMin = intent === '最小值';
+    const v = (isMin ? k - absA : k + absA);
+    return (isMin ? '最小值' : '最大值') + ' = ' + (shown && isFinite(v) ? fmt(v) : deriveText());
   }
 
   /* ============================================================ 文字占位矩形与标签避让（t_7851d903）
@@ -1263,16 +1510,20 @@
     return type === 'linear' ? '一次函数图象（直线）'
       : type === 'inverse' ? '反比例函数图象（双曲线）'
         : type === 'curves' ? '两条函数的图象与它们的交点'
-          : '二次函数图象（抛物线）';
+          : type === 'trig' ? '三角函数图象（波浪线）'
+            : '二次函数图象（抛物线）';
   }
 
-  /** 目标曲线描述：只印题面已知量（a/直线的 k,b/反比例 k），quadratic 不印 h/k（顶点是派生量） */
+  /** 目标曲线描述：只印题面已知量（a/直线的 k,b/反比例 k/trig 的解析式），quadratic 不印 h/k（顶点是派生量） */
   function curveDesc(type, p) {
     if (type === 'linear') {
       return '题面给出的直线（' + formatFormula({ type: 'linear', k: p.k, b: p.b }) + '）';
     }
     if (type === 'inverse') {
       return '题面给出的双曲线（' + formatFormula({ type: 'inverse', k: p.k }) + '）';
+    }
+    if (type === 'trig') {
+      return '题面给出的三角函数图象（' + formatFormula({ type: 'trig', fn: p.fn, A: p.A, w: p.w, phi: p.phi, k: p.k }) + '）';
     }
     return '题面给出的抛物线（a = ' + fmtQuad(p.a) + '，' + (p.a > 0 ? '开口向上' : '开口向下') + '）';
   }
@@ -1353,6 +1604,10 @@
     if (type === 'linear' && (!isFinite(p.k) || !isFinite(p.b) || p.k === 0)) return null;
     if (type === 'inverse' && (!isFinite(p.k) || p.k === 0)) return null;
     if (type === 'quadratic' && (!isFinite(p.a) || !isFinite(p.h) || !isFinite(p.k) || p.a === 0)) return null;
+    /* 批2：trig 四个数值参数 + fn 字面量全要齐 —— 空参数/漏 fn 时曲线描述会变成
+     * 「y = NaN·sin(NaNx)」这类鬼话，宁可不出描述（与 quadratic 空参数同口径返回 null） */
+    if (type === 'trig' && (!isFinite(p.A) || !isFinite(p.w) || !isFinite(p.phi) || !isFinite(p.k)
+      || p.w === 0 || !(p.fn === 'sin' || p.fn === 'cos' || p.fn === 'tan'))) return null;
     /* curves：缺 curves（或不合法）时**照样出描述** —— 通用测试会拿空参数调 describe，
      * 那时只能说「两条曲线」的通用措辞，不能返回 null（返回 null 会让 AI 讲解拿不到画板）。 */
     if (type === 'curves') return paintCurves(it, p);
@@ -1363,7 +1618,58 @@
     const base = (p.base && (!p.base.type || p.base.type === type)) ? p.base : null;
     if (base) elements.push({ kind: 'base-curve', text: '灰色虚线：' + baseDesc(type, p, base), style: '灰色虚线' });
 
-    if (type === 'quadratic') {
+    /* 批2 trig：每个 intent 只叠加对应的标注，与 annotate() 的绘制分支一一同源
+     * （trigPeriodText / trigExtremumText 两处引用同一 helper，防漂移测试抽查）。 */
+    if (type === 'trig') {
+      if (it === '最大值' || it === '最小值') {
+        elements.push({
+          kind: 'extremum-point',
+          text: '红色圆点：' + (it === '最大值' ? '波峰（整条波浪线最高的点）' : '波谷（整条波浪线最低的点）')
+            + '的位置，旁边标「' + trigExtremumText(it, p, false) + '」（数值留白）',
+          style: '红色圆点'
+        });
+      }
+      if (it === '最小正周期除以π后的值' || it === '最小正周期') {
+        elements.push({
+          kind: 'period-marks',
+          text: '两条竖直虚线之间正好是波浪线的一次完整重复：旁边标「' + trigPeriodText(p) + '」'
+            + (it === '最小正周期'
+              ? '，这段长度就是最小正周期 = ?（对照 x 轴的 π 刻度自己数）'
+              : '，除以 π 的商 = ?'),
+          style: '竖直虚线'
+        });
+      }
+      if (it === '奇偶性') {
+        elements.push({
+          kind: 'y-axis-emphasis',
+          text: '黑色粗实线：y 轴（x = 0），沿它对折看左右两半波浪线能否完全重合（f(-x) = ? 的关系自己读）',
+          style: '黑色粗实线'
+        });
+      }
+      if (it === '定义域' || it === '渐近线') {
+        if (p.fn === 'tan') {
+          elements.push({
+            kind: 'asymptote',
+            text: '灰色竖直虚线：渐近线，曲线一段一段、在虚线处断开并无限逼近但永不到达；虚线位置 x = ? 留给你从图上读',
+            style: '灰色虚线'
+          });
+        } else {
+          elements.push({
+            kind: 'continuity',
+            text: '蓝色实线整条连续、没有断开的地方，也没有渐近线；每一个 x 都有对应的 y（定义域 = ? 自己写）',
+            style: '蓝色实线'
+          });
+        }
+      }
+      if (it === '单调性' && p.xMin != null && p.xMax != null && isFinite(p.xMin) && isFinite(p.xMax) && p.xMax > p.xMin) {
+        elements.push({
+          kind: 'interval-band',
+          text: '橙色半透明阴影：题面给的区间 ' + fmtPiNum(p.xMin) + ' ≤ x ≤ ' + fmtPiNum(p.xMax)
+            + '，只看这一段从左往右是升还是降（是增函数还是减函数？走向 = ?）',
+          style: '橙色阴影'
+        });
+      }
+    } else if (type === 'quadratic') {
       const vertIntent = it === '顶点坐标' || it === '最小值' || it === '最大值' || it === '对称轴' || it === '开口方向';
       /* 批1.6：奇偶性题要「对称轴 vs y 轴」的对比，所以对称轴改画紫色虚线、并把 y 轴加深加粗
        *（annotate 里同一套画法），describe 也要跟着说准颜色 —— 描述与绘制必须一致。 */
@@ -1481,8 +1787,15 @@
       const label = String(part.label || '').replace(/（.*$/, '').replace(/\(.*$/, '');
       if (label && names.indexOf(label) < 0) names.push(label);
     });
-    if (!names.length) return '图上未标注的数值（顶点、交点、截距等推导量）均以 ? 表示，等学生自己算';
-    return names.join('、') + '在图上都以 ? 表示，等学生自己算';
+    if (!names.length) {
+      if (CAP_TYPE[String(lab || '')] === 'trig') {
+        return '图上未标注的数值（周期、最值、区间端点、渐近线等推导量）均以 ? 表示，等学生自己算';
+      }
+      return '图上未标注的数值（顶点、交点、截距等推导量）均以 ? 表示，等学生自己算';
+    }
+    const tail = names[names.length - 1];
+    const gap = /[!-~π]$/.test(tail) ? ' ' : '';
+    return names.join('、') + gap + '在图上都以 ? 表示，等学生自己算';
   }
 
   /**
@@ -1667,12 +1980,12 @@
           const rt = Math.sqrt(disc);
           return [res('两个根（用、隔开）', 'pair', [p.h - rt, p.h + rt].sort(function (x, y) { return x - y; }), 'x')];
         }
-        /* 批1.6：「与 x 轴交点的个数」的答案就是一个计数（0 / 1 / 2），
+        /* 批1.6：「与x轴交点的个数」的答案就是一个计数（0 / 1 / 2），
          * 与图上绿点个数一一对应；disc 为负时答案是 0，也必须给输入行（学生要能填 0）。 */
         case '与x轴交点的个数': {
           const disc = -p.k / p.a;
           const cnt = disc > 0 ? 2 : (disc === 0 ? 1 : 0);
-          return [res('与 x 轴交点的个数', 'scalar', [cnt])];
+          return [res('与x轴交点的个数', 'scalar', [cnt])];
         }
         case '在给定区间上的最大值': {
           const iv = intervalOf(p);
@@ -1733,6 +2046,23 @@
         case '点与坐标轴围成的矩形或三角形面积':
           return [res('矩形面积', 'scalar', [absK]), res('三角形面积', 'scalar', [absK / 2])];
         case '由面积反求 |k|': return [res('|k|', 'scalar', [absK])];
+        default: return [];
+      }
+    }
+    /* 批2：三角。数值题只有三类 ——
+     * 最大/最小值（k±|A|，注意 A<0 时波峰是 k-|A|、波谷是 k+|A|，极值对不随 A 的符号换位）、
+     * 周期除以 π（T/π，正切是 π/|ω| 除以 π）、其余（奇偶/单调/定义域）是判断题不给输入行。 */
+    if (type === 'trig') {
+      if (!isFinite(p.A) || !isFinite(p.w) || !isFinite(p.phi) || !isFinite(p.k) || p.w === 0) return [];
+      const fnOk = p.fn === 'sin' || p.fn === 'cos' || p.fn === 'tan';
+      if (!fnOk) return [];
+      const absA = Math.abs(p.A);
+      const T = (p.fn === 'tan' ? Math.PI : 2 * Math.PI) / Math.abs(p.w);
+      switch (it) {
+        case '最大值': return [res('最大值', 'scalar', [p.k + absA])];
+        case '最小值': return [res('最小值', 'scalar', [p.k - absA])];
+        case '最小正周期': return [res('最小正周期', 'scalar', [T])];
+        case '最小正周期除以π后的值': return [res('周期除以 π', 'scalar', [T / Math.PI])];
         default: return [];
       }
     }
@@ -1818,6 +2148,16 @@
     curves: {
       sliders: [],
       defaults: {}
+    },
+    /* 批2：三角 y=A·sin(ωx+φ)+k。fn（sin/cos/tan）来自题面解析，不是滑块。 */
+    trig: {
+      sliders: [
+        { key: 'A', label: 'A(振幅,波浪起伏多高)', min: -4, max: 4, step: 0.1 },
+        { key: 'w', label: 'ω(角频率,波浪多密)', min: -4, max: 4, step: 0.1 },
+        { key: 'phi', label: 'φ(相位,整条波浪左右挪)', min: -Math.PI, max: Math.PI, step: 0.05 },
+        { key: 'k', label: 'k(上下平移)', min: -8, max: 8, step: 0.1 }
+      ],
+      defaults: { A: 1, w: 1, phi: 0, k: 0 }
     }
   };
 
@@ -2183,6 +2523,30 @@
       const sign = p.k < 0 ? '-' : '';
       return 'y = ' + sign + fmt(kAbs) + ' / x';
     }
+    if (type === 'trig') {
+      /* 批2：题面已知量照印（LLM 只能从题面拿参数，印出来不泄答案）；φ 用 π 记法（-π/6 比 -0.524 可读）。
+       * 省略形态走人话：A=1 不印系数、w=1 不印、φ=0 去括号、k=0 不印 —— y=sin x 就是 "y = sin(x)"。 */
+      const fn = p.fn === 'cos' || p.fn === 'tan' ? p.fn : 'sin';
+      let head;
+      if (p.A === 1) head = fn;
+      else if (p.A === -1) head = '-' + fn;
+      else if (p.A === 0) head = '0';
+      else head = fmt(p.A) + '·' + fn;
+      let s = 'y = ' + head;
+      if (p.A !== 0) {
+        let arg = 'x';
+        if (p.w === 1) arg = 'x';
+        else if (p.w === -1) arg = '-x';
+        else if (p.w !== 0) arg = fmt(p.w) + 'x';
+        let phiPart = '';
+        if (p.phi > 0) phiPart = '+' + fmtPi(p.phi);
+        else if (p.phi < 0) phiPart = '-' + fmtPi(-p.phi);
+        s += '(' + arg + phiPart + ')';
+      }
+      if (p.k > 0) s += ' + ' + fmt(p.k);
+      else if (p.k < 0) s += ' - ' + fmt(-p.k);
+      return s;
+    }
     // quadratic
     let aPart;
     if (p.a === 1) aPart = '';
@@ -2225,6 +2589,8 @@
     // 确定性退化解：一次函数 k=0（水平线）、反比例 k=0 时画板画不出有效曲线，直接不挂
     if (type === 'linear' && p.k === 0) return null;
     if (type === 'inverse' && p.k === 0) return null;
+    // 批2：三角 w=0 退化成常函数 y = A·sin(φ)+k（一条水平线），不再是波浪线，直接不挂
+    if (type === 'trig' && p.w === 0) return null;
     // 原曲线（题目给出/默认参数那条）：只有调用方给了才叠画，没给就降级为单曲线
     const baseRaw = (o.base && (!o.base.type || o.base.type === type)) ? o.base : null;
     const base = baseRaw ? Object.assign({}, def.defaults, baseRaw, { type: type }) : null;
@@ -2387,6 +2753,28 @@
           yMin = mid - 3; yMax = mid + 3;
           if (yMin > 0) yMin = 0; else if (yMax < 0) yMax = 0;
         }
+      } else if (type === 'trig') {
+        /* 批2：x 方向至少装下 2 个完整周期（默认 [-2π-1, 2π+1]）；
+         * w 很小时周期大（w=0.1 → T≈62.8），按周期扩窗，保证周期虚线/波峰都看得见。
+         * tan 的渐近线分段绘制不需要额外视野（plotShape 自行按渐近线裁段）。 */
+        const absW = Math.abs(p.w || 1);
+        const T = (p.fn === 'tan' ? Math.PI : 2 * Math.PI) / absW;
+        xMin = -2 * Math.PI - 1; xMax = 2 * Math.PI + 1;
+        if (xMax - xMin < 2 * T) { xMin = -T - 0.5; xMax = T + 0.5; }
+        // 单调性画板：题面区间必须整个落进视野（区间阴影画不进画布就白标了）
+        if (p.xMin != null && p.xMax != null && isFinite(p.xMin) && isFinite(p.xMax) && p.xMax > p.xMin) {
+          xMin = Math.min(xMin, p.xMin - 1);
+          xMax = Math.max(xMax, p.xMax + 1);
+        }
+        // y 方向：波浪的起伏范围 k±|A| 必须可见，且要含 0（对折/读刻度都以 x 轴为参照）
+        const absA = Math.abs(p.A || 0);
+        yMin = Math.min(0, (p.k || 0) - absA) - 1.5;
+        yMax = Math.max(0, (p.k || 0) + absA) + 1.5;
+        if (yMax - yMin < 5) {
+          const mid = (yMin + yMax) / 2;
+          yMin = mid - 2.5; yMax = mid + 2.5;
+          if (yMin > 0) yMin = 0; else if (yMax < 0) yMax = 0;
+        }
       } else {
         xMin = -8; xMax = 8; yMin = -8; yMax = 8;
       }
@@ -2402,15 +2790,22 @@
       const q = pp || p;
       if (type === 'linear') return q.k * x + q.b;
       if (type === 'inverse') return q.k / x;
+      if (type === 'trig') {
+        const fn = q.fn === 'cos' ? Math.cos : (q.fn === 'tan' ? Math.tan : Math.sin);
+        return q.A * fn(q.w * x + q.phi) + q.k;
+      }
       return q.a * (x - q.h) * (x - q.h) + q.k;
     }
 
     function gridAndAxes(w, occupied) {
+      /* 批2：三角的 x 刻度走 π/2 步进（整数步进下 π/2≈1.57 的波浪关键点读不出来），
+       * 标签用 fmtPi 的 π 记法；其余类型保持整数步进逐字不变 */
+      const xStep = type === 'trig' ? Math.PI / 2 : 1;
       ctx.strokeStyle = 'rgba(0,0,0,.08)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      for (let gx = Math.ceil(w.xMin); gx <= w.xMax; gx++) {
-        const X = sx({ x: gx }, w);
+      for (let mIdx = Math.ceil(w.xMin / xStep - 1e-9); mIdx * xStep <= w.xMax + 1e-9; mIdx++) {
+        const X = sx({ x: mIdx * xStep }, w);
         ctx.moveTo(X, 0); ctx.lineTo(X, w.hp);
       }
       for (let gy = Math.ceil(w.yMin); gy <= w.yMax; gy++) {
@@ -2429,10 +2824,12 @@
       ctx.font = TICK_FONT_SIZE + 'px sans-serif';
       /* 刻度数字走 textRect（占位矩形登记进 occupied），y 刻度画在轴**左侧**，
        * 轴内侧那条竖带留给顶点/截距等注释标签 —— 与多曲线画板同一口径（t_7851d903）。 */
-      for (let gx = Math.ceil(w.xMin); gx <= w.xMax; gx++) {
-        if (gx === 0) continue;
-        const r = measureTextRect(ctx, String(gx), sx({ x: gx }, w) + 3, Y0 + 14, TICK_FONT_SIZE, 'left');
-        fillTextRect(ctx, String(gx), r, TICK_FONT_SIZE);
+      for (let mIdx = Math.ceil(w.xMin / xStep - 1e-9); mIdx * xStep <= w.xMax + 1e-9; mIdx++) {
+        const gx = mIdx * xStep;
+        if (Math.abs(gx) < 1e-9) continue;
+        const label = type === 'trig' ? fmtPi(gx) : String(gx);
+        const r = measureTextRect(ctx, label, sx({ x: gx }, w) + 3, Y0 + 14, TICK_FONT_SIZE, 'left');
+        fillTextRect(ctx, label, r, TICK_FONT_SIZE);
         occupied.push(r);
       }
       for (let gy = Math.ceil(w.yMin); gy <= w.yMax; gy++) {
@@ -2478,6 +2875,25 @@
         const EPS = 0.02;
         plotCurve(w, w.xMin, -EPS, oc);
         plotCurve(w, EPS, w.xMax, oc);
+      } else if (type === 'trig' && pp.fn === 'tan') {
+        /* 批2：正切在渐近线 wx+φ = π/2 + mπ 处无定义 —— 按渐近线裁段画，
+         * 否则采样点会把 +∞/-∞ 连成一条假竖线，正好压在「这里断开」的教学点上（与
+         * paintModel 的「曲线在虚线处断开」描述一一对应）。 */
+        const wq = pp.w || 1, phi = pp.phi || 0;
+        const k1 = wq * w.xMin + phi, k2 = wq * w.xMax + phi;
+        const kLo = Math.min(k1, k2), kHi = Math.max(k1, k2);
+        const asys = [];
+        for (let m = Math.floor((kLo - Math.PI / 2) / Math.PI) - 1;
+          m <= Math.ceil((kHi - Math.PI / 2) / Math.PI) + 1; m++) {
+          asys.push((Math.PI / 2 + m * Math.PI - phi) / wq);
+        }
+        asys.sort(function (a, b) { return a - b; });
+        const cuts = [w.xMin].concat(asys, [w.xMax]);
+        for (let i = 0; i + 1 < cuts.length; i++) {
+          const a = Math.max(Math.min(cuts[i], cuts[i + 1]), w.xMin);
+          const b = Math.min(Math.max(cuts[i], cuts[i + 1]), w.xMax);
+          if (b - a > 1e-9) plotCurve(w, a, b, oc);
+        }
       } else {
         plotCurve(w, w.xMin, w.xMax, oc);
       }
@@ -2676,6 +3092,87 @@
           drawLabel(w, interceptXText(xInt, shown), { x: IX, y: IY, size: 11, bold: false, color: '#2ecc71',
             occupied: occupied, markers: markers });
         }
+      } else if (type === 'trig') {
+        /* 批2：与 paintModel 的 trig 元素清单一一同源（period 虚线/波峰红点/折痕 y 轴/渐近线/区间阴影）。
+         * 标注文字只走共享 helper trigPeriodText / trigExtremumText（防漂移测试抽查），
+         * 其余是纯视觉元素（线与底纹），不落文字。 */
+        // 奇偶性：y 轴加深加粗当折痕（与 quadratic-parity 同一画法）
+        if (intent === '奇偶性') {
+          ctx.save();
+          ctx.strokeStyle = '#111';
+          ctx.lineWidth = 2.2;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          const X0 = sx({ x: 0 }, w);
+          if (X0 >= 0 && X0 <= w.w) { ctx.moveTo(X0, 0); ctx.lineTo(X0, w.hp); }
+          ctx.stroke();
+          ctx.restore();
+        }
+        // 周期：两条竖直虚线之间取一个完整周期，标注走 trigPeriodText（T 是结构常量，可印）
+        if (intent === '最小正周期' || intent === '最小正周期除以π后的值') {
+          const P = p.fn === 'tan' ? Math.PI : 2 * Math.PI;   // 相位周期
+          // 相位 m·P 的重复起点 x = (m·P - φ)/ω；取离视野中心最近的一次（ω<0 时 x1 在 x0 左侧，取 min/max）
+          const mC = Math.round((p.w * (w.xMin + w.xMax) / 2 + p.phi) / P);
+          const x0 = (mC * P - p.phi) / p.w;
+          const x1 = x0 + P / p.w;
+          ctx.save();
+          ctx.strokeStyle = 'rgba(52,73,94,.75)';
+          ctx.lineWidth = 1.6;
+          ctx.setLineDash([6, 4]);
+          ctx.beginPath();
+          [Math.min(x0, x1), Math.max(x0, x1)].forEach(function (xx) {
+            const X = sx({ x: xx }, w);
+            if (X >= 0 && X <= w.w) { ctx.moveTo(X, 0); ctx.lineTo(X, w.hp); }
+          });
+          ctx.stroke();
+          ctx.restore();
+          const XM = sx({ x: (x0 + x1) / 2 }, w);
+          drawLabel(w, trigPeriodText(p), { x: XM, y: sy({ y: w.yMax }, w) + 18, size: 12, color: '#34495e',
+            occupied: occupied, markers: markers });
+        }
+        // 最值：波峰（最大值）/波谷（最小值）红点。A<0 时 sin 的波谷才是函数最大值 —— 统一按 k+|A| 找点。
+        if (intent === '最大值' || intent === '最小值') {
+          const wantFn = (intent === '最大值') === (p.A >= 0) ? 1 : -1;  // fn(wx+φ) 取 ±1 的哪一个
+          if (p.fn !== 'tan') {           // tan 无最值；防御：不画点也不标数值
+            const phase0 = p.fn === 'sin'
+              ? (wantFn === 1 ? Math.PI / 2 : -Math.PI / 2)
+              : (wantFn === 1 ? 0 : Math.PI);
+            const midPhase = p.w * (w.xMin + w.xMax) / 2 + p.phi;
+            const mMid = Math.round((midPhase - phase0) / (2 * Math.PI));
+            for (let m = mMid - 2; m <= mMid + 2; m++) {
+              const x = (phase0 + 2 * Math.PI * m - p.phi) / p.w;
+              const X = sx({ x: x }, w), Y = sy({ y: fAt(null, x) }, w);
+              if (X < 0 || X > w.w || Y < 0 || Y > w.hp) continue;
+              ctx.fillStyle = '#c0392b';
+              ctx.beginPath(); ctx.arc(X, Y, 5, 0, Math.PI * 2); ctx.fill();
+              markers.push(markerRect(X, Y, 5));
+              drawLabel(w, trigExtremumText(intent, p, shown), { x: X, y: Y, size: 11, bold: false, color: '#c0392b',
+                occupied: occupied, markers: markers });
+            }
+          }
+        }
+        // 定义域/渐近线：tan 画渐近线虚线（位置不标数值 —— 从图上读是读数动作）
+        if (intent === '定义域' || intent === '渐近线') {
+          if (p.fn === 'tan') {
+            const wq = p.w || 1;
+            const k1 = wq * w.xMin + p.phi, k2 = wq * w.xMax + p.phi;
+            const kLo = Math.min(k1, k2), kHi = Math.max(k1, k2);
+            ctx.save();
+            ctx.strokeStyle = 'rgba(120,120,120,.55)';
+            ctx.lineWidth = 1.2;
+            ctx.setLineDash([5, 4]);
+            ctx.beginPath();
+            for (let m = Math.floor((kLo - Math.PI / 2) / Math.PI) - 1;
+              m <= Math.ceil((kHi - Math.PI / 2) / Math.PI) + 1; m++) {
+              const X = sx({ x: (Math.PI / 2 + m * Math.PI - p.phi) / wq }, w);
+              if (X >= 0 && X <= w.w) { ctx.moveTo(X, 0); ctx.lineTo(X, w.hp); }
+            }
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+        // 单调性：题面区间阴影 + 端点（drawInterval 自带区间有效性检查与端点 π 记法标注）
+        if (intent === '单调性') drawInterval(w, occupied, markers);
       } else {
         // inverse：双曲线两支 + 渐近线虚线（文案同样由 intent 生成）
       }
@@ -2899,7 +3396,7 @@
             interval: type === 'quadratic' && intervalIntent() && p.xMin != null && p.xMax != null,
             roots: type === 'quadratic' && rootsIntent(),
             /* 批1.6：交点个数 / 单调性 / 奇偶性 各自的画板高亮，供 E2E 与排查逐条核对 */
-            rootCount: type === 'quadratic' && intent === '与 x 轴交点的个数',
+            rootCount: type === 'quadratic' && intent === '与x轴交点的个数',
             monotonic: type === 'quadratic' && intent === '单调性',
             parity: type === 'quadratic' && intent === '奇偶性',
             /* 一次函数：标出的两个截距 / 反比例：标出象限说明 */
@@ -2932,6 +3429,8 @@
     labAnswerParts: labAnswerParts, answerRows: answerRows, checkAnswerRow: checkAnswerRow,
     numEqual: numEqual, deriveText: deriveText, derivePair: derivePair,
     quadRangeExtrema: quadRangeExtrema, fmtPair: fmtPair, fmtQuad: fmtQuad,
+    /* 批2：π 记法 ↔ 数值（labmatch 的 promptInterval 解析 π 端点时复用，口径唯一） */
+    numPi: numPi, fmtPi: fmtPi, fmtPiNum: fmtPiNum,
     /* t_85395e07：画板描述（AI 讲解看到画板）。paintModel 是绘制与 describe 的唯一事实来源 */
     paintModel: paintModel, describe: describe,
     /* t_1d3fe77a：多曲线画板（two-curves-intersect）的纯函数，供测试与审计脚本复用 */
