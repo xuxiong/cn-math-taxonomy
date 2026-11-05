@@ -40,6 +40,30 @@ function annotationValues(p, topicId) {
     push(p.k - A);
     push(T);
     push(T / Math.PI);
+  } else if (p.type === 'exp') {
+    /* 批3：exp 画板标出的读数 —— 渐近线 y=k、y 轴交点纵坐标 a·b^φ+k、
+       x=1 处的函数值 a·b^(w+φ)+k（题面已知量固定，不随滑块变）。 */
+    push(p.k);
+    push(p.a * Math.pow(p.base, p.phi) + p.k);
+    push(p.a * Math.pow(p.base, p.w + p.phi) + p.k);
+  } else if (p.type === 'log') {
+    /* 批3：log 画板标出的读数 —— 渐近线 x=-shift、定点 (-shift+1, d)、
+       定义域内侧另一点 (-shift+base, c+d)。 */
+    push(-p.shift);
+    push(-p.shift + 1);
+    push(p.d);
+    push(-p.shift + p.base);
+    push(p.c + p.d);
+  } else if (p.type === 'power') {
+    if (p.root) {
+      /* 根式形：起点横坐标 -c/b 与纵坐标 k（起点坐标两个分量都在集合里）。 */
+      push(-p.root.c / p.root.b);
+      push(p.k);
+    } else {
+      /* 多项式形：定点 (0,0) 与 (1,1) 的坐标分量。 */
+      push(0);
+      push(1);
+    }
   }
   return vals;
 }
@@ -67,6 +91,13 @@ const IMAGE_READABLE = /象限|增大而|减小而|交点个数|开口|无交点
  *  批1（t_d3c2ba81）放行的高中题多数出成选择题，选项正文就是这类性质词。 */
 const READABLE_PROPERTY = /^(增函数|减函数|偶函数|奇函数|非奇非偶|全体非零实数|全体实数|除\s*0\s*外的全体实数)$/;
 
+/** 批3：答案不是数字、但按**画板类型**确实能从图上读出来的性质。
+ *  按类型分档放行，**不**把 READABLE_PROPERTY 全局放宽：
+ *    · exp 的「全体正实数」= 曲线全在渐近线 y=k 上方（看图得值域）；
+ *    · log 的「全体正实数」= 曲线只画在渐近线 x=-shift 右侧（看图得定义域）；
+ *    · power 暂不放行任何非数字答案。 */
+const READABLE_BY_TYPE = { exp: [/^全体正实数$/], log: [/^全体正实数$/], power: [] };
+
 /** 题面问的是「导数意义上的量」：切线斜率 / 瞬时变化率 / 导数 ——
  *  画板上标出的数（顶点 h/k、截距 b、交点横坐标）都是**函数值或坐标**，不是这个量。
  *  批1.5 第 3 件：cnm_h220_q2 问切线斜率（答案 0），画板读数里恰有 h=0，
@@ -91,6 +122,9 @@ function misfitOf(item, p) {
   if (!nums.length) {
     if (IMAGE_READABLE.test(ansText)) return null;          // 象限/增减性/交点个数：图像可读
     if (READABLE_PROPERTY.test(ansText.trim())) return null; // 单调/奇偶/定义域：画板标得出这个结论
+    /* 批3：按画板类型分档（exp 的值域 / log 的定义域），不做全局放宽。 */
+    const byType = READABLE_BY_TYPE[p && p.type] || [];
+    if (byType.some(function (re) { return re.test(ansText.trim()); })) return null;
     return '答案「' + ansText + '」不是可读数字';
   }
   /* 批1.5 第 3 件：语义限定必须排在数值比对**之前** —— 排在后面就永远轮不到它
@@ -111,5 +145,6 @@ module.exports = {
   misfitOf: misfitOf,
   IMAGE_READABLE: IMAGE_READABLE,
   READABLE_PROPERTY: READABLE_PROPERTY,
+  READABLE_BY_TYPE: READABLE_BY_TYPE,
   DERIVATIVE_ASK: DERIVATIVE_ASK
 };

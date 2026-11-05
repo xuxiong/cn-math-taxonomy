@@ -238,6 +238,162 @@
     return out;
   }
 
+  /* ========================= 批3（t_3dc2f23b）：指数 / 对数 / 幂根式 =========================
+   * 局部预处理只服务下面三个新分支（famExp / famLog / famPower），**绝不动 normalize()** ——
+   * normalize 被既有 197 题共用，改一个字都会波及一次/二次/反比例/三角。
+   * 只在三族分支内部容忍 `f(x)=` / `g(x)=` 前缀（白名单题走 hsPromptAlias，非白名单靠这条）。
+   * 下标记号 ₂、根号 √、上标 ²/³/⁴ 在这一层归一成 log2 / sqrt(...) / ^2，形态以测算脚本为准。
+   */
+  const FAM_SUP = { '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9' };
+  const FAM_SUB = { '₀': '0', '₁': '1', '₂': '2', '₃': '3', '₄': '4', '₅': '5', '₆': '6', '₇': '7', '₈': '8', '₉': '9' };
+  const FAM_NO_HEAD = {};   // 头没匹配：本分支不管，继续走后面的既有分支
+  const FAM_SKIP = {};      // 头匹配但 p∈{1,2,3}：交回一次/二次既有通道
+
+  function famSeg(prompt) {
+    let t = String(prompt == null ? '' : prompt);
+    t = t.replace(/^\s*[fg]\s*\(\s*x\s*\)\s*=/, 'y=');
+    t = t.replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹⁻]+/g, function (m) {
+      const neg = m.indexOf('⁻') >= 0;
+      const digits = m.replace(/⁻/g, '').split('').map(function (ch) { return FAM_SUP[ch] || ''; }).join('');
+      return (neg ? '^-' : '^') + digits;
+    });
+    t = t.replace(/[₀₁₂₃₄₅₆₇₈₉]+/g, function (m) {
+      return m.split('').map(function (ch) { return FAM_SUB[ch]; }).join('');
+    });
+    t = t.replace(/√\s*\(([^()]*)\)/g, 'sqrt($1)');
+    t = t.replace(/√\s*([0-9a-zA-Z]+)/g, 'sqrt($1)');
+    t = t.replace(/[·×]/g, '*');
+    return t;
+  }
+
+  /** 三族共用的「y= 之后的右式」；没有 y= 返回 null（f(x)= 已在 famSeg 内换掉） */
+  function famRhs(seg) {
+    const m = /(?:^|[^0-9A-Za-z_.])y\s*=/.exec(seg);
+    if (!m) return null;
+    return seg.slice(m.index + m[0].length);
+  }
+
+  /** 数字 / 分数 / 小数 → 数值；解析不出 null（只认纯数值，字母一律 null） */
+  function famNum(tok) {
+    const s = String(tok == null ? '' : tok).replace(/\s+/g, '');
+    if (s === '') return null;
+    const fm = /^([+-]?)(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)$/.exec(s);
+    if (fm) {
+      const v = parseFloat(fm[2]) / parseFloat(fm[3]);
+      return fm[1] === '-' ? -v : v;
+    }
+    if (/^[+-]?\d+(?:\.\d+)?$/.test(s)) return parseFloat(s);
+    return null;
+  }
+
+  /** 对数底数记号：`2` / `1/2` / `(1/2)` / `{1/2}` → { tok, len }（len 含括号，便于切剩余串） */
+  function famBaseToken(s) {
+    const t = String(s);
+    if (t[0] === '(' || t[0] === '{') {
+      const close = t[0] === '(' ? ')' : '}';
+      const i = t.indexOf(close);
+      if (i < 0) return null;
+      return { tok: t.slice(1, i), len: i + 1 };
+    }
+    const m = /^\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?/.exec(t);
+    if (!m) return null;
+    return { tok: m[0], len: m[0].length };
+  }
+
+  /** 指数：y = a·base^(w x + phi) + k。头匹配后任何一项抠不出 → null（不许掉进后面的分支）。 */
+  function famExp(rhs) {
+    if (rhs == null) return FAM_NO_HEAD;
+    const hm = /^\s*([+-]?\d*\.?\d*)\s*\*?\s*(?:\(\s*([0-9.]+(?:\s*\/\s*[0-9.]+)?)\s*\)|([0-9.]+(?:\s*\/\s*[0-9.]+)?))\s*\^/.exec(rhs);
+    if (!hm) return FAM_NO_HEAD;
+    const a = coeffNum(hm[1]);
+    const base = famNum(hm[2] != null ? hm[2] : hm[3]);
+    if (!isFinite(a) || base == null || !isFinite(base)) return null;
+    if (!(base > 0) || Math.abs(base - 1) < 1e-12) return null;
+    let rest = rhs.slice(hm[0].length);
+    const em = /^\s*\(?\s*([+-]?\d*\.?\d*)\s*\*?\s*x(?![⁰¹²³⁴⁵⁶⁷⁸⁹\^])\s*(?:([+-])\s*(\d+\.?\d*))?\s*\)?/.exec(rest);
+    if (!em) return null;
+    const wS = (em[1] === '' || em[1] === '+') ? '1' : (em[1] === '-' ? '-1' : em[1]);
+    if (!/^[+-]?\d*\.?\d*$/.test(wS) && !/^[+-]?\d+(?:\.\d+)?$/.test(wS)) return null;
+    const w = parseFloat(wS);
+    if (!isFinite(w)) return null;
+    const phi = em[2] ? (em[2] === '-' ? -1 : 1) * parseFloat(em[3]) : 0;
+    rest = rest.slice(em[0].length);
+    if (/^\s*\^/.test(rest)) return null;             // y=2^x² 这类上标叠指数 → 画不了
+    const km = /^\s*([+-])\s*(\d+\.?\d*)/.exec(rest);
+    const k = km ? (km[1] === '-' ? -1 : 1) * parseFloat(km[2]) : 0;
+    if (!isFinite(phi) || !isFinite(k)) return null;
+    return { type: 'exp', a: a, base: base, w: w, phi: phi === 0 ? 0 : phi, k: k === 0 ? 0 : k };
+  }
+
+  /** 对数：y = c·log_base(x + shift) + d。底数/真数任一抠不出 → null。 */
+  function famLog(rhs) {
+    if (rhs == null) return FAM_NO_HEAD;
+    const hm = /^\s*([+-]?\d*\.?\d*)\s*\*?\s*(log|lg|ln)/.exec(rhs);
+    if (!hm) return FAM_NO_HEAD;
+    const c = coeffNum(hm[1]);
+    if (!isFinite(c)) return null;
+    const fn = hm[2];
+    let base = fn === 'lg' ? 10 : (fn === 'ln' ? Math.E : null);
+    let rest = rhs.slice(hm[0].length);
+    let bt = null;
+    if (rest[0] === '_') {
+      rest = rest.slice(1).replace(/^\s+/, '');
+      bt = famBaseToken(rest);
+      if (!bt) return null;
+      base = famNum(bt.tok);
+      rest = rest.slice(bt.len);
+    } else if (/^[0-9({]/.test(rest)) {
+      bt = famBaseToken(rest);
+      if (!bt) return null;
+      base = famNum(bt.tok);
+      rest = rest.slice(bt.len);
+    }
+    if (base == null || !isFinite(base)) return null;
+    if (!(base > 0) || Math.abs(base - 1) < 1e-12) return null;
+    const am = /^\s*\(?\s*x(?![⁰¹²³⁴⁵⁶⁷⁸⁹\^a-zA-Z])\s*(?:([+-])\s*(\d+\.?\d*))?\s*\)?/.exec(rest);
+    if (!am) return null;
+    const shift = am[1] ? (am[1] === '-' ? -1 : 1) * parseFloat(am[2]) : 0;
+    rest = rest.slice(am[0].length);
+    if (/^\s*[a-zA-Z\^]/.test(rest)) return null;      // 真数后面还挂字母/幂 → 不是 x±数字
+    const dm = /^\s*([+-])\s*(\d+\.?\d*)/.exec(rest);
+    const d = dm ? (dm[1] === '-' ? -1 : 1) * parseFloat(dm[2]) : 0;
+    if (!isFinite(shift) || !isFinite(d)) return null;
+    return { type: 'log', c: c, base: base, shift: shift === 0 ? 0 : shift, d: d === 0 ? 0 : d };
+  }
+
+  /** 幂根式：y = a·x^p（p∉{1,2,3}）/ y = a·√(bx+c)+k。p∈{1,2,3} → FAM_SKIP 交既有通道。 */
+  function famPower(rhs) {
+    if (rhs == null) return FAM_NO_HEAD;
+    let m = /^\s*([+-]?\d*\.?\d*)\s*\*?\s*x\s*\^\s*(?:\(\s*([+-]?\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?)\s*\)|([+-]?\d+(?:\.\d+)?))/.exec(rhs);
+    if (m) {
+      const a = coeffNum(m[1]);
+      const p = famNum(m[2] != null ? m[2] : m[3]);
+      if (!isFinite(a) || p == null || !isFinite(p)) return null;
+      if (p === 1 || p === 2 || p === 3) return FAM_SKIP;   // x / x² / x³ 交给一次/二次既有分支
+      /* 指数后面紧跟 `/`（y=x^4/8 = 系数被除法约掉）不是 a·x^p，画不了 → null。
+         分数指数只认括号形 x^(1/2)；裸写 x^2/8 必须先落到 p=2 的 FAM_SKIP，由既有二次通道判 bad。 */
+      if (/^\s*[/^*]/.test(rhs.slice(m[0].length))) return null;
+      return { type: 'power', a: a, p: p === 0 ? 0 : p };
+    }
+    m = /^\s*([+-]?\d*\.?\d*)\s*\*?\s*sqrt\s*\(\s*([^()]*)\s*\)/.exec(rhs);
+    if (m) {
+      const a = coeffNum(m[1]);
+      if (!isFinite(a)) return null;
+      const inner = m[2].replace(/\s+/g, '');
+      const im = /^([+-]?\d*\.?\d*)\*?x(?:([+-])(\d+\.?\d*))?$/.exec(inner);
+      if (!im) return null;                            // √(x²+1) / √(x+1)(x-1) → 画不了
+      const b = coeffNum(im[1]);
+      const c = im[2] ? (im[2] === '-' ? -1 : 1) * parseFloat(im[3]) : 0;
+      if (!isFinite(b) || !isFinite(c) || b === 0) return null;
+      let rest = rhs.slice(m[0].length);
+      const km = /^\s*([+-])\s*(\d+\.?\d*)/.exec(rest);
+      const k = km ? (km[1] === '-' ? -1 : 1) * parseFloat(km[2]) : 0;
+      if (!isFinite(k)) return null;
+      return { type: 'power', a: a, root: { b: b, c: c === 0 ? 0 : c }, k: k === 0 ? 0 : k };
+    }
+    return FAM_NO_HEAD;
+  }
+
   /**
    * 从题面解析函数参数 → {type, ...params}，解析不出返回 null。
    * 二次：{type:'quadratic', a, h, k}   一次：{type:'linear', k, b}   反比例：{type:'inverse', k}
@@ -260,6 +416,20 @@
       const k = coeffNum(m[1]);
       if (k !== 0 && isFinite(k)) return { type: 'inverse', k: k };
     }
+
+    // ---------- 批3：指数 / 对数 / 幂根式（t_3dc2f23b）----------
+    // 位置铁律：反比例之后、一次函数之前（三角之前/之后均可，这里放三角之前）。
+    // 三族头匹配成功就必须由本族给出结论（对象或 null），只有「头没匹配」才继续往下走；
+    // 唯一例外是 power 的 p∈{1,2,3}：明确交回既有一次/二次通道（FAM_SKIP），不许截走 y=x²。
+    // famSeg 只在这三支内部做下标/根号/上标/`f(x)=` 前缀的局部归一 —— normalize() 一个字不动。
+    const fam = famSeg(s);
+    const fRhs = famRhs(fam);
+    const fe = famExp(fRhs);
+    if (fe !== FAM_NO_HEAD && fe !== FAM_SKIP) return fe;
+    const fl = famLog(fRhs);
+    if (fl !== FAM_NO_HEAD && fl !== FAM_SKIP) return fl;
+    const fp = famPower(fRhs);
+    if (fp !== FAM_NO_HEAD && fp !== FAM_SKIP) return fp;
 
     // ---------- 三角函数（批2）：y = A·sin(ωx+φ) + k ----------
     // 位置铁律：反比例之后、一次函数之前（y=x² / y=2x+1 / y=k/x 一个都不许被截走 ——
