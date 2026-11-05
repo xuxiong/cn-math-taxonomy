@@ -1057,8 +1057,13 @@ function annotationValues(p, topicId) {
     push(p.h); push(p.k);
     push(p.h - Math.sqrt(-p.k / p.a)); push(p.h + Math.sqrt(-p.k / p.a));
   } else if (p.type === 'linear') {
-    push(p.b);                                    // y 轴截距 (0,b)
-    if (/^cnm_2(0[0-9]|2[0-4])$/.test(String(topicId))) push(-p.b / p.k); // 方程语境才标 x 轴交点
+    push(p.b);                                    // y 轴截距红点 (0,b)
+    /* x 轴交点绿点：linear 画板对**任何**知识点都画「与 x 轴交点」并标出横坐标
+       （CAPABILITIES.linear-intercepts 的 canAnswer 里就写着这一条），原先只对初中方程章
+       cnm_20x/22x 开放是按「要解的方程」判的，与画板实际画了什么不是一个口径。
+       改成无条件加入：这是把门禁对齐绘制事实，不是放宽 —— 原口径下高中零点题
+       （批1 的 cnm_h049_q2，答案 5 = 绿点横坐标）会被误判成误挂。 */
+    if (p.k) push(-p.b / p.k);
   } else if (p.type === 'inverse') {
     push(p.k);                                    // |k| 本身就是答案对象
   }
@@ -1080,6 +1085,13 @@ function answerNumbers(answer) {
 
 /** 答案解析不了数字时，允许通过的纯图像可读答案 */
 const IMAGE_READABLE = /象限|增大而|减小而|交点个数|开口|无交点|没有交点/;
+
+/** 答案不是数字、但**就是画板标出来的性质**（比 IMAGE_READABLE 更窄的一张白名单）：
+ *  曲线走向（单调）、对称性（奇偶）、定义域边界（渐近线 / 非零实数）。
+ *  逐条对应 CAPABILITIES 里的 canAnswer —— linear:『是否是增/减函数』；
+ *  quadratic:『奇偶性』（对称轴即 y 轴或原点）；inverse:『定义域 / 渐近线』。
+ *  批1（t_d3c2ba81）放行的高中题多数出成选择题，选项正文就是这类性质词。 */
+const READABLE_PROPERTY = /^(增函数|减函数|偶函数|奇函数|非奇非偶|全体非零实数|全体实数)$/;
 
 /** 门禁判不过、但已人工定档为"图像可读 / 图像可算"的题（口径偏严的方向），逐条留痕 */
 const GATE_LOOSE_OK = new Set([
@@ -1120,16 +1132,24 @@ test('[E-语义1] 全库挂载题：误挂 = 只允许已知那 9 条（新误�
     if (KNOWN_MISMOUNT.has(id)) continue;
     const ansStr = String(item.answer == null ? '' : item.answer);
     if (GATE_LOOSE_OK.has(id)) continue;
-    if (/^[A-D]$/.test(ansStr.trim())) { misfits.push(id + ' 选择题（答案 ' + ansStr + '）'); continue; }
-    const nums = answerNumbers(ansStr);
+    /* 选择题：题库只存选项字母（A/B/C/D），学生看到的是选项正文 —— 按正文判。
+       原先「答案字母即误挂」等于「凡出成选择题就永远挂不上」，而高中题绝大多数是选择题，
+       按字母挡等于把判定权交给题型而不是答案语义。按正文判仍然严格：正文不是图上可读的
+       数/性质，照样进 misfits（下面「不是可读数字」那条分支）。 */
+    const isLetter = /^[A-D]$/.test(ansStr.trim());
+    const choice = isLetter ? (item.choices || []).filter(function (c) { return c.key === ansStr.trim(); })[0] : null;
+    if (isLetter && !choice) { misfits.push(id + ' 选择题（答案 ' + ansStr + '，选项里找不到正文）'); continue; }
+    const ansText = choice ? String(choice.text == null ? '' : choice.text) : ansStr;
+    const nums = answerNumbers(ansText);
     if (!nums.length) {
-      if (IMAGE_READABLE.test(ansStr)) continue;      // 象限/增减性/交点个数：图像可读
-      misfits.push(id + ' 答案「' + ansStr + '」不是可读数字');
+      if (IMAGE_READABLE.test(ansText)) continue;     // 象限/增减性/交点个数：图像可读
+      if (READABLE_PROPERTY.test(ansText.trim())) continue; // 单调/奇偶/定义域：画板标得出这个结论
+      misfits.push(id + ' 答案「' + ansText + '」不是可读数字');
       continue;
     }
     const ann = annotationValues(p, item.topicId);
     const ok = nums.some(function (n) { return ann.has(String(Number(n.toFixed(6)))) || ann.has(String(n)); });
-    if (!ok) misfits.push(id + ' 答案 ' + ansStr + ' ∉ 画板标注 {' + Array.from(ann).join(',') + '}');
+    if (!ok) misfits.push(id + ' 答案 ' + ansText + ' ∉ 画板标注 {' + Array.from(ann).join(',') + '}');
   }
   assert.deepStrictEqual(misfits, [], '新误挂 ' + misfits.length + ' 题（共挂载 ' + mounted + ' 题）');
 });

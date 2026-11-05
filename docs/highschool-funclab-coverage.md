@@ -573,3 +573,87 @@ literal 分族解析规则（全部内联在本脚本，未动 `diagnose/funclab
 复现：node scripts/measure_highschool_funclab_coverage.js
 只读证明：git diff --stat main -- diagnose data   # 必须为空
 ```
+
+## 8. 批1 落地（t_d3c2ba81，2026-11-05，分支 `wt/hs-funclab-batch1`）
+
+### 8.0 口径声明
+
+**§0–§7 是 80b5454 时点的快照**（funclab 尚未放行任何高中题），本文件那部分是历史证据，按卡面要求原样保留、不改写。
+本脚本的 §1 表读的是**当前** `diagnose/funclab.js`，所以批1 落地后再跑一次，§1 的 `labFor 挂载` 列会从 0 变成 14、
+`可挂` 从 0 题变 14 题（涉及 10 个知识点）、`labForScene` 高中全量命中从 3 题变 17 题 —— **这个差额就是批1 的效果**，
+其余各行（§2 literal 96 / §3 gated 34 / 误挂 31 / §4–§6 逐题清单 / §7 计时）逐字不变。
+
+复现前后对照（两条命令即可，不需要 checkout）：
+
+```
+node scripts/measure_highschool_funclab_coverage.js | sed -n '53,70p;156,166p'   # 当前代码（批1 之后）
+git stash && node scripts/measure_highschool_funclab_coverage.js | sed -n '53,70p' ; git stash pop   # 80b5454 口径
+```
+
+注意脚本 §1 正文有一句「`labForScene` 在高中全量只命中 17 题（cnm_h172_q1–q3）」—— 计数是动态的，括号里的题号是
+80b5454 时写死的说明；批1 之后实际是 **17 = 本批 14 + cnm_h172 的 3 题**。脚本不在本卡改动范围（本卡只动
+`diagnose/funclab.js` / 新测试 / 本文件），这句文案留给后续卡收尾。
+
+### 8.1 改动面（零解析器改动）
+
+`diagnose/funclab.js` 只加三样东西，**`fromPrompt` / 绘制 / 标注 / `describe` / `mount` 一行未改**：
+
+1. `HS_ITEMS`：高中（`cnm_h*`）**逐题**放行表，键是 `questions.json` 的题 id，值是画板类型。只加不删。
+2. `hsItemKind(itemId)`：查表，未放行返回 null。
+3. `labFor` / `labForScene` 的 `kind` 来源从 `topicKind(topicId)` 变成 `topicKind(topicId) || hsItemKind(opts.itemId)`，
+   并且**仅对表内题**把 `f(x)=` / `g(x)=` 前缀等价成 `y=`（高中题库用 `f(x)=x−5` 记法，`fromPrompt` 只认 `y=`）。
+   `fromPrompt` 本身没碰；表外题走不到这条路。
+
+为什么不按章放行、为什么二次是 10 条而不是 12 条，见 `diagnose/funclab.js` 里 `HS_ITEMS` 上方的注释块
+（含 384 / 96 / 34 / 31 / 12−2 的出处）。
+
+### 8.2 前后回归（同一口径，可复现）
+
+| 指标 | 批1 前（80b5454） | 批1 后（本分支） |
+|------|------------------|------------------|
+| 高中主口径题数 | 384 | 384 |
+| `labForScene` 挂上（gated） | **0** | **14**（二次 10 / 一次 3 / 反比例 1） |
+| 涉及知识点 | 0 | 10 |
+| 高中全量 `labForScene` 命中 | 3（cnm_h172_q1–q3） | 17（本批 14 + cnm_h172 3） |
+| literal 可解析 | 96 | 96（解析器没动） |
+| gated ok（测算口径） | 34 | 34（判定口径没动） |
+| 误挂（misleading） | 31 | **31，新增 0** |
+| 初中挂载题数 | 60 | 60 |
+
+**为什么是 14 而不是卡面写的 16**：卡面「目标 12+3+1=16」与卡面「敏感项按严读，`f'(x)=0` 的三题先排除」互相冲突 ——
+二次那 12 条 ok 里，`cnm_h225_q1`（`f(x)=x²−4x`，问 `f'(x)=0`）和 `cnm_h228_q2`（`S=x(10−x)`，问 `S'(x)=0`）正是被严读剔掉的两条。
+按严读执行 → 二次 10 + 一次 3 + 反比例 1 = **14**；要凑到 16 只能把这 2 条导数题放进来，与本卡第二条硬约束矛盾。
+本批选择**从严**：14 是严读口径下的上限。若板主裁定「16 优先」，把这两条加进 `HS_ITEMS` 即可（`cnm_h228_q2` 另需
+先让 `fromPrompt` 认 `S=` 记法，属解析器改动，不在本卡）。
+
+### 8.3 落地时暴露的三件事（都不在本卡范围，建议各自立卡）
+
+1. **反比例族的能力缺口**：本批唯一 gated ok 的 `cnm_h028_q3` 问「`f(x)=1/x` 的定义域」，白名单让它进了匹配层，但
+   `CAPABILITIES` 里 inverse 两个画板（`inverse-quadrants` / `inverse-area`）的 `canAnswer` **没有「定义域 / 渐近线」这一项**
+   → 严格匹配的 LLM 只能回 null，**这题在线上挂不出来**。同理 `NOTE_INTENT` 也没有对应文案。要真正挂上，得给 inverse 增补
+   一个能力项 + 文案（属「能力声明/文案」改动，本卡红线禁止）。二次/一次两族不受影响。
+2. **`linear-intercepts` 文案串台（既有缺陷，非本批引入）**：`NOTE_BY_INTENT` 按 intent 文本建全局表、先声明者胜，
+   `quadratic-roots` 的「与x轴交点的横坐标」排在 `linear-intercepts` 前面，于是**直线画板会印出「抛物线与 x 轴的交点…
+   拖动 h、k」**。实测证据：`cnm_h049_q2`（`f(x)=x−5`，零点 5）挂 linear 画板后文案为「抛物线与 x 轴的交点（绿点）的横坐标，
+   就是方程的两个根…」。批1 放行的 3 道一次题里，`cnm_h032_q1/q2`（增减性 → `linear-trend`）文案正确，只有零点那题会踩到。
+   修法是让 intent→文案解析优先同类型画板（一行），但那是文案层改动，留给后续卡。
+3. **判定门禁（`tests/test_funclab.js` 的 [E-语义1]）有三处口径对不上绘制事实**，批1 顺手补全（不补就是把「答案在图上」误判成误挂）：
+   ① 选择题只存选项字母（`answer: "D"`），原逻辑「字母即误挂」等于「凡选择题永远挂不上」→ 改成按选项正文判；
+   ② `linear` 画板对**任何**知识点都画并标 y 轴截距红点 / x 轴交点绿点，原逻辑只在初中方程章认 x 轴交点 → 改成无条件加入；
+   ③ 增列 `READABLE_PROPERTY`（增/减函数、奇/偶函数、非奇非偶、全体非零实数/实数）——逐条对应 `canAnswer` 里的整项。
+   补全后拿测算判 `misleading` 的 31 条回测：**30 条仍被门禁挡下**，唯一漏过的是 `cnm_h220_q2`（「`y=x²` 在 `x=0` 处
+   切线斜率」答案 0，与顶点横坐标 `h=0` 数字巧合），属「过松方向」的已知残留，不影响白名单（它不在表内）。
+
+### 8.4 验收证据
+
+| 验收项 | 结果 | 证据 |
+|--------|------|------|
+| 先红后绿 | 新测试在 80b5454 的 `funclab.js` 上 **10 passed / 9 failed**；落地后 **19 passed / 0 failed** | `node tests/test_funclab_hs_batch1.js` |
+| 初中零回归 | `tests/test_funclab.js` **163 passed / 0 failed**（本地/远程/邻题三段都没动期望值，只补全门禁口径） | 同上 |
+| 全量套件 | **32 个 `tests/test_*.js` 全部 exit=0，0 fail 文件** | `for f in tests/test_*.js; do node "$f"; done` |
+| 误挂闸门 | 31 条逐条断言「`labFor` 与 `labForScene` 都必须 null」，另有一条断言「手写清单 = 测算脚本实跑判 misleading 的全集」 | `tests/test_funclab_hs_batch1.js` |
+| 真浏览器 E2E | 390×844 与 1280×900 各跑一遍：二次 `cnm_h029_q2`（最大值 0）/ 一次 `cnm_h032_q1`（增函数）/ 反比例 `cnm_h028_q3`（1/x）三块画板真渲染（非空白像素 11.6 万 / 40.1 万），答案落在图上标注（顶点红点「最大值 = ?」、直线走向文案、双曲线两支），**无横向溢出、无遮挡、无 console error** | 截图 `~/.hermes/cache/scratch/d3c2_e2e_390.png`、`d3c2_e2e_1280.png`；报告 `d3c2_e2e_report.json` |
+
+E2E 里反比例那一块用的是 `inverse-quadrants` 文案（验证「反比例画板能画、能耗标、两种宽度不溢出」），
+它**不代表** `cnm_h028_q3` 能在线上挂出来 —— 缺口见 8.3 第 1 条。
+
