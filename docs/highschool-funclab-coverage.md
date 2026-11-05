@@ -752,3 +752,171 @@ E2E 里反比例那一块用的是 `inverse-quadrants` 文案（验证「反比�
 | 真浏览器 E2E | 可见 4/14，`cnm_h028_q3` 无画板 | 可见 **8/14**，`cnm_h028_q3` 画板 560×320 非白像素 17.9 万、文案含「除 x = 0 外的全体实数」，无溢出无 console error |
 
 E2E 截图：`~/.hermes/cache/scratch/b15_e2e_{before,after}_{390,1280}.png`，报告 `b15_e2e_*_report.json`。
+
+## 10. 批1.6 白名单最后 6 题上线（t_e63a9673，2026-11-05，分支 `wt/hs-funclab-batch16`）
+
+### 10.0 口径声明
+
+基点 = main **`d44b126`**（批1.5 已合入）。本卡**只**修批1.5 §9.4 台账里剩下的 6 条缺口：
+
+- 4 条**能力缺口**（quadratic 画板没有对应 intent）：`cnm_h023_q4` 交点个数 / `cnm_h032_q4` 单调性 /
+  `cnm_h035_q1`、`cnm_h036_q4` 奇偶性；
+- 2 条**区间缺口**（`promptInterval` 不认全角逗号）：`cnm_h034_q2`、`cnm_h227_q2`。
+
+红线遵守情况：`HS_ITEMS` **14 条一条不增不删**（测试逐条比对表内集合）；`Funclab.fromPrompt` **零改动**
+（结构断言：`diagnose/funclab.js` 里没有 `normalizeIntervalText`；行为断言：同一题面全角/半角逗号解析结果一致、
+`y=x²-2x-3` 仍解析成 `{a:1,h:1,k:-4}`）；初中 funclab 163 测试零回归。
+
+### 10.1 修法一：quadratic 补三类能力（含读数文案）
+
+`diagnose/funclab.js` 的 `CAPABILITIES` / `CAP_TYPE` / `NOTE_INTENT` / `paintModel` / `draw` / `answerRows` 六处同改，
+原则与批1.5 反比例定义域一致：**答案必须真能从图上读出来**，读不出来的不收。
+
+| 问法 | 挂在哪块板 | 图上的读数对象 | 答案行 |
+|------|------------|----------------|--------|
+| 与 x 轴交点的个数 | `quadratic-roots`（`canAnswer` 加一项，不是新板） | 绿色圆点的**个数**（0/1/2 三态都画得出来：无交点时一个绿点都没有） | `scalar`，按判别式 −k/a 给 0/1/2 |
+| 单调性 | 新板 `quadratic-monotonic`（`CAP_TYPE=quadratic`） | 曲线在对称轴**哪一侧**、从左往右**升还是降** | 无（非数值题，不硬凑数） |
+| 奇偶性 | 新板 `quadratic-parity`（`CAP_TYPE=quadratic`） | 紫色虚线（对称轴）与黑色粗竖线（y 轴）**重不重合** | 无 |
+
+文案原文（`NOTE_INTENT`，读数动作逐条对应画法）：
+
+> **交点个数**：图上的绿色圆点就是抛物线与 x 轴的交点：**数一数有几个绿点**，就是有几个交点。如果整条曲线都在 x 轴上方（或都在下方），一个绿点也没有，那就是没有交点——此时对应的方程无解。拖动 h、k 看交点从两个变成一个、再变成一个都没有。
+>
+> **单调性**：a = {a}：a > 0 时抛物线开口向上——对称轴左侧曲线从左往右**下降**，右侧从左往右**上升**；a < 0 时正好反过来。图上灰色虚线是它的对称轴，蓝色实线是这条曲线：**题面给的那段曲线落在对称轴哪一侧？从左往右是往上走还是往下走？** 由此读出这一段是增函数还是减函数。
+>
+> **奇偶性**：是不是偶函数，就看图象关不关于 y 轴对称。图上紫色虚线是这条抛物线的对称轴，黑色竖线是 y 轴：**两条线重合吗？** 重合（对称轴就是 y 轴）时，左右两半沿 y 轴对折能完全重合，f(-x) = f(x)，是偶函数；不重合就不关于 y 轴对称，也就不是偶函数（二次函数不可能是奇函数）。拖动 h 看对称轴离开 y 轴时图象怎么变。
+
+为让「画法 = 文案」，`draw()` 与 `paintModel()` 同步改了三处（描述与绘制必须逐字对应，否则 AI 讲解会指错线）：
+
+1. 讲奇偶性时**额外把 y 轴画成黑色粗实线**（`2.2px`、无虚线），对称轴改**紫色虚线**（`rgba(142,68,173,.95)`）——
+   两条线重合与否一眼可辨；`describe()` 同步输出「紫色虚线…黑色粗竖线是 y 轴」；
+2. 讲单调性时补一条 `trend` 元素，说明「两侧升降方向相反」；
+3. 交点个数题在 `disc<0`（无交点）与「根算得出但落在视野外」两种情况下，`describe()` 明确说
+   **图上没有绿色圆点**——不许出现「有两个交点」这类与画面矛盾的描述。
+
+### 10.2 修法二：区间解析入口的全角标点归一化（作用范围写死在代码里）
+
+`diagnose/labmatch.js` 新增**不导出**的 `normalizeIntervalText()`，**只有 `promptInterval()` 调它**；
+`Funclab.fromPrompt`、`mount`、绘制、文案一律不走这条路（测试里有结构断言锁死）。
+
+归一化内容：全角数字 `０-９→0-9`；数学减号 `−`(U+2212) / 全角连字符 `－` / 长横 `–—→-`；
+`≤ ⩽ ＜→<`；全角逗号、顿号、分号、句号 `，、；。→,`；全角方括号 `［【→[`、`］】→]`。
+
+`promptInterval` 的识别范围也随之明确（新增「区间记号」这一形式，历史「不等式链」形式行为零变化）：
+
+- 认：`2<x<4` / `2≤x≤4`（历史写法）、`x∈[−1，2]`、`在 [0，3] 上`、`［−1，2］`、`０＜x＜２`；
+- **不认**：圆括号 `(−1，2)`（题库里是点的坐标）、无界/半开 `[0，+∞)` / `[0，3)`（画板画不出区间阴影）。
+
+反例测试（`tests/test_funclab_hs_batch16.js` 第 5 组，共 3 条）：含全角逗号但**不是区间**的题干必须返回 `null` ——
+`已知 f(x)=x²+1，x 轴交点有几个？`、`当 x=1，y=2 时，求函数值。`、`点 P(−1，2) 在抛物线 y=x² 上，求 a。`
+（防止「归一化」把任意全角逗号误当区间分隔符，凭空造出 xMin/xMax）。
+
+### 10.3 白名单 14 题逐题台账（8 → 14，`d44b126` vs 本分支）
+
+同一份真浏览器脚本跑两个 ROOT（`node ~/.hermes/cache/scratch/b16_e2e.js <ROOT> <before|after>`），
+390×844 与 1280×900 两个视口各一遍，逐题过三道闸（闸1 表/解析 → 闸2 能力清单 → 闸3 代回校验）。
+区间题的参数取**真 LLM 给的那一份**（含 `xMin/xMax`），所以「卡在哪一道闸」是线上真实会撞的闸。
+
+| # | 题 | 问法 | 画板 | `d44b126` | 本分支 | 修复前卡在 |
+|---|----|------|------|-----------|--------|------------|
+| 1 | `cnm_h029_q2` | 最大值 | quadratic-vertex | ✓ | ✓ | — |
+| 2 | `cnm_h034_q3` | 最大值 | quadratic-vertex | ✓ | ✓ | — |
+| 3 | `cnm_h049_q1` | 零点 | quadratic-roots | ✓ | ✓ | — |
+| 4 | `cnm_h226_q1` | 顶点坐标 | quadratic-vertex | ✓ | ✓ | — |
+| 5 | `cnm_h032_q1` | 增减性 | linear-trend | ✓ | ✓ | — |
+| 6 | `cnm_h032_q2` | 增减性 | linear-trend | ✓ | ✓ | — |
+| 7 | `cnm_h049_q2` | 与 x 轴交点横坐标 | linear-intercepts | ✓ | ✓ | — |
+| 8 | `cnm_h028_q3` | 定义域 | inverse-domain | ✓ | ✓ | — |
+| 9 | `cnm_h023_q4` | 与 x 轴交点的**个数** | quadratic-roots | ✗ | ✓ | **闸2 能力清单**（没有画板声明能回答「与 x 轴交点的个数」） |
+| 10 | `cnm_h032_q4` | **单调性** | quadratic-monotonic | ✗ | ✓ | **闸2 能力清单**（没有画板声明能回答「单调性」） |
+| 11 | `cnm_h035_q1` | **奇偶性** | quadratic-parity | ✗ | ✓ | **闸2 能力清单**（没有画板声明能回答「奇偶性」） |
+| 12 | `cnm_h036_q4` | **奇偶性** | quadratic-parity | ✗ | ✓ | 同上 |
+| 13 | `cnm_h034_q2` | 区间上的最小值 | quadratic-range-on-interval | ✗ | ✓ | **闸3 代回校验**（题面没有可解析的区间端点（xMin/xMax 无法校核）） |
+| 14 | `cnm_h227_q2` | 区间上的最小值 | quadratic-range-on-interval | ✗ | ✓ | 同上 |
+| | **可见** | | | **8 / 14** | **14 / 14** | |
+
+旧 8 题**逐条复测仍可见**（上表 1–8 两列都是 ✓，不是只报总数）；两个视口结果一致。
+
+一处如实记的细节：基线那两块区间板本身**画得出来**（`mount(cfg)` 只校验 lab/intent，不校验区间端点），
+但 `Labmatch.resolve` 在闸3 就被拒 → 线上根本走不到挂载，所以账面上是「不可见」。本卡不靠放宽这一闸取数。
+
+### 10.4 真 LLM 网关抽验（6 题，全走 strict 默认路径）
+
+网关 `http://127.0.0.1:3000/v1/chat/completions`，模型别名 `deepseek`（网关实际回 `DeepSeek-V4.1-Flash-1017-TokenPlan`），
+`Labmatch.resolve({lenient:false, noCache:true})` = 线上默认路径（不是「学生点按钮」的 lenient 路径）。
+脚本 `node ~/.hermes/cache/scratch/b16_llm.js`，产物 `b16_llm_probe.json`（含**原始请求体与原始响应体**）。
+
+| 题 | 耗时 | 模型答复（assistant content 原文，节选） | 挂上的 cfg |
+|----|------|------------------------------------------|-----------|
+| `cnm_h023_q4` | 2858ms | `{"match":"quadratic-roots","params":{"a":1,"h":0,"k":1},"intent":"与 x 轴交点的个数",…}` | quadratic-roots / 与 x 轴交点的个数 |
+| `cnm_h032_q4` | 4624ms | `{"match":"quadratic-monotonic","params":{"a":1,"h":0,"k":0},"intent":"单调性",…}` | quadratic-monotonic / 单调性 |
+| `cnm_h035_q1` | 2500ms | `{"match":"quadratic-parity","params":{"a":1,"h":0,"k":0},"intent":"奇偶性",…}` | quadratic-parity / 奇偶性 |
+| `cnm_h036_q4` | 2573ms | `{"match":"quadratic-parity","params":{"a":1,"h":-0.5,"k":-0.25},"intent":"奇偶性",…}` | quadratic-parity / 奇偶性 |
+| `cnm_h034_q2` | 5021ms | `{"match":"quadratic-range-on-interval","params":{"a":1,"h":0,"k":0,"xMin":-1,"xMax":2},…}` | quadratic-range-on-interval / 区间最小值 |
+| `cnm_h227_q2` | 3750ms | `{"match":"quadratic-range-on-interval","params":{"a":1,"h":1,"k":-1,"xMin":0,"xMax":3},…}` | quadratic-range-on-interval / 区间最小值 |
+
+6 题**一次 strict 就过**（每题 1 次请求，200，无重试）；批1.5 §9.4 记的「模型把两项拼成一项」格式抖动本批未复现
+（这 6 题都是一项一答）。原始响应里含 `reasoning_content`，`content` 是纯 JSON，`Labmatch.extractJson` 直接吃掉。
+
+### 10.5 真浏览器 E2E：6 块新画板真渲染、答案从图上读得出
+
+同一脚本的 B 段把**真 LLM 的 cfg** 交给页面里的 `Funclab.mount()`，逐块采样 canvas 像素 +
+读 `.funclab-note` 文案 + 取 `answerRows`（390/1280 两遍，像素统计逐位相同）：
+
+| 题 | canvas | 笔迹像素 | 颜色分布（脚本按色相分桶） | 答案行 | 文案读数断言 |
+|----|--------|----------|---------------------------|--------|--------------|
+| `cnm_h023_q4` | 560×320 | 2959 | blue 1193 / red 178（顶点）/ **green 0** | 个数 = 0 | 含「绿色圆点」「数一数」；`describe` 说「图上没有绿色圆点」——与 **green=0** 的像素事实一致 |
+| `cnm_h032_q4` | 560×320 | 2102 | blue 1275 / green 335 / red 111 | 无（非数值题） | 含「对称轴」「上升」「下降」；`describe` 含「升降方向」 |
+| `cnm_h035_q1` | 560×320 | 2994 | **purple 348** / blue 1275 / green 335 | 无 | 含「y 轴」「对称轴」「重合」「偶函数」；`describe` 含「紫色虚线」 |
+| `cnm_h036_q4` | 560×320 | 4194 | **purple 320** / blue 1263 / green 389 | 无 | 同上（h=−0.5，对称轴不在 y 轴上，紫线与黑线分离可辨） |
+| `cnm_h034_q2` | 560×320 | 19258 | **orange 40643**（区间阴影）/ blue 1104 | 最小值 = 0 | 含「-1 ≤ x ≤ 2」「最小值」 |
+| `cnm_h227_q2` | 560×320 | 20970 | **orange 40177** / blue 1216 | 最小值 = −1 | 含「0 ≤ x ≤ 3」「最小值」 |
+
+两条口径说明，免得被当成「截图看着像」：
+
+- **green 0 是判据不是巧合**：`cnm_h023_q4` 是 `y=x²+1`（判别式 −1），画板整条曲线在 x 轴上方，绿点数 0 —— 与文案
+  「一个绿点也没有…就是没有交点」和答案行 `0` 三方一致；这条断言写成 `colors.green === 0`。
+- **奇偶性题的 purple 是故意画的**：为让「重不重合」可判断，对称轴改成紫色虚线（§10.1 第 1 条），
+  所以 `purple ≥ 320` 才算画法对；`describe` 里也必须是「紫色虚线」，两边一处说错就红。
+
+两视口均**无横向溢出**（`rect.right ≤ innerWidth` 且 `scrollWidth ≤ innerWidth`）、**无 console error / 无页面异常**。
+基线对照：同样的 6 个 cfg 在 `d44b126` 上，4 块新板直接 `mount=null`（画板不存在），两个区间板能画但闸3 已拒（§10.3 末段）。
+
+截图：`~/.hermes/cache/scratch/b16_e2e_{before,after}_{390,1280}.png`；
+明细：`b16_e2e_{before,after}_report.json`（逐题闸位、像素桶、文案原文、answerRows）。
+
+### 10.6 回归
+
+| 指标 | `d44b126`（基线） | 本分支 |
+|------|-------------------|--------|
+| `tests/test_funclab_hs_batch16.js`（新增，22 条） | **9 passed / 13 failed**（先红） | **22 passed / 0 failed** |
+| `tests/test_funclab_hs_batch1.js` | 28 passed / 0 failed | **28 passed / 0 failed** |
+| `tests/test_funclab.js`（初中 163 条） | 163 passed | **163 passed / 0 failed** |
+| 全量 `tests/test_*.js` | 32 文件 0 fail（新增文件尚不存在） | **33 文件 0 fail** |
+| 测算脚本 §1 `labFor 挂载`（gated） | 14 | **14** |
+| 测算脚本 §2 gated ok | 34 | **34** |
+| 测算脚本 误挂（misleading） | 31 | **31** |
+| 31 条误导题不许上线 | 全挡 | **全挡**（15 条语义门禁 + 16 条解析闸上游，断言在 `test_funclab_hs_batch1.js` 第3件） |
+| 真浏览器 14 题可见 | 8 / 14 | **14 / 14** |
+
+「前后两次贴数」的复现方式（同一脚本、同一份数据）：
+
+```
+node scripts/measure_highschool_funclab_coverage.js | sed -n '53,68p;158,166p'   # 本分支：14 / 34 / 31
+git stash push -- diagnose/funclab.js diagnose/labmatch.js
+node scripts/measure_highschool_funclab_coverage.js | sed -n '53,68p;158,166p'   # d44b126 口径：14 / 34 / 31
+git stash pop
+```
+
+两次输出逐行相同（本卡只动能力清单与区间解析，不动测算脚本的判定口径）。
+
+### 10.7 6 条之外有没有新缺口：没有（如实上报）
+
+- 高中全量 `labForScene` 命中仍是 **17 题** = 白名单 14 + `cnm_h172` 三题（测试断言逐条比对 id 集合，多一题少一题都红）；
+- 白名单 14 题之外的 370 题（384 − 14）挂载数为 **0**，本卡没有顺手放宽任何放行口；
+- 真 LLM 抽验只覆盖本卡的 6 题（另 8 题批1.5 已跑过），**未发现新的能力/区间/参数缺口**。
+
+已知但**不属本卡**的两处（留着，不顺手改）：测算脚本 §1 正文里那句「`labForScene` 在高中全量只命中 17 题（cnm_h172_q1–q3）」
+的括号内题号是 80b5454 时写死的说明，计数是动态的、题号不是；`quadratic-roots` 的「与x轴交点的个数」与
+「与x轴交点的横坐标」是两个不同 intent（前者的读数动作是数点，后者是读坐标），LLM 若把「几个交点」答成「横坐标」
+会被闸3 拒——这是**有意**的严格，不是缺口。

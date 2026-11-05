@@ -451,18 +451,19 @@ const EXPECT_MOUNT = {
   'cnm_h028_q3': ['inverse-domain', '定义域']                    // 批1.5 新补：修复前这条不存在
 };
 
-/* 已知能力缺口（批1.6 待做）：题在 HS_ITEMS 里、题面也解析得出来，但没有任何画板声明
- * 「能回答」这个问法 —— 于是 LLM 严格按清单拒挂。
- *   cnm_h023_q4 问「与 x 轴有几个交点」（画板画了绿点，但没有「交点个数」这个 intent）
- *   cnm_h032_q4 问单调性（quadratic 只有区间最值，没有单调性 intent）
- *   cnm_h035_q1 / cnm_h036_q4 问奇偶性（quadratic 没有奇偶性 intent）
- * 这 4 题是批1「14 题全可见」的账面与实测对不上的真正原因之一，本卡只补反比例那一条。 */
-const KNOWN_CAP_GAPS = ['cnm_h023_q4', 'cnm_h032_q4', 'cnm_h035_q1', 'cnm_h036_q4'];
+/* 能力缺口（批1.5 时点登记）→ **批1.6（t_e63a9673）已补齐**：quadratic 画板新增
+ * 「与 x 轴交点的个数」（挂 quadratic-roots）与「单调性」「奇偶性」两个 intent（各挂新画板
+ * quadratic-monotonic / quadratic-parity），见 diagnose/funclab.js 的 CAPABILITIES。
+ *   cnm_h023_q4 问「与 x 轴有几个交点」（画板画了绿点，数点就是答案）
+ *   cnm_h032_q4 问单调性（看曲线在对称轴两侧的走向）
+ *   cnm_h035_q1 / cnm_h036_q4 问奇偶性（看对称轴与 y 轴重不重合）
+ * 本文件只保留清单用于锁「补齐后不许再退回缺口状态」，14 题逐题台账在 test_funclab_hs_batch16.js。 */
+const CLOSED_CAP_GAPS = ['cnm_h023_q4', 'cnm_h032_q4', 'cnm_h035_q1', 'cnm_h036_q4'];
 
-/* 已知参数缺口（批1.6 待做）：intent 有覆盖，但题面区间是 `x∈[−1，2]` 这种全角逗号写法，
- * labmatch.promptInterval 解析不出端点 → 代回校验永远说「xMin/xMax 无法校核」。
- * 属解析侧的区间识别（与本卡「fromPrompt 零改动」红线相邻），本卡不动，只登记。 */
-const KNOWN_INTERVAL_GAPS = ['cnm_h034_q2', 'cnm_h227_q2'];
+/* 区间缺口（批1.5 时点登记）→ **批1.6 已补齐**：labmatch.promptInterval 在解析入口做了
+ * 全角标点归一化（，→, / −→- / ［］→[]），`x∈[−1，2]`、`在 [0，3] 上` 这类写法现在能抠出端点。
+ * 归一化只作用于区间解析这一个函数，Funclab.fromPrompt 的曲线解析语义零改动。 */
+const CLOSED_INTERVAL_GAPS = ['cnm_h034_q2', 'cnm_h227_q2'];
 
 test('第1件：白名单里 8 题能过「表 + intent + 代回」三道闸（含 cnm_h028_q3）', function () {
   const bad = [];
@@ -480,40 +481,39 @@ test('第1件：白名单里 8 题能过「表 + intent + 代回」三道闸（�
     if (!F.noteText(pair[0], pair[1], params)) bad.push(id + ' 没有文案');
   });
   assert.deepStrictEqual(bad, [], bad.join(' / '));
-  assert.strictEqual(Object.keys(EXPECT_MOUNT).length, 8, '可挂契约应为 8 题（修复前 4 题）');
-  assert.strictEqual(Object.keys(EXPECT_MOUNT).length + KNOWN_CAP_GAPS.length + KNOWN_INTERVAL_GAPS.length,
-    14, '8 可挂 + 4 能力缺口 + 2 区间缺口 = 白名单 14 题，一题都不许漏账');
+  assert.strictEqual(Object.keys(EXPECT_MOUNT).length, 8, '批1.5 时点的可挂契约为 8 题');
+  assert.strictEqual(Object.keys(EXPECT_MOUNT).length + CLOSED_CAP_GAPS.length + CLOSED_INTERVAL_GAPS.length,
+    14, '8 可挂（批1.5 时点）+ 4 能力缺口 + 2 区间缺口 = 白名单 14 题，一题都不许漏账');
 });
 
-test('第1件：4 条已知能力缺口仍在（补上就说明能力清单扩了，请同步本清单）', function () {
+test('批1.6：4 条原能力缺口现在都有对应 intent（缺口已补齐，退回缺口状态就红）', function () {
   const still = [];
-  KNOWN_CAP_GAPS.forEach(function (id) {
-    const item = q(id);
+  CLOSED_CAP_GAPS.forEach(function (id) {
     const kind = F.hsItemKind(id);
     const labs = Object.keys(F.capabilitiesFor(kind));
     const covered = labs.some(function (lab) {
       return F.capabilityIntents(lab).some(function (it) {
-        /* 缺口题的答案语义落在这些「没有对应 intent」的问法上 */
-        return (id === 'cnm_h023_q4' && /交点个数/.test(it))
+        return (id === 'cnm_h023_q4' && /交点的个数|交点个数/.test(it))
           || (id === 'cnm_h032_q4' && /单调|增大而|减小而/.test(it))
           || (/奇偶/.test(it) && /cnm_h03[56]/.test(id));
       });
     });
     if (!covered) still.push(id);
   });
-  assert.deepStrictEqual(still.sort(), KNOWN_CAP_GAPS.slice().sort(),
-    '能力缺口清单变了（多/少都算漂移）：' + still.join(','));
+  assert.deepStrictEqual(still, [], '这些题的能力缺口又回来了：' + still.join(',')
+    + '（批1.6 台账见 tests/test_funclab_hs_batch16.js）');
 });
 
-test('第1件：2 条区间题仍卡在 promptInterval（全角逗号），且失败原因就是端点', function () {
-  KNOWN_INTERVAL_GAPS.forEach(function (id) {
+test('批1.6：2 条区间题现在能过代回校验（全角逗号已在区间解析入口归一化）', function () {
+  CLOSED_INTERVAL_GAPS.forEach(function (id) {
     const item = q(id);
     const scene = F.labForScene(item.topicId, item.prompt, { itemId: id });
-    assert.ok(scene, id + ' 应能解析出抛物线参数（卡的是区间，不是函数）');
-    const params = { a: scene.a, h: scene.h, k: scene.k, xMin: -1, xMax: 2 };
+    assert.ok(scene, id + ' 应能解析出抛物线参数');
+    const iv = L.promptInterval(item.prompt);
+    assert.ok(iv, id + ' 的区间端点应能从题面抠出来（全角逗号写法），实际 null：' + item.prompt);
+    const params = { a: scene.a, h: scene.h, k: scene.k, xMin: iv.xMin, xMax: iv.xMax };
     const v = L.verifyParams(item.prompt, { match: 'quadratic-range-on-interval', intent: '在给定区间上的最小值', params: params }, { itemId: id });
-    assert.strictEqual(v.ok, false, id + ' 现在应仍被区间校验挡下（修好它要动区间解析，属批1.6）');
-    assert.ok(v.why.join('').indexOf('区间端点') >= 0, id + ' 的失败原因应是区间端点，实际：' + v.why.join(';'));
+    assert.ok(v.ok, id + ' 应已过代回校验，实际：' + v.why.join(';'));
   });
 });
 

@@ -1315,6 +1315,9 @@ test('[P-14] 全库审计：所有挂图题 × 全部 intent 的文案与图上�
 const DESC_LABS = {
   'quadratic-vertex': { a: -1, h: 2, k: 5, base: { type: 'quadratic', a: -1, h: 2, k: 0 } },
   'quadratic-roots': { a: 1, h: 0, k: -4 },
+  /* 批1.6（t_e63a9673）：交点个数 / 单调性 / 奇偶性 三个新组合的样参 */
+  'quadratic-monotonic': { a: 1, h: 0, k: -4 },
+  'quadratic-parity': { a: 1, h: 0, k: -4 },
   'quadratic-inequality': { a: 1, h: 0, k: -4 },
   'quadratic-range-on-interval': { a: 1, h: 0, k: -4, xMin: -1, xMax: 3 },
   'linear-intercepts': { k: 2, b: -4, base: { type: 'linear', k: 2, b: 0 } },
