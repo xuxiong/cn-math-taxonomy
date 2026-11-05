@@ -595,6 +595,165 @@ test('audit_funclab_notes 全库跑：答案数字 0 处泄漏、组合无文案
   assert.ok(out.indexOf('组合无文案：0 条') >= 0, '审计应报组合无文案 0 条');
 });
 
+/* ================================================================
+ * 15. 真 mount：7 题都能挂上、画布有尺寸、note 在；退化解必须拒绝
+ *     （DOM/canvas 桩与 test_funclab_curves.js / test_funclab_labels.js 同一套路）
+ * ================================================================ */
+
+console.log('\n--- 15. 真 mount ---');
+
+function makeCtx(rec) {
+  const noop = function () {};
+  const ctx = {
+    save: noop, restore: noop, beginPath: noop, moveTo: noop, lineTo: noop,
+    arc: noop, closePath: noop, fill: noop, fillRect: noop, clearRect: noop, setTransform: noop,
+    set strokeStyle(v) { rec.strokeStyle = v; }, get strokeStyle() { return rec.strokeStyle; },
+    set fillStyle(v) { rec.fillStyle = v; }, get fillStyle() { return rec.fillStyle; },
+    set lineWidth(v) { rec.lineWidth = v; }, get lineWidth() { return rec.lineWidth; },
+    set font(v) { rec.font = v; }, get font() { return rec.font; },
+    set textAlign(v) { rec.textAlign = v || 'left'; }, get textAlign() { return rec.textAlign; },
+    setLineDash: function (d) { rec.dash = d; },
+    stroke: function () { rec.strokes++; },
+    fillText: function (text) { rec.texts.push(String(text)); },
+    measureText: function (text) { return { width: String(text).length * 7 }; }
+  };
+  return ctx;
+}
+
+function makeDom() {
+  const created = [];
+  function el(tag) {
+    const node = {
+      tagName: String(tag).toUpperCase(), className: '', hidden: false, children: [],
+      listeners: {}, attributes: {}, parent: null, _text: '', style: {},
+      appendChild: function (c) { node.children.push(c); c.parent = node; return c; },
+      remove: function () {
+        if (!node.parent) return;
+        const i = node.parent.children.indexOf(node);
+        if (i >= 0) node.parent.children.splice(i, 1);
+        node.parent = null;
+      },
+      setAttribute: function (k, v) { node.attributes[k] = v; },
+      getAttribute: function (k) { return node.attributes[k]; },
+      addEventListener: function (ev, fn) { (node.listeners[ev] = node.listeners[ev] || []).push(fn); },
+      _all: function (pred, out) {
+        out = out || [];
+        node.children.forEach(function (c) { if (pred(c)) out.push(c); c._all && c._all(pred, out); });
+        return out;
+      },
+      querySelectorAll: function (sel) {
+        const cls = sel.replace(/^\./, '');
+        return node._all(function (c) { return String(c.className).split(/\s+/).indexOf(cls) >= 0; });
+      },
+      querySelector: function (sel) { return node.querySelectorAll(sel)[0] || null; }
+    };
+    Object.defineProperty(node, 'textContent', {
+      get: function () { return node._text; },
+      set: function (v) { node._text = String(v); node.children = []; }
+    });
+    if (node.tagName === 'CANVAS') {
+      node.clientWidth = 560;
+      node.clientHeight = 320;
+      node.width = 0;
+      node.height = 0;
+      node._rec = { strokes: 0, texts: [], dash: [], strokeStyle: '', fillStyle: '',
+        lineWidth: 0, font: '', textAlign: 'left' };
+      node.getContext = function () { return makeCtx(node._rec); };
+    }
+    created.push(node);
+    return node;
+  }
+  return {
+    document: {
+      createElement: el,
+      createTextNode: function (t) { return { nodeValue: String(t), textContent: String(t) }; }
+    },
+    created: created,
+    findCanvas: function () { return created.filter(function (n) { return n.tagName === 'CANVAS'; }); }
+  };
+}
+
+function withDom(fn) {
+  const dom = makeDom();
+  const prevDoc = global.document;
+  const prevDpr = global.devicePixelRatio;
+  const prevRO = global.ResizeObserver;
+  global.document = dom.document;
+  global.devicePixelRatio = 1;
+  global.ResizeObserver = undefined;
+  try { return fn(dom); }
+  finally {
+    global.document = prevDoc;
+    if (prevDpr === undefined) delete global.devicePixelRatio; else global.devicePixelRatio = prevDpr;
+    global.ResizeObserver = prevRO;
+  }
+}
+
+test('7 题真 mount：都非 null、el 内含正尺寸 canvas、note 文案在', function () {
+  const bad = [];
+  LEDGER.forEach(function (c) {
+    const item = q(c.id);
+    const pair = LEDGER_LAB[c.id];
+    const scene = F.labForScene(item.topicId, item.prompt, { itemId: c.id });
+    withDom(function (dom) {
+      const inst = F.mount(Object.assign({}, scene, { lab: pair[0], intent: pair[1] }));
+      if (!inst) { bad.push(c.id + ' mount=null'); return; }
+      const canvas = dom.findCanvas()[0];
+      if (!canvas || inst.el.children.indexOf(canvas) < 0) { bad.push(c.id + ' el 内没有 canvas'); return; }
+      if (!(canvas.width > 0) || !(canvas.height > 0)) {
+        bad.push(c.id + ' canvas 尺寸非正：' + canvas.width + '×' + canvas.height);
+      }
+      const note = inst.state().note;
+      if (!note || !String(note).trim()) bad.push(c.id + ' note 文案为空');
+    });
+  });
+  assert.deepStrictEqual(bad, [], bad.join(' / '));
+});
+
+test('mount 拒绝退化解：exp w=0、exp/log base=1、exp/log base≤0', function () {
+  withDom(function () {
+    const bad = [];
+    function mustNull(cfg, label) {
+      const inst = F.mount(cfg);
+      if (inst !== null) bad.push(label + ' 应返回 null');
+    }
+    mustNull({ type: 'exp', a: 1, base: 2, w: 0, phi: 0, k: 0, lab: 'exp-curve', intent: '值域' }, 'exp w=0');
+    mustNull({ type: 'exp', a: 1, base: 1, w: 1, phi: 0, k: 0, lab: 'exp-curve', intent: '值域' }, 'exp base=1');
+    mustNull({ type: 'exp', a: 1, base: 0, w: 1, phi: 0, k: 0, lab: 'exp-curve', intent: '值域' }, 'exp base=0');
+    mustNull({ type: 'exp', a: 1, base: -2, w: 1, phi: 0, k: 0, lab: 'exp-curve', intent: '值域' }, 'exp base<0');
+    mustNull({ type: 'log', c: 1, base: 1, shift: 0, d: 0, lab: 'log-curve', intent: '定义域' }, 'log base=1');
+    mustNull({ type: 'log', c: 1, base: 0, shift: 0, d: 0, lab: 'log-curve', intent: '定义域' }, 'log base=0');
+    mustNull({ type: 'log', c: 1, base: -2, shift: 0, d: 0, lab: 'log-curve', intent: '定义域' }, 'log base<0');
+    assert.deepStrictEqual(bad, [], bad.join(' / '));
+  });
+});
+
+test('exp/log/power 的 describe 与 paintModel 都不描述基准曲线', function () {
+  const cases = [
+    ['exp-curve', '值域', { a: 1, base: 2, w: 1, phi: 0, k: 0 }],
+    ['exp-curve', '单调性', { a: 1, base: 0.5, w: 1, phi: 0, k: 0 }],
+    ['log-curve', '定义域', { c: 1, base: 2, shift: 0, d: 0 }],
+    ['log-curve', '单调性', { c: 1, base: 0.5, shift: 0, d: 0 }],
+    ['log-curve', '图象经过的定点', { c: 1, base: 2, shift: 0, d: 0 }],
+    ['power-curve', '值域', { a: 1, p: 4, k: 0 }],
+    ['power-curve', '单调性', { a: 1, p: -1, k: 0 }],
+    ['power-curve', '定义域', { a: 1, root: { b: 1, c: 0 }, k: 0 }]
+  ];
+  const bad = [];
+  cases.forEach(function (row) {
+    [['describe', F.describe(row[0], row[1], row[2])],
+      ['paintModel', F.paintModel(row[0], row[1], row[2])]].forEach(function (pair) {
+      const name = pair[0], model = pair[1];
+      if (!model) { bad.push(row[0] + '/' + row[1] + ' ' + name + '=null'); return; }
+      const text = (Array.isArray(model) ? model : [model])
+        .map(function (e) { return String((e && (e.text || e.label)) || e); }).join('\n');
+      if (/基准曲线/.test(text)) bad.push(row[0] + '/' + row[1] + ' ' + name + ' 出现基准曲线');
+      if (/y = x²/.test(text)) bad.push(row[0] + '/' + row[1] + ' ' + name + ' 出现 y = x²');
+    });
+  });
+  assert.deepStrictEqual(bad, [], bad.join(' / '));
+});
+
 /* ================================================================ */
 
 console.log('\n== ' + passed + ' passed / ' + failed + ' failed ==');

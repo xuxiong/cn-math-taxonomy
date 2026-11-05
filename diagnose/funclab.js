@@ -1807,6 +1807,12 @@
     return '题面给出的抛物线（a = ' + fmtQuad(p.a) + '，' + (p.a > 0 ? '开口向上' : '开口向下') + '）';
   }
 
+  /** 哪些画板类型的 base 是「基准曲线」配置：仅这四族。
+   *  exp/log 的 base 是数值底数，power 没有基准曲线；curves 走独立分支。 */
+  function hasBaseCurve(type) {
+    return type === 'quadratic' || type === 'linear' || type === 'inverse' || type === 'trig';
+  }
+
   /** 基准曲线描述：也不印派生量（quadratic 基准的顶点横坐标 = 蓝色曲线 = 答案，留白） */
   function baseDesc(type, p, base) {
     if (type === 'linear') return '题面给出的基准直线（同斜率、过原点，b = 0；b 的变化即上下平移）';
@@ -1900,7 +1906,8 @@
     const elements = [];
     elements.push({ kind: 'grid-axes', text: '坐标平面：黑色 x 轴与 y 轴、浅灰网格与刻度数字', style: '坐标轴与网格' });
     elements.push({ kind: 'curve', text: '蓝色实线：' + curveDesc(type, p), style: '蓝色实线' });
-    const base = (p.base && (!p.base.type || p.base.type === type)) ? p.base : null;
+    const base = (hasBaseCurve(type) && p.base && typeof p.base === 'object'
+      && (!p.base.type || p.base.type === type)) ? p.base : null;
     if (base) elements.push({ kind: 'base-curve', text: '灰色虚线：' + baseDesc(type, p, base), style: '灰色虚线' });
 
     /* 批2 trig：每个 intent 只叠加对应的标注，与 annotate() 的绘制分支一一同源
@@ -3016,7 +3023,9 @@
     const def = TYPE_DEF[type];
     const p = Object.assign({}, def.defaults, o);
     p.type = type;
-    delete p.base;      // 原曲线配置只放进 base，不污染目标参数 p（否则滑块/公式会带上它）
+    // 原曲线配置只放进 base，不污染目标参数 p（否则滑块/公式会带上它）。
+    // 但 exp/log 的 base 是**数值底数**，不是基准曲线配置，绝不能删。
+    if (p.base && typeof p.base === 'object') delete p.base;
     const intent = intentKey(o.intent);
     const noteLab = o.lab || null;
     // 类型必须与画板声明的类型一致，且 intent 必须在该画板的 canAnswer 里
@@ -3032,7 +3041,8 @@
     if ((type === 'exp' || type === 'log') && (!(p.base > 0) || Math.abs(p.base - 1) < 1e-12)) return null;
     if (type === 'exp' && p.w === 0) return null;
     // 原曲线（题目给出/默认参数那条）：只有调用方给了才叠画，没给就降级为单曲线
-    const baseRaw = (o.base && (!o.base.type || o.base.type === type)) ? o.base : null;
+    const baseRaw = (hasBaseCurve(type) && o.base && typeof o.base === 'object'
+      && (!o.base.type || o.base.type === type)) ? o.base : null;
     const base = baseRaw ? Object.assign({}, def.defaults, baseRaw, { type: type }) : null;
     const start = {};
 
