@@ -1325,7 +1325,17 @@ const DESC_LABS = {
   'linear-equation': { k: 2, b: -4, base: { type: 'linear', k: 2, b: 0 } },
   'inverse-quadrants': { k: 3 },
   'inverse-area': { k: 3 },
-  'inverse-domain': { k: 3 }
+  'inverse-domain': { k: 3 },
+  /* 批2：三角 5 画板样参 —— paintModel 对空参数返回 null（与 quadratic 同口径），
+   * 通用 describe 断言遍历全部 CAPABILITIES，所以这里必须给齐 fn/A/w/phi/k。
+   * 样参与「派生量不出现」断言联动选值：extremum 用 A=1,k=0（派生值 ±1，
+   * describe 里 y = sin(x) 省略形态无数字，不会撞）；period 用 w=3（T = 2π/3，
+   * 派生值 T/π = 2/3 → fmt 串 '0.67'，describe 里的 '2π/3' 不含 '0.67'）。 */
+  'trig-extremum': { fn: 'sin', A: 1, w: 1, phi: 0, k: 0 },
+  'trig-period': { fn: 'sin', A: 1, w: 3, phi: 0, k: 0 },
+  'trig-parity': { fn: 'cos', A: 1, w: 1, phi: 0, k: 0 },
+  'trig-domain': { fn: 'tan', A: 1, w: 1, phi: 0, k: 0 },
+  'trig-monotonic': { fn: 'sin', A: 1, w: 1, phi: 0, k: 0, xMin: -Math.PI / 2, xMax: Math.PI / 2 }
 };
 function descParams(lab) {
   const p = Object.assign({}, DESC_LABS[lab]);

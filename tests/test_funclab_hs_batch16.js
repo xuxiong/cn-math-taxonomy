@@ -40,8 +40,9 @@ function q(id) {
   return item;
 }
 
-/* 白名单 14 题 × (画板, intent)；区间题另给端点来源（promptInterval 实抠）。
- * 前 8 条是批1.5 已接通的，本卡只许它们零回退；后 6 条是本卡新接通的。 */
+/* 白名单 23 题 × (画板, intent)；区间题另给端点来源（promptInterval 实抠）。
+ * 前 8 条是批1.5 已接通的，批1.6 只许它们零回退；中间 6 条是批1.6 新接通的；
+ * 后 9 条是批2（三角函数）新接通的，since: '2'。 */
 const LEDGER = [
   { id: 'cnm_h029_q2', lab: 'quadratic-vertex', intent: '最大值', since: '1.5' },
   { id: 'cnm_h034_q3', lab: 'quadratic-vertex', intent: '最大值', since: '1.5' },
@@ -56,7 +57,18 @@ const LEDGER = [
   { id: 'cnm_h035_q1', lab: 'quadratic-parity', intent: '奇偶性', since: '1.6' },
   { id: 'cnm_h036_q4', lab: 'quadratic-parity', intent: '奇偶性', since: '1.6' },
   { id: 'cnm_h034_q2', lab: 'quadratic-range-on-interval', intent: '在给定区间上的最小值', since: '1.6' },
-  { id: 'cnm_h227_q2', lab: 'quadratic-range-on-interval', intent: '在给定区间上的最小值', since: '1.6' }
+  { id: 'cnm_h227_q2', lab: 'quadratic-range-on-interval', intent: '在给定区间上的最小值', since: '1.6' },
+  /* 批2：三角函数 9 题（A·sin(ωx+φ)+k 解析 + 5 画板）。
+   * 台账与 tests/test_funclab_hs_batch2.js 的 LEDGER 逐条一致。 */
+  { id: 'cnm_h066_q1', lab: 'trig-extremum', intent: '最大值', since: '2' },
+  { id: 'cnm_h066_q2', lab: 'trig-extremum', intent: '最小值', since: '2' },
+  { id: 'cnm_h066_q3', lab: 'trig-period', intent: '最小正周期除以 π 后的值', since: '2' },
+  { id: 'cnm_h066_q4', lab: 'trig-domain', intent: '定义域', since: '2' },
+  { id: 'cnm_h067_q1', lab: 'trig-monotonic', intent: '单调性', since: '2' },
+  { id: 'cnm_h067_q4', lab: 'trig-monotonic', intent: '单调性', since: '2' },
+  { id: 'cnm_h068_q4', lab: 'trig-parity', intent: '奇偶性', since: '2' },
+  { id: 'cnm_h075_q1', lab: 'trig-extremum', intent: '最大值', since: '2' },
+  { id: 'cnm_h075_q2', lab: 'trig-period', intent: '最小正周期除以 π 后的值', since: '2' }
 ];
 
 /** 按台账一题一遍走三道闸；返回失败原因数组（空 = 全过） */
@@ -83,20 +95,21 @@ function gateAll() {
  * 1. 14 题全部线上可见（8→14 的机器判据）
  * ================================================================ */
 
-test('白名单 14 题逐题过「表 + intent + 代回」三道闸（8 条旧题零回退）', function () {
+test('白名单 23 题逐题过「表 + intent + 代回」三道闸（14 条旧题零回退）', function () {
   const bad = gateAll();
   assert.deepStrictEqual(bad, [], bad.join(' / '));
-  assert.strictEqual(LEDGER.length, 14, '台账必须恰好 14 题');
-  assert.strictEqual(LEDGER.filter(function (c) { return c.since === '1.6'; }).length, 6, '本卡新接通 6 题');
+  assert.strictEqual(LEDGER.length, 23, '台账必须恰好 23 题');
+  assert.strictEqual(LEDGER.filter(function (c) { return c.since === '1.6'; }).length, 6, '批1.6 接通 6 题');
+  assert.strictEqual(LEDGER.filter(function (c) { return c.since === '2'; }).length, 9, '批2 新接通 9 题');
 });
 
-test('HS_ITEMS 仍是 14 条，一题不增一题不删（白名单是批1/1.5 成果）', function () {
+test('HS_ITEMS 23 条（批1/1.5 的 14 + 批2 的 9），与台账逐题一致', function () {
   const ids = Object.keys(F.HS_ITEMS).sort();
-  assert.strictEqual(ids.length, 14);
+  assert.strictEqual(ids.length, 23);
   assert.deepStrictEqual(ids, LEDGER.map(function (c) { return c.id; }).sort());
 });
 
-test('高中全量挂载仍是 17 题（本批 14 + 既有 cnm_h172 三题），没有顺手放宽', function () {
+test('高中全量挂载 26 题（本批 23 + 既有 cnm_h172 三题），没有顺手放宽', function () {
   const hs = QUESTIONS.filter(function (x) { return /^cnm_h/.test(x.id); });
   const mounted = hs.filter(function (x) {
     return !!F.labForScene(x.topicId, x.prompt, { itemId: x.id });
@@ -109,10 +122,10 @@ test('高中全量挂载仍是 17 题（本批 14 + 既有 cnm_h172 三题），
  * 2. 三条新能力项注册
  * ================================================================ */
 
-test('「与 x 轴交点的个数」挂在 quadratic-roots 上，且能渲染', function () {
+test('「与x轴交点的个数」挂在 quadratic-roots 上，且能渲染', function () {
   const cap = F.CAPABILITIES['quadratic-roots'];
-  assert.ok(cap.canAnswer.indexOf('与 x 轴交点的个数') >= 0, 'canAnswer 必须逐字含这一项');
-  assert.ok(F.intentSupported('quadratic-roots', '与 x 轴交点的个数'));
+  assert.ok(cap.canAnswer.indexOf('与x轴交点的个数') >= 0, 'canAnswer 必须逐字含这一项（批2 起字面量去空格，与意图归一化口径一致）');
+  assert.ok(F.intentSupported('quadratic-roots', '与x轴交点的个数'));
 });
 
 test('「单调性」「奇偶性」各有独立画板，CAP_TYPE 归 quadratic', function () {

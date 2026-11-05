@@ -229,7 +229,10 @@ test('既有语义零改动：二次/一次/反比例/隐式直线/方程段代�
   assert.deepStrictEqual(F.fromPrompt('y=6/x'), { type: 'inverse', k: 6 });
   assert.deepStrictEqual(F.fromPrompt('x+y=5'), { type: 'linear', k: -1, b: 5 });
   assert.deepStrictEqual(F.fromPrompt('y=k/x'), null, 'y=k/x 含字母参数，本来就不解析，不许被三角分支截走');
-  assert.deepStrictEqual(F.fromPrompt('f(x)=x²−5'), null, 'f(x)= 记法 fromPrompt 本身不认（别名只在白名单题上生效）');
+  /* 批2 实测基线：f(x)=x²−5 一直能被 quadFromRenamedVar 解析（RED 阶段即如此）——
+   * 「别名只在白名单题上生效」指的是 labFor 层（fail-closed 由第 1 组覆盖），fromPrompt 本身认这个形态 */
+  assert.deepStrictEqual(F.fromPrompt('f(x)=x²−5'), { type: 'quadratic', a: 1, h: 0, k: -5 },
+    'f(x)= 记法的解析结果不许因三角分支而变化');
   const eq = F.fromPrompt('(x-2)(x+1)=0');
   assert.strictEqual(eq.type, 'quadratic', '展开式方程仍走 quadratic 分支');
   const v = F.fromPrompt('y=-(x-2)²+5');
@@ -251,9 +254,11 @@ test('白名单 9 题的 fromPrompt 解析值逐题锁定（滑块初值 = 题�
   Object.keys(want).forEach(function (id) {
     const item = q(id);
     const got = F.labFor(item.topicId, item.prompt, { itemId: id });
-    ['fn', 'A', 'w', 'phi', 'k'].forEach(function (key) {
-      assert.ok(got && Math.abs((got[key] || 0) - want[id][key]) < 1e-9,
-        id + ' 的 ' + key + ' 应为 ' + want[id][key] + '，实际 ' + (got && got[key]));
+    assert.ok(got, id + ' 应挂上');
+    assert.strictEqual(got.fn, want[id].fn, id + ' 的 fn 应为 ' + want[id].fn + '，实际 ' + got.fn);
+    ['A', 'w', 'phi', 'k'].forEach(function (key) {
+      assert.ok(Math.abs((got[key] || 0) - want[id][key]) < 1e-9,
+        id + ' 的 ' + key + ' 应为 ' + want[id][key] + '，实际 ' + (got[key]));
     });
   });
 });
