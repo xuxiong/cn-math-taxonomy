@@ -56,17 +56,33 @@ test('askSystemPrompt：身份规则为「只能是本题这个函数 / 只允�
   assert.ok(s.indexOf('画板上刻意留白的量') >= 0, '规则 8 必须一字不改地保留');
 });
 
+/* 画板契约清单：CAPABILITIES 的键（新增 / 改名画板时同步这里）。
+ * lab 数量一律运行时取（Object.keys(F.CAPABILITIES).length），测试里不写字面量 ——
+ * 批4 新增了两个三次画板 cubic-parity / cubic-extremum。 */
+const LAB_NAMES = [
+  'quadratic-vertex', 'quadratic-roots', 'quadratic-monotonic', 'quadratic-parity',
+  'quadratic-inequality', 'quadratic-range-on-interval',
+  'linear-intercepts', 'linear-trend', 'linear-equation',
+  'inverse-quadrants', 'inverse-area', 'inverse-domain',
+  'trig-extremum', 'trig-period', 'trig-parity', 'trig-domain', 'trig-monotonic',
+  'exp-curve', 'log-curve', 'power-curve',
+  'cubic-parity', 'cubic-extremum',
+  'two-curves-intersect'
+];
+
 /* ---- 2. 能力清单带适用范围（note 运行时取自 Funclab） ---- */
-test('能力清单：21 个 lab 都带「；适用：」且 note 前 20 字出现在 prompt', function () {
+test('能力清单：每个 lab 都带「；适用：」且 note 前 20 字出现在 prompt', function () {
   const X = loadExplain();
   const s = X._askSystemPrompt();
   const sNoWs = noWs(s);
   const labs = Object.keys(F.CAPABILITIES);
-  assert.strictEqual(labs.length, 21, '能力清单应正好 21 个 lab');
+  /* lab 数从 CAPABILITIES 动态取：集合与清单逐个对上（含 cubic-parity / cubic-extremum） */
+  assert.deepStrictEqual(labs.slice().sort(), LAB_NAMES.slice().sort(),
+    '能力清单的 lab 集合应与清单一致（实际 ' + labs.length + ' 个：' + labs.join(',') + '）');
   let scopeCount = 0;
   let i = 0;
   while ((i = s.indexOf('；适用：', i)) >= 0) { scopeCount++; i += 4; }
-  assert.strictEqual(scopeCount, 21, '21 个 lab 每行都应带「；适用：」，实际 ' + scopeCount);
+  assert.strictEqual(scopeCount, labs.length, '每个 lab 每行都应带「；适用：」，实际 ' + scopeCount + ' / ' + labs.length);
   labs.forEach(function (lab) {
     const note = String((F.CAPABILITIES[lab] || {}).note || '');
     assert.ok(note.length > 0, lab + ' 应有 note');
