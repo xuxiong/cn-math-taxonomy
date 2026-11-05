@@ -355,6 +355,29 @@ test('trig-parity 文案：讲「对折」与 f(-x)，不替学生下奇偶结�
   assert.ok(!/是偶函数[。！]/.test(s), '不许直接替学生说「是偶函数」：' + s);
 });
 
+test('trig-parity 文案描述的 y 轴折痕线型必须与 paintModel 的 y-axis-emphasis 一致（防漂移）', function () {
+  const P = { fn: 'cos', A: 1, w: 1, phi: 0, k: 0 };
+  const m = F.paintModel('trig-parity', '奇偶性', P);
+  assert.ok(m && m.elements, 'paintModel 应返回带 elements 的模型');
+  const el = m.elements.filter(function (e) { return e.kind === 'y-axis-emphasis'; })[0];
+  assert.ok(el, 'trig-parity 奇偶性 必须有 y-axis-emphasis 元素');
+  const style = el.style;                     // 「黑色粗实线」
+  assert.ok(/实线|虚线/.test(style), 'style 必须写明线型：' + style);
+  const texts = [
+    { name: 'NOTE_BY_INTENT（学生端）', s: F.noteText('trig-parity', '奇偶性', P) },
+    { name: 'CAPABILITIES.note（LLM 侧）', s: F.CAPABILITIES['trig-parity'].note }
+  ];
+  texts.forEach(function (t) {
+    assert.ok(t.s && t.s.indexOf(style) >= 0, t.name + ' 必须逐字用到 paintModel 的 style「' + style + '」：' + t.s);
+    // 提到 y 轴的那一句，必须写明同一种线型，且不许出现与之矛盾的线型（画实线却写虚线）
+    const clause = String(t.s).split(/[。；]/).filter(function (c) { return c.indexOf('y 轴') >= 0; }).join('；');
+    assert.ok(clause && clause.indexOf(style) >= 0, t.name + ' 里提 y 轴那句必须写「' + style + '」：' + clause);
+    if (style.indexOf('虚线') < 0) {
+      assert.ok(clause.indexOf('虚线') < 0, t.name + ' 画的是实线，提 y 轴那句不许说「虚线」：' + clause);
+    }
+  });
+});
+
 test('trig-domain 文案：讲断点/渐近线的读法，不报「全体实数」结论', function () {
   const s = F.noteText('trig-domain', '定义域', TRIG_PARAMS);
   assert.ok(s && s.length > 6, '定义域文案非空');
@@ -417,6 +440,19 @@ test('trig-period 的 describe 含「一个周期 T = 2π」，w=2 时是「T = 
   const d2 = F.describe('trig-period', '最小正周期除以 π 后的值', { fn: 'sin', A: 1, w: 2, phi: 0, k: 0 });
   assert.ok(d2.indexOf('T = π') >= 0, 'w=2 应标「T = π」：' + d2);
   assert.ok(d2.indexOf('T = 2π') < 0, 'w=2 不该再标 2π：' + d2);
+});
+
+test('留白说明的空格只补在 π/字母/数字结尾的量名后（中文量名不补）', function () {
+  function blankLine(d) {
+    const line = String(d || '').split('\n').filter(function (l) { return l.indexOf('留白说明：') >= 0; })[0];
+    return line || '';
+  }
+  const dq = blankLine(F.describe('quadratic-vertex', '最小值', { a: 1, h: 0, k: 0 }));
+  assert.ok(dq.indexOf('最小值在图上都以 ? 表示') >= 0, '纯中文量名后不补空格：' + dq);
+  assert.ok(dq.indexOf('最小值 在图上') < 0, '纯中文量名后不许有空格：' + dq);
+  const dt = blankLine(F.describe('trig-period', '最小正周期除以π后的值', TRIG_PARAMS));
+  assert.ok(dt.indexOf('周期除以 π 在图上都以 ? 表示') >= 0, 'π 结尾的量名后补一个空格：' + dt);
+  assert.ok(dt.indexOf('周期除以 π在图上') < 0, 'π 结尾的量名后不可粘连：' + dt);
 });
 
 test('trig-extremum 的 describe 不泄答案：A=1,k=0 时不含「1」，标注是「最大值 = ?」', function () {

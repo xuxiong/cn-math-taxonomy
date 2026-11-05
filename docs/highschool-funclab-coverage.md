@@ -975,16 +975,16 @@ git stash pop
 - `cnm_h075_q2`（w=2）：`…图上两条竖直虚线之间的蓝色实线正好是一个周期：T = π。**把这个周期除以 π，商是多少？**…`
 
 周期数值直接印在图上（2π / π），答案要的「除以 π 后的数」一步心算可得；x 轴刻度用 π 单位（π/2、π、3π/2、2π），不是抽象符号。
-`trig-extremum` 只把极值点标红、文案写「最大值 = ?」不泄露答案；`trig-monotonic` 只标区间端点与底纹；`trig-parity` 只画对折虚线、不写结论。
+`trig-extremum` 只把极值点标红、文案写「最大值 = ?」不泄露答案；`trig-monotonic` 只标区间端点与底纹；`trig-parity` 只把 y 轴加深加粗当折痕（黑色粗实线）、不写结论。
 
 ### 11.5 先红后绿（新断言在 `5262d12` 的干净树上挂）
 
-- **RED**：`git archive 5262d12` 解到临时目录，**只**把 `tests/test_funclab_hs_batch2.js` 拷进 `tests/`（实现一行未动），跑 `node tests/test_funclab_hs_batch2.js` → **16 passed, 36 failed**。挂的正是新契约：HS_ITEMS 仍是 14 条（断言 23）、三角 9 题 `labFor` 返回 null、5 个 `trig-*` 画板未注册、`promptInterval` 不认 π 端点、带空格字面量仍在。
-- **GREEN**：同一文件在分支 `7c822a6` 上 → **52 passed, 0 failed**。
+- **RED**：`git archive 5262d12` 解到临时目录，**只**把 `tests/test_funclab_hs_batch2.js` 拷进 `tests/`（实现一行未动），跑 `node tests/test_funclab_hs_batch2.js` → **16 passed, 36 failed**（返工后同一文件含 2 条新增断言，在 `5262d12` 上为 **16 passed, 38 failed**）。挂的正是新契约：HS_ITEMS 仍是 14 条（断言 23）、三角 9 题 `labFor` 返回 null、5 个 `trig-*` 画板未注册、`promptInterval` 不认 π 端点、带空格字面量仍在。
+- **GREEN**：同一文件在分支 `7c822a6` 上 → **52 passed, 0 failed**（返工后当前分支为 **54 passed, 0 failed**）。
 
 ### 11.6 全量回归与计数口径
 
-`tests/test_*.js` **34 个文件逐个跑，全部 rc=0（0 fail）**。关键计数：`test_funclab.js 163`、`test_funclab_curves.js 63`、`test_funclab_labels.js 22`、`test_funclab_hs_batch1.js 28`、`test_funclab_hs_batch16.js 22`、`test_funclab_hs_batch2.js 52`、`test_labmatch.js 59`；其余 27 个文件同样全绿（含 `test_engine.js 190`、`test_route.js 101`、`test_geomlab.js 118`、`test_llm_variants.js 97`）。
+`tests/test_*.js` **34 个文件逐个跑，全部 rc=0（0 fail）**。关键计数：`test_funclab.js 163`、`test_funclab_curves.js 63`、`test_funclab_labels.js 22`、`test_funclab_hs_batch1.js 28`、`test_funclab_hs_batch16.js 22`、`test_funclab_hs_batch2.js 54`（返工前 52，返工加了 2 条防漂移/空格断言）、`test_labmatch.js 59`；其余 27 个文件同样全绿（含 `test_engine.js 190`、`test_route.js 101`、`test_geomlab.js 118`、`test_llm_variants.js 97`）。
 
 既有测试只改**计数期望**（加 9，不是放宽），逐处在文件里点名，便于抽查：
 
@@ -1040,13 +1040,28 @@ git stash pop
 - 逐条探针（`fromPrompt` → `answer-gate.misfitOf` → `labFor` / `labForScene`）：`upstream-parse-gate=15`、`semantic-gate=16`、**MOUNTED=0**。
 - 翻转点只有一个：`cnm_h069_q4` 在批1.5 时点「解析不出」（算在上游挡里），本卡三角解析上线后**能解析、但被答案语义门禁挡下**（转入语义挡）。所以拆分从「16 上游 + 15 语义」变成「15 上游 + 16 语义」，总数仍是 31，**没有任何一条因为新分支被放上线**。
   - `tests/test_funclab_hs_batch1.js:595` 的测试标题仍写批1.5 时点的「15 条语义门禁挡下 + 16 条解析闸上游挡」。本卡不动既有测试（红线：既有断言一字不改），口径以本节为准。
-- `cnm_h069_q4` 另有独立两道钉住：`tests/test_funclab_hs_batch2.js:126`（不进 HS_ITEMS、`labFor`/`labForScene` 均 null）、`:659`（即使解析出 trig 也过不了门禁），外加 §11.7 的真浏览器断言。
+- `cnm_h069_q4` 另有独立两道钉住：`tests/test_funclab_hs_batch2.js:126`（不进 HS_ITEMS、`labFor`/`labForScene` 均 null）、`:695`（即使解析出 trig 也过不了门禁；返工插了两条断言后由 `:659` 下移），外加 §11.7 的真浏览器断言。
 
 ### 11.11 2902 一行修（批1.6 复核遗留）
 
 - 修前（基点 `5262d12`，`funclab.js:2902`）：`rootCount: type === 'quadratic' && intent === '与 x 轴交点的个数'` —— `intent` 已被 `intentKey()` 去空白，这个字面量恒 false。
-- 修后（本分支，行号因三角分支插入而上移）：`funclab.js:3392` → `rootCount: type === 'quadratic' && intent === '与x轴交点的个数'`。
+- 修后（本分支；行号因三角分支与 `blankNote` 调整而上移，以 `grep -n` 为准）：`funclab.js:3399` → `rootCount: type === 'quadratic' && intent === '与x轴交点的个数'`。
 - 证据：
   - `grep -n "与 x 轴交点的个数" diagnose/funclab.js` → **无输出**（`grep -c` = 0，exit=1）
-  - `grep -n "与x轴交点的个数" diagnose/funclab.js` → 命中 **9 处**：659 / 661 / 840 / 1731 / 1735 / 1976 / 1978 / 1981 / 3392（含 `canAnswer`、`NOTE_INTENT`、`labAnswerParts` 与 `rootCount`）
+  - `grep -n "与x轴交点的个数" diagnose/funclab.js` → 命中 **9 处**：659 / 661 / 840 / 1731 / 1735 / 1983 / 1985 / 1988 / 3399（含 `canAnswer`、`NOTE_INTENT`、`labAnswerParts` 与 `rootCount`；行号随插行漂移，以 `grep -n` 为准）
 - 测试钉住 3 条（`tests/test_funclab_hs_batch2.js` 第 11 组）：`intentKey` 归一化、源码里带空格字面量清零（含注释）、`canAnswer` / `NOTE_INTENT` / `labAnswerParts` 三处键口径一致。
+- 连带效果：`labAnswerParts` 里 `'与 x 轴交点的个数'` → `'与x轴交点的个数'` 后，`cnm_h023_q4` 的答案输入行 label 从「与 x 轴交点的个数」变成「与x轴交点的个数」（少一个空格）。功能与数值（=2）无变化，**不是 UI 回退**，是这条 grep 口径的副作用，记在这里免得以后被当成回归。
+- `focus.rootCount` 的断言是**源码正则断言**（`tests/test_funclab_hs_batch2.js` 里 grep 源码字面量），不是行为断言：该字段全仓无消费方，行为化不了。口径可接受，但必须写明这一点。
+
+### 11.12 复核第 1 轮返工：trig-parity 折痕文案对齐（2026-11-05）
+
+- 缺陷：两处文案说「灰色竖直虚线是对折用的 y 轴」，实际绘制是黑色粗实线（`annotate` 的 trig+奇偶性分支 `#111` / `lineWidth 2.2` / `setLineDash([])`），`paintModel` 也写「黑色粗实线」→ `describe()` 自相矛盾。
+- 修法：选「改文案与绘制同源」（不改绘制），两处文案逐字改成「黑色粗实线是 y 轴（x = 0）」。
+  - 改前 `noteText`：`…图上灰色竖直虚线是对折用的 y 轴，蓝色实线是函数图象：**对折之后能重合吗？是奇函数还是偶函数？** 自己看。`
+  - 改后 `noteText`：`…图上黑色粗实线是 y 轴（x = 0），蓝色实线是函数图象：**对折之后能重合吗？是奇函数还是偶函数？** 自己看。`
+  - 改前 `CAPABILITIES['trig-parity'].note`：`…图上灰色虚线是对折用的 y 轴，蓝色实线是函数图象，是不是对称自己看。`
+  - 改后 `CAPABILITIES['trig-parity'].note`：`…图上黑色粗实线是 y 轴（x = 0），蓝色实线是函数图象，是不是关于它对称自己看。`
+- 新增断言：`tests/test_funclab_hs_batch2.js` 的「…y-axis-emphasis 一致（防漂移）」与「留白说明的空格只补在 π/字母/数字结尾的量名后」，前者读取 `paintModel` 的 `style` 逐字比对。两条在 `63069c0`（文案未改）的干净树上只换新测试文件为红：**52 passed / 2 failed**（`NOTE_BY_INTENT（学生端） 必须逐字用到 paintModel 的 style「黑色粗实线」`、`π 结尾的量名后补一个空格`）；改后转绿：**54 passed / 0 failed**。
+- 顺手项 O1：`blankNote()` 只在最后一个量名以 π/字母/数字结尾时，才在量名与「在图上」之间补一个空格（`周期除以 π 在图上`）；纯中文量名不补（`最小值在图上`，与原行为一致）。
+- 顺手项 O2：`blankNote()` 空清单兜底按 `CAP_TYPE[lab] === 'trig'` 换成三角口径（周期、最值、区间端点、渐近线），非 trig 原文一字不动。
+- 本轮只改文案与留白说明，绘制路径一行未改；三角 9 题白名单、HS_ITEMS 23 条、解析/门禁逻辑零改动。
