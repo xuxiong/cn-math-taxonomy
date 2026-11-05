@@ -657,3 +657,98 @@ git stash && node scripts/measure_highschool_funclab_coverage.js | sed -n '53,70
 E2E 里反比例那一块用的是 `inverse-quadrants` 文案（验证「反比例画板能画、能耗标、两种宽度不溢出」），
 它**不代表** `cnm_h028_q3` 能在线上挂出来 —— 缺口见 8.3 第 1 条。
 
+
+## 9. 批1.5 补漏（t_f752c3df，2026-11-05，分支 `wt/hs-funclab-batch15`）
+
+§8 的 8.3 记了三件遗留，本节逐件收口。基点 = main `0de663e`（批1 已合入），本卡只加能力/文案/门禁，
+**`HS_ITEMS` 14 条一条不增不删，`fromPrompt` 零改动**。
+
+### 9.1 反比例补「定义域 / 渐近线」（8.3 第 1 条）
+
+`diagnose/funclab.js` 新增画板 `inverse-domain`（`CAP_TYPE = inverse`，`canAnswer = ['定义域','渐近线']`，
+`params = ['k']`）+ 两条 `NOTE_INTENT` 文案。文案原文（本题 `k=1`）：
+
+> y = k/x 在 x = 0 处没有值（分母不能为 0），所以 x = 0 不在定义域里 —— 定义域是除 x = 0 外的全体实数。
+> 图上两支曲线各自延伸，都在 y 轴处断开，谁也接不上谁：拖动 k 看它们怎么变，断点始终在 x = 0。
+
+**同一个坑还有第二道闸**：批1 的 `labForScene` 认白名单题的 `f(x)=` 记法，但 `labmatch.verifyParams`
+是另一条路径（它自己调 `fromPrompt`），`f(x)=` 在这里解析不出 → `cnm_h028_q3` 即使有画板也会被判
+「题面解析不出与画板类型一致的函数」。本卡在 `verifyParams(prompt, choice, opts)` 上补同一条别名，
+**只认 `opts.itemId` 在 `HS_ITEMS` 表内的题**（表外题、不带 itemId 的调用行为零变化，测试逐条锁死）。
+
+### 9.2 文案串台（8.3 第 2 条）
+
+根因：`NOTE_BY_INTENT` 是「归一化 intent → 文案」的拍平表，`quadratic-roots` 的「与x轴交点的横坐标」排在
+`linear-intercepts` 前面 → 先声明者胜，直线题印抛物线文案。`linear-trend` / `inverse-quadrants` 的
+「y 随 x 的增大而增大还是减小」同病。
+
+修法：新增 `NOTE_BY_LAB[lab][intent]` + `noteTemplate(lab, intent)`，`noteText` / `intentSupported` /
+`labmatch.verifyParams` 全部改走它。`NOTE_BY_INTENT` 保留为**兼容视图**（旧测试/外部脚本还读它），注释里
+写明「新代码不许再用它查文案」。
+
+`cnm_h049_q2` 修复前 / 后（同一 `linear-intercepts` + 「与 x 轴交点的横坐标」，`k=1, b=-5`）：
+
+- 修复前：**抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。** 这两个横坐标分别是多少？…拖动 h、k 看交点怎么移动。
+- 修复后：**绿点是直线与 x 轴的交点 (?, 0)**：令 y = 0 解 kx+b = 0 就得到它的横坐标——**把这个方程解出来是多少？** 图上只标了点，数值留给你算。拖动 k、b 看交点怎么移动。
+
+### 9.3 `cnm_h220_q2` 门禁漏过（8.3 第 3 条）
+
+8.3 补全后的 `[E-语义1]` 只作用于**实际挂载集合**，而 `cnm_h220_q2` 本来就不在挂载集合里 —— 漏洞没人看得见。
+本卡把判定抽成纯函数 `tests/lib/answer-gate.js`（`misfitOf(item, p)`），两个测试文件对同一批题用同一套口径：
+
+- `tests/test_funclab.js`：全库**实际挂载**题 → 新误挂必须为 0（原逻辑逐条等价搬过去）
+- `tests/test_funclab_hs_batch1.js`：测算判 `misleading` 的 **31 条** → 一条都不许过门禁
+
+新增的语义限定只有一条，且必须排在数值比对**之前**（排在后面就轮不到）：
+
+> 题面出现 切线 / 斜率 / 变化率 / 导数 / `f'(x)` 这些词，且答案里含 0 → 判误挂。
+> 画板上标的是函数值 / 坐标（顶点 h、k，截距 b，交点横坐标），不是导数意义上的量，**数字碰巧相等 ≠ 语义对上**。
+
+实测：`cnm_h220_q2`（`曲线 y=x² 在 x=0 处的切线斜率是多少？` 答案 0，画板标注里有 `0`）
+旧门禁放行 → 新门禁挡下（`答案 0 撞上导数语义`）；测算判 `misleading` 的 31 条**全部不挂**，其中
+**15 条由答案语义门禁挡下**，另 **16 条在解析闸上游就已挡掉**（`fromPrompt` 解析不出 / `labFor` 拿不到可挂曲线，
+根本走不到语义门禁）。两个数不是一回事，别合并成「31 条全被语义门禁挡住」。
+
+### 9.4 白名单 14 题的线上可见台账（4 → 8）
+
+**卡面「批1 的 14 题线上 13 可见、本卡修完 14」在本基点上复现不出来。** 真浏览器 + 真 `labForScene` +
+真 `Labmatch.verifyParams` 逐题过三道闸（表内 / `canAnswer` 覆盖 / 代回校验），逐题台账如下
+（`node ~/.hermes/cache/scratch/b15_e2e.js <ROOT> <before|after>`，两个 ROOT 同一脚本）：
+
+| 题 | 问法 | 0de663e | 本分支 | 修复后卡在哪 |
+|----|------|---------|--------|--------------|
+| `cnm_h029_q2` | 最大值 | ✓ | ✓ | — |
+| `cnm_h034_q3` | 最大值 | ✓ | ✓ | — |
+| `cnm_h049_q1` | 零点 | ✓ | ✓ | — |
+| `cnm_h226_q1` | 顶点坐标 | ✓ | ✓ | — |
+| `cnm_h032_q1` | 增减性 | ✗ 代回（`f(x)=`） | ✓ | — |
+| `cnm_h032_q2` | 增减性 | ✗ 代回（`f(x)=`） | ✓ | — |
+| `cnm_h049_q2` | 与 x 轴交点横坐标 | ✗ 代回（`f(x)=`） | ✓ | — |
+| `cnm_h028_q3` | 定义域 | ✗ 无能力项 | ✓ | — |
+| `cnm_h023_q4` | 与 x 轴交点**个数** | ✗ | ✗ | quadratic 没有「交点个数」intent |
+| `cnm_h032_q4` | quadratic 的单调性 | ✗ | ✗ | quadratic 没有单调性 intent |
+| `cnm_h035_q1` | 奇偶性 | ✗ | ✗ | quadratic 没有奇偶性 intent |
+| `cnm_h036_q4` | 奇偶性 | ✗ | ✗ | quadratic 没有奇偶性 intent |
+| `cnm_h034_q2` | 区间上的最小值 | ✗ | ✗ | `promptInterval` 不认 `x∈[−1，2]` 的全角逗号 |
+| `cnm_h227_q2` | 区间上的最小值 | ✗ | ✗ | 同上 |
+| **可见** | | **4 / 14** | **8 / 14** | |
+
+差额摊开：**4 可挂 + 4 能力缺口 + 2 区间缺口 + 4 本卡修复（1 反比例能力 + 3 解析器别名）= 14**。
+后 6 条是批1.5 才定位到的既有缺口，需各自立卡（能力清单扩充 / 区间解析），本卡红线（不动 `fromPrompt`）内做不了。
+
+另外一层是**模型侧抖动**，不属于画板能力：`cnm_h028_q3` 用真网关（`127.0.0.1:3000`，`deepseek`）跑
+`Labmatch.resolve({lenient:true})` 实测 3 次挂上 2 次，失败那次是模型把两项拼成 `定义域、渐近线` 被严格
+`verifyParams` 拒（prompt 里已写明「一项一项写，拼起来一律作废」，模型仍偶发）；这是所有 intent 共有的格式
+抖动，不是本卡引入。
+
+### 9.5 回归
+
+| 指标 | 0de663e | 本分支 |
+|------|---------|--------|
+| `tests/test_funclab_hs_batch1.js` | **22 passed / 6 failed**（新断言在旧代码上挂） | **28 passed / 0 failed** |
+| `tests/test_funclab.js` | 163 passed | **163 passed / 0 failed** |
+| 全量 `tests/test_*.js` | 32 文件 0 fail | **32 文件 0 fail** |
+| 测算脚本 §1 `labFor 挂载` / §2 gated ok / 误挂 | 14 / 34 / 31 | **14 / 34 / 31（逐字节相同）** |
+| 真浏览器 E2E | 可见 4/14，`cnm_h028_q3` 无画板 | 可见 **8/14**，`cnm_h028_q3` 画板 560×320 非白像素 17.9 万、文案含「除 x = 0 外的全体实数」，无溢出无 console error |
+
+E2E 截图：`~/.hermes/cache/scratch/b15_e2e_{before,after}_{390,1280}.png`，报告 `b15_e2e_*_report.json`。

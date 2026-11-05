@@ -177,7 +177,7 @@
   /* ============================================================ 确定性校验（LLM 绕不过去） */
 
   /**
-   * verifyParams(prompt, choice) → {ok, why}
+   * verifyParams(prompt, choice[, opts]) → {ok, why}
    * 逐条：
    *   1. choice.match 必须是已注册画板（funclab.CAPABILITIES 的 key）
    *   2. choice.intent 必须逐字属于该画板的 canAnswer（归一化空白后比较）
@@ -185,8 +185,14 @@
    *      题面解析出的原式（funclab.fromPrompt，与 LLM 完全独立的另一条路径）
    *      vs 用 LLM 的 {a,h,k} 构造顶点式再展开 —— 系数逐项比对，误差 > 1e-9 拒绝
    *   4. 区间最值画板：题面必须真的给出区间，且端点与 LLM 给的一致
+   *
+   * opts.itemId（批1.5，t_f752c3df）：白名单题（funclab.HS_ITEMS）的题面用 `f(x)=` 记法，
+   *   fromPrompt 只认 `y=` —— 不补这一步，白名单里的 4 道 f(x)= 题即使 LLM 选对了画板，
+   *   也会在代回校验这一关被判「题面解析不出与画板类型一致的函数」而挂不出来
+   *   （cnm_h028_q3 的第二个拦路虎，第一个是 inverse 缺定义域能力项）。
+   *   别名只服务白名单题，与 labFor 完全同一口径（表外题行为零变化）。
    */
-  function verifyParams(prompt, choice) {
+  function verifyParams(prompt, choice, opts) {
     const why = [];
     if (!Funclab || !Funclab.CAPABILITIES) return { ok: false, why: [NO_FUNCLAB] };
     const c = choice || {};
@@ -200,7 +206,7 @@
     if (!intent || allowed.indexOf(intent) < 0) {
       return { ok: false, why: ['intent 不在 ' + lab + '.canAnswer: ' + (c.intent || '(空)')] };
     }
-    if (!Funclab.NOTE_BY_INTENT[intent]) return { ok: false, why: ['intent 没有文案模板: ' + intent] };
+    if (!Funclab.noteTemplate(lab, intent)) return { ok: false, why: ['intent 没有文案模板: ' + intent] };
 
     // 3. 参数齐全且是有限数
     const p = c.params || {};
@@ -233,7 +239,12 @@
     if ((type === 'linear' || type === 'inverse') && Number(p.k) === 0) return { ok: false, why: ['k=0 画不出图象'] };
 
     // 3'. 代回原式：题面规范参数 vs LLM 参数，展开后逐项比对
-    const parsed = Funclab.fromPrompt(prompt);
+    let parsed = Funclab.fromPrompt(prompt);
+    /* 批1.5：白名单题的 `f(x)=` / `g(x)=` 记法走与 labFor 同一条别名（只认表内 itemId） */
+    if (!parsed && opts && opts.itemId && typeof Funclab.hsItemKind === 'function'
+      && Funclab.hsItemKind(opts.itemId) && typeof Funclab.hsPromptAlias === 'function') {
+      parsed = Funclab.fromPrompt(Funclab.hsPromptAlias(prompt));
+    }
     if (!parsed || parsed.type !== type) {
       return { ok: false, why: ['题面解析不出与画板类型一致的函数（' + type + '）'] };
     }
@@ -415,6 +426,8 @@
       + '\n1. 只有题目真正要问的东西落在某个画板的 canAnswer 里，才给 match；否则 match 必须为 null，不要硬凑。'
       + '\n2. intent 必须是所选画板 canAnswer 数组里的**某一整项**，逐字照抄、一个字都不能改，也不能把两项拼起来'
       + '（题目同时问了几件事时，选与题目首要提问最接近的那一项）。'
+      + '例如 canAnswer 是 ["定义域","渐近线"] 时，intent 只能写 "定义域" 或 "渐近线"，'
+      + '写成 "定义域、渐近线" 一律作废、整题不挂图。'
       + '\n3. params 必须能从题面原样读出、或由题面表达式直接换算（如 y=x²-4x+3 配方得 a=1,h=2,k=-1）。'
       + '不许编造题面没有的数；题面给了几个函数时，只用与题目所问直接相关的那个。'
       + '\n4. 画板只负责"看见关系"，不负责写解题步骤：如果题目问的是化简结果、求参数取值、求面积/长度的具体数值计算、'
@@ -574,7 +587,7 @@
     if (itemId && !o.noCache) {
       const hit = cacheGet(itemId, cacheKey);
       if (hit) {
-        const v = verifyParams(prompt, hit);
+        const v = verifyParams(prompt, hit, { itemId: itemId });
         if (v.ok) return Promise.resolve(Object.assign({ verified: true, from: 'cache' }, hit));
         cacheDrop(itemId, cacheKey);
       }
@@ -600,7 +613,7 @@
         choice.verified = false;
         return choice;
       }
-      const v = verifyParams(prompt, choice);
+      const v = verifyParams(prompt, choice, { itemId: itemId });
       choice.verified = v.ok;
       choice.why = v.why;
       if (v.ok && !o.noCache && itemId) cachePut(itemId, choice, cacheKey);   // 只缓存成功
@@ -655,7 +668,7 @@
     // 但**不写回**正常缓存，也不把 lenient 表喂给正常路径（单向流动，见 CACHE_KEY 注释）。
     if (lenient && inp.itemId && !o.noCache) {
       const hit = cacheGet(inp.itemId, CACHE_KEY);
-      if (hit && verifyParams(prompt, hit).ok) {
+      if (hit && verifyParams(prompt, hit, { itemId: inp.itemId }).ok) {
         const strictCfg = buildCfg(type, cand, hit);
         if (strictCfg) return Promise.resolve(strictCfg);
       }
