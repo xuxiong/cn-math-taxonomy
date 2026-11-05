@@ -1373,3 +1373,76 @@ cnm_h225_q3, cnm_h228_q2, cnm_h229_q1, cnm_h229_q2, cnm_h229_q3`。
   就足以让学生把 `f'(x)=0` 与图上标出的点连起来 —— 这是教学设计问题，不是渲染/解析问题。
 - **(e) 没有真实课堂 / 用户数据。** 本节所有结论都来自脚本、单测与无头浏览器的合成运行，
   没有一节课、一个学生的真实使用记录。
+
+## 14. 学生可见文案里的字面 `**` 清理（t_31414d0d，2026-11-05，分支 `wt/hs-funclab-copy-fix`）
+
+### 14.1 病灶：渲染层是 `textContent`，文案却按 Markdown 写强调
+
+画板下方的说明文案走 `note.textContent = noteText(...)`（`diagnose/funclab.js` 的 mount），
+`textContent` **不解析 Markdown**，所以模板里的 `**…**` 会被原样印成星号，学生读到的就是
+`**你能读出它的横、纵坐标是多少吗？**`。这不是批4 引入的：基点 `d155a60` 上
+`git show d155a60:diagnose/funclab.js | grep -c '你能读出它的横、纵坐标是多少吗？\*\*'` = 1。
+批1 写 `quadratic-vertex / 顶点坐标` 时混进了强调符，之后批1.5/1.6/批2/批3 的新文案各自
+遵守了「零 `**`」铁律，但老模板一直没人回头扫；批4 把 `cnm_h225_q1` / `cnm_h228_q2` 接进白名单后，
+批4 的真浏览器 E2E 把这段字面星号拍进了 `note` 字段，问题才暴露。
+
+### 14.2 范围：34 处非注释 `**`，33 处是学生可见文案
+
+`grep -n '\*\*' diagnose/funclab.js` 在基点 `8475203` 上命中 204 行，绝大多数是 `/** … */` 注释；
+逐条判后只有 34 行落在代码里的字符串（其余 170 行是注释与注释续行）：
+
+| 位置 | 条数 | 是否学生可见 | 处置 |
+| --- | --- | --- | --- |
+| `NOTE_INTENT` 23 块画板的模板（55 条中的 31 条，占 32 行 —— `quadratic-monotonic` / `trig-period` 的模板跨两行拼接） | 32 行 | 是（mount 写进 `.funclab-note`） | 删掉 `**`，措辞零改写 |
+| `noteText()` 多曲线「无交点」兜底分支 | 1 行 | 是（同上） | 同上 |
+| `CAPABILITIES['two-curves-intersect'].paramsDoc` | 1 行 | 否（拼进 `labmatch.js` 的 LLM 提示词） | **保留**（见 §14.5） |
+
+合计删除 **68 对** `**`（有的行一句里两处，如「**下降**…**上升**」），33 行各改一处。
+验证「只删字符、没改字」的办法：把两边的 `**` 全部剥掉再比 ——
+`diff <(git show 8475203:diagnose/funclab.js | sed 's/\*\*//g') <(sed 's/\*\*//g' diagnose/funclab.js)`
+**输出为空**，即 8475203 → 本分支除 `**` 外逐字相同。
+`CAPABILITIES[*].note` 与画布 `fillText` 标注本来就零 `**`（不在 34 行里），无需动。
+
+### 14.3 影响面：34 题台账里 22 题的 note 含星号 → 0 题
+
+用台账逐题走 `labForScene()` → `noteText()`（与 mount 同参数口径）：
+
+| 树 | 生成 noteText | 含 `**` 的题 |
+| --- | --- | --- |
+| 基点 `8475203`（批4 头） | 34/34 | **22** |
+| 本分支 | 34/34 | **0** |
+
+卡面点名的 `顶点坐标` 一条模板对应全库 16 题（批1~批3 的 14 题 + 批4 新增 2 题，卡面口径）；
+按 34 题台账逐题量，其余模板（最值/零点/单调性/奇偶性/区间最值/指对/三角…）也在同一批题上出现，
+所以「所有模板一起清」比只清单点少一次同类返工。
+
+### 14.4 回归：先红后绿 + 全量绿 + 真浏览器
+
+新增 `tests/test_funclab_notes.js`（6 条）把不变量做成机器判据，扫描范围 =
+`NOTE_INTENT` 全部 23 块画板 × 55 条模板、`CAPABILITIES[*].note`、`NOTE_BY_INTENT` 旧兼容视图、
+以及 `noteText()` 对每个 `(画板, canAnswer intent)` 的实际输出（含多曲线无交点兜底分支）：
+
+- **先红**：`git archive 8475203` 干净树 + 新测试 = **1 passed / 5 failed**（首条就撞在
+  `quadratic-vertex / 顶点坐标` 上）；本分支 **6 passed / 0 failed**。
+- **没有既有断言需要改判**：`grep -rn '你能读出它的横、纵坐标' tests/` 在基点树上零命中
+  （只有 `diagnose/funclab.js` 自己那一行），所以本卡不存在「strictEqual 锁死旧文案」要同步；
+  新测试用 `indexOf('你能读出它的横、纵坐标是多少吗？') >= 0` 锁的是**问句形态**，不是整串字面。
+- **全量**：`test_funclab_notes`(6) / `test_funclab`(163) / `test_funclab_curves`(63) /
+  `test_funclab_labels`(22) / `hs_batch1`(28) / `hs_batch16`(22) / `hs_batch2`(54) /
+  `hs_batch3`(35) / `hs_batch4`(32) / `test_labmatch`(59) / `test_engine`(190) 全绿，零失败。
+- **真浏览器**：`b4_e2e.js <worktree> rev` 双视口 390/1280 → 白名单 **34/34 可见**、旧 30 题零回退、
+  4 块画板真渲染（三次 y 轴 1 红点/极值 2 红点）、零 console error、无横向溢出、
+  `h221_q2` 仍挂不上；逐题打印的 `note` / `desc` 字段里 **零 `**`**。
+
+红线核对：`fromPrompt` / `parseCore` / 挂载 / 门禁 / `normalize()` 一行未碰 —— 本节 14.2 的
+「剥掉 `**` 后两边 diff 为空」已经证明整个 `funclab.js` 只少了强调符；`HS_ITEMS` 34、gated ok 34/34、
+误挂 31 三个计数也随白名单/解析/门禁代码同步不变（34/34 由 E2E 台账当场复算，误挂由
+`test_funclab_hs_batch1.js` 的 31 条清单断言复算）。
+
+### 14.5 没做的事
+
+- `paramsDoc` 的 `**对象数组**` 保留：它拼进 `labmatch.js` 的 LLM 提示词（`参数格式:` 那段），
+  模型读 Markdown 强调符是正常的，学生看不到；删它属于动 LLM 提示词，不在本卡范围。
+- 没有给文案加「自动去 Markdown」的渲染层兜底（比如 `note.textContent` 前先 strip `**`）：
+  那会把「模板写错」变成静默可容忍，模板可以继续写星号；本卡选择在模板层清零 + 测试锁死。
+- `diagnose/app.js` / `index.html` 的 `**` 全是注释（grep 逐条看过），不是学生文案。
