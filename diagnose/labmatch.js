@@ -150,14 +150,36 @@
 
   /* ============================================================ 题面 → 规范参数（校验基准，与 LLM 无关） */
 
-  /** 从题面抠出区间端点（「2≤x≤4」「当 2<x<4 时」）；取不到返回 null */
-  function promptInterval(prompt) {
-    const s = String(prompt || '')
+  /* 批1.6（t_e63a9673）：区间解析入口的**全角归一化**。
+   *
+   * ★ 作用范围严格限定在本文件的两个函数里 ★
+   *   normalizeIntervalText 只被 promptInterval 调用、不导出，也不进 Funclab.fromPrompt ——
+   *   曲线解析语义（y=… 怎么读）本批一字未动，这里只服务于「从题面抠区间端点」。
+   *   归一化内容：全角数字 ０-９ → 0-9；数学减号 −(U+2212)/全角连字符 －/长横 – — → -；
+   *   比较号 ≤ ⩽ ＜ → <；全角逗号、顿号、分号、句号 → ,；全角方括号 ［］【】 → []。
+   *   之所以要归一化：题库里区间的写法是 `x∈[−1，2]`（全角逗号 + 数学减号），
+   *   不归一化就抠不出端点，代回校验永远报「区间端点无法校核」（批1.5 登记的 2 条缺口）。
+   */
+  function normalizeIntervalText(prompt) {
+    return String(prompt || '')
       .replace(/\s+/g, '')
-      .replace(/[⩽＜]/g, '<')
-      .replace(/≤/g, '<')
-      .replace(/[，。；、]/g, ',');
-    const m = /(-?\d+(?:\.\d+)?)<x<(-?\d+(?:\.\d+)?)/.exec(s);
+      .replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+      .replace(/[⩽＜≤]/g, '<')
+      .replace(/[−－–—]/g, '-')
+      .replace(/[，、；。]/g, ',')
+      .replace(/[［【]/g, '[')
+      .replace(/[］】]/g, ']');
+  }
+
+  /** 从题面抠出区间端点（「2≤x≤4」「当 2<x<4 时」「x∈[−1，2]」「在 [0，3] 上」）；取不到返回 null
+   *  只认**两端都是有限数**的区间：半开/无界（如 [0,+∞)）返回 null —— 画板的区间阴影画不出来。 */
+  function promptInterval(prompt) {
+    const s = normalizeIntervalText(prompt);
+    /* 形式一优先（历史写法，行为零变化）：不等式链 2<x<4 / 2≤x≤4
+     * 形式二（批1.6 新增）：区间记号 [a,b]，含 x∈[−1，2] / 在 [0，3] 上 这类写法。
+     * 圆括号不认：题库里 (−1，2) 那种是点的坐标，不是区间。 */
+    const m = /(-?\d+(?:\.\d+)?)<x<(-?\d+(?:\.\d+)?)/.exec(s)
+      || /\[(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\]/.exec(s);
     if (!m) return null;
     const a = parseFloat(m[1]), b = parseFloat(m[2]);
     if (!isFinite(a) || !isFinite(b) || !(b > a)) return null;

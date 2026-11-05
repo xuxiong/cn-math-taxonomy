@@ -584,9 +584,27 @@
       note: '标准式 y=a(x-h)²+k。顶点 (h,k)。a>0 开口向上有最小值 k；a<0 开口向下有最大值 k。'
     },
     'quadratic-roots': {
-      canAnswer: ['方程的根', '与x轴交点的横坐标', '零点'],
+      /* 批1.6（t_e63a9673）：补「与 x 轴交点的个数」。画板本来就把交点画成绿色圆点，
+       * 数点就是答案，属于画板事实（批1.5 同口径：答案真能从图上读出来才收）。 */
+      canAnswer: ['方程的根', '与x轴交点的横坐标', '零点', '与 x 轴交点的个数'],
       params: ['a', 'h', 'k'],
-      note: '同上标准式。与 x 轴交点满足 a(x-h)²+k=0，根为 h±√(-k/a)。'
+      note: '同上标准式。与 x 轴交点满足 a(x-h)²+k=0，根为 h±√(-k/a)；交点有几个看判别式的符号。'
+    },
+    /* 批1.6（t_e63a9673）：单调性 / 奇偶性 —— 批1 白名单里 cnm_h032_q4（y=x² 在 [0,+∞) 上
+     * 的单调性）、cnm_h035_q1 / cnm_h036_q4（f(x)=x²+1 的奇偶性）撞的就是这两条缺口：
+     * 画板能画出整条抛物线与对称轴，学生看走向/看对称轴是否与 y 轴重合就能读出来，
+     * 但清单里没有这两个 intent，LLM 严格按清单拒挂。 */
+    'quadratic-monotonic': {
+      canAnswer: ['单调性'],
+      params: ['a', 'h', 'k'],
+      note: '抛物线在对称轴两侧升降相反：a>0 时对称轴左侧下降、右侧上升，a<0 时相反。'
+        + '题面给的区间落在那半边，那半边的走向就是这一段上的单调性。'
+    },
+    'quadratic-parity': {
+      canAnswer: ['奇偶性'],
+      params: ['a', 'h', 'k'],
+      note: '二次函数是不是偶函数看对称轴：对称轴就是 y 轴（x=0）时图象关于 y 轴对称，f(-x)=f(x)，'
+        + '是偶函数；对称轴不在 y 轴上时既不关于 y 轴对称、也不是奇函数。'
     },
     'quadratic-inequality': {
       canAnswer: ['y>0 或 y<0 的 x 范围', 'x 取何值时函数值为正/负'],
@@ -661,6 +679,8 @@
   const CAP_TYPE = {
     'quadratic-vertex': 'quadratic',
     'quadratic-roots': 'quadratic',
+    'quadratic-monotonic': 'quadratic',
+    'quadratic-parity': 'quadratic',
     'quadratic-inequality': 'quadratic',
     'quadratic-range-on-interval': 'quadratic',
     'linear-intercepts': 'linear',
@@ -696,7 +716,24 @@
     'quadratic-roots': {
       '方程的根': '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。**这两个横坐标分别是多少？** 图上只标了点，数值留给你读。拖动 h、k 看交点怎么移动。',
       '与x轴交点的横坐标': '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。**这两个横坐标分别是多少？** 图上只标了点，数值留给你读。拖动 h、k 看交点怎么移动。',
-      '零点': '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。**这两个横坐标分别是多少？** 图上只标了点，数值留给你读。拖动 h、k 看交点怎么移动。'
+      '零点': '抛物线与 x 轴的交点（绿点）的横坐标，就是方程的两个根。**这两个横坐标分别是多少？** 图上只标了点，数值留给你读。拖动 h、k 看交点怎么移动。',
+      /* 批1.6（t_e63a9673）：问的是「个数」，不是横坐标 —— 读数动作就是数绿点。
+       * 注意：文案里不许出现「根」字（非 ROOT_INTENTS 的通用断言），也不许报出个数（那是答案）。 */
+      '与 x 轴交点的个数': '图上的绿色圆点就是抛物线与 x 轴的交点：**数一数有几个绿点**，就是有几个交点。'
+        + '如果整条曲线都在 x 轴上方（或都在下方），一个绿点也没有，那就是没有交点——此时对应的方程无解。'
+        + '拖动 h、k 看交点从两个变成一个、再变成一个都没有。'
+    },
+    /* 批1.6（t_e63a9673）：单调性 / 奇偶性 —— 与批1.5 反比例定义域同口径，
+     * 讲的是「从图上怎么读」，不报派生值，也不出现别的图的专属名词。 */
+    'quadratic-monotonic': {
+      '单调性': 'a = {a}：a > 0 时抛物线开口向上——对称轴左侧曲线从左往右**下降**，右侧从左往右**上升**；a < 0 时正好反过来。'
+        + '图上灰色虚线是它的对称轴，蓝色实线是这条曲线：**题面给的那段曲线落在对称轴哪一侧？从左往右是往上走还是往下走？** '
+        + '由此读出这一段是增函数还是减函数。'
+    },
+    'quadratic-parity': {
+      '奇偶性': '是不是偶函数，就看图象关不关于 y 轴对称。图上紫色虚线是这条抛物线的对称轴，黑色竖线是 y 轴：'
+        + '**两条线重合吗？** 重合（对称轴就是 y 轴）时，左右两半沿 y 轴对折能完全重合，f(-x) = f(x)，是偶函数；'
+        + '不重合就不关于 y 轴对称，也就不是偶函数（二次函数不可能是奇函数）。拖动 h 看对称轴离开 y 轴时图象怎么变。'
     },
     'quadratic-inequality': {
       'y>0 或 y<0 的 x 范围': '看曲线在 x 轴上方/下方的部分：绿点是分界点，曲线在上方的那一段，对应的 x 就是 y>0 的范围。**两个分界点的横坐标是多少？** 图上只标了点，数值留给你读。',
@@ -1328,13 +1365,28 @@
 
     if (type === 'quadratic') {
       const vertIntent = it === '顶点坐标' || it === '最小值' || it === '最大值' || it === '对称轴' || it === '开口方向';
+      /* 批1.6：奇偶性题要「对称轴 vs y 轴」的对比，所以对称轴改画紫色虚线、并把 y 轴加深加粗
+       *（annotate 里同一套画法），describe 也要跟着说准颜色 —— 描述与绘制必须一致。 */
+      const parityIntent = it === '奇偶性';
       elements.push({
         kind: 'sym-axis',
         text: it === '对称轴'
           ? '深色粗实线：对称轴，轴旁标「' + axisText(p, false) + '」（数值留白）'
-          : '灰色竖直虚线：抛物线的对称轴，位置已画出（数值留白）',
-        style: it === '对称轴' ? '深色粗实线' : '灰色竖直虚线'
+          : parityIntent
+            ? '紫色虚线：抛物线的对称轴；黑色粗竖线是 y 轴（x = 0）——两条线重合当且仅当图象关于 y 轴对称'
+            : '灰色竖直虚线：抛物线的对称轴，位置已画出（数值留白）',
+        style: it === '对称轴' ? '深色粗实线' : parityIntent ? '紫色虚线' : '灰色竖直虚线'
       });
+      if (parityIntent) {
+        elements.push({ kind: 'y-axis-emphasis', text: '黑色粗竖线：y 轴（x = 0），奇偶性的对称性以它为折痕', style: '黑色粗实线' });
+      }
+      if (it === '单调性') {
+        elements.push({
+          kind: 'trend',
+          text: '蓝色实线：曲线在对称轴两侧的升降方向相反——a > 0 时左侧从左往右下降、右侧上升，a < 0 时相反',
+          style: '蓝色实线'
+        });
+      }
       elements.push({
         kind: 'vertex',
         text: '红色圆点：顶点位置，旁边标「' + vertexText(p, false) + '」' + (vertIntent ? '（大号红点与十字准线高亮）' : ''),
@@ -1370,7 +1422,13 @@
             text: '绿色圆点：抛物线与 x 轴的两个交点，每个旁边标「' + rootText(0, false) + '」',
             style: '绿色圆点'
           });
+        } else if (it === '与x轴交点的个数') {
+          /* 根算得出来但都落在画布外：图上确实没有绿点，描述不许说「有两个」 */
+          elements.push({ kind: 'root', text: '图上没有绿色圆点：交点落在当前视野之外', style: '（无圆点）' });
         }
+      } else if (it === '与x轴交点的个数') {
+        /* 批1.6：「个数」题在 disc<0 时图上真的一个绿点都没有 —— 这本身就是可读的答案（0 个） */
+        elements.push({ kind: 'root', text: '图上没有绿色圆点：曲线整条都在 x 轴上方（或下方），与 x 轴没有交点', style: '（无圆点）' });
       }
       if (intervalIntentOf(lab, it) && p.xMin != null && p.xMax != null && isFinite(p.xMin) && isFinite(p.xMax) && p.xMax > p.xMin) {
         elements.push({ kind: 'interval-band', text: '橙色半透明阴影：' + fmt(p.xMin) + ' ≤ x ≤ ' + fmt(p.xMax) + ' 区间（题面已知端点）', style: '橙色阴影' });
@@ -1608,6 +1666,13 @@
           if (!(disc >= 0) || disc === 0) return [];          // 无实根/重根：不是「两个根」的题
           const rt = Math.sqrt(disc);
           return [res('两个根（用、隔开）', 'pair', [p.h - rt, p.h + rt].sort(function (x, y) { return x - y; }), 'x')];
+        }
+        /* 批1.6：「与 x 轴交点的个数」的答案就是一个计数（0 / 1 / 2），
+         * 与图上绿点个数一一对应；disc 为负时答案是 0，也必须给输入行（学生要能填 0）。 */
+        case '与x轴交点的个数': {
+          const disc = -p.k / p.a;
+          const cnt = disc > 0 ? 2 : (disc === 0 ? 1 : 0);
+          return [res('与 x 轴交点的个数', 'scalar', [cnt])];
         }
         case '在给定区间上的最大值': {
           const iv = intervalOf(p);
@@ -2501,10 +2566,25 @@
       if (type === 'quadratic') {
         // 对称轴虚线：一直都在（它是抛物线的固有结构），讲「对称轴」时改成粗实线强调
         const axisIntent = intent === '对称轴';
+        /* 批1.6：讲奇偶性时，对称轴与 y 轴是**要对比的两条线** ——
+         * y 轴加深加粗当折痕、对称轴改紫色虚线，重合与否一眼可辨（与 paintModel 的描述逐字对应）。 */
+        const parityIntent = intent === '奇偶性';
+        if (parityIntent) {
+          ctx.save();
+          ctx.strokeStyle = '#111';
+          ctx.lineWidth = 2.2;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          const X0 = sx({ x: 0 }, w);
+          if (X0 >= 0 && X0 <= w.w) { ctx.moveTo(X0, 0); ctx.lineTo(X0, w.hp); }
+          ctx.stroke();
+          ctx.restore();
+        }
         {
           ctx.save();
-          ctx.strokeStyle = axisIntent ? 'rgba(52,73,94,.85)' : 'rgba(120,120,120,.55)';
-          ctx.lineWidth = axisIntent ? 1.8 : 1;
+          ctx.strokeStyle = parityIntent ? 'rgba(142,68,173,.95)'
+            : axisIntent ? 'rgba(52,73,94,.85)' : 'rgba(120,120,120,.55)';
+          ctx.lineWidth = (axisIntent || parityIntent) ? 1.8 : 1;
           ctx.setLineDash(axisIntent ? [] : [5, 4]);
           ctx.beginPath();
           const HX = sx({ x: p.h }, w);
@@ -2818,6 +2898,10 @@
             axis: type === 'quadratic' && (intent === '对称轴' || intent === '顶点坐标' || intent === '开口方向'),
             interval: type === 'quadratic' && intervalIntent() && p.xMin != null && p.xMax != null,
             roots: type === 'quadratic' && rootsIntent(),
+            /* 批1.6：交点个数 / 单调性 / 奇偶性 各自的画板高亮，供 E2E 与排查逐条核对 */
+            rootCount: type === 'quadratic' && intent === '与 x 轴交点的个数',
+            monotonic: type === 'quadratic' && intent === '单调性',
+            parity: type === 'quadratic' && intent === '奇偶性',
             /* 一次函数：标出的两个截距 / 反比例：标出象限说明 */
             intercepts: type === 'linear',
             quadrants: type === 'inverse'
