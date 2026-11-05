@@ -261,7 +261,16 @@
   /* ---------------- T3.5 追问（讲解中提问，AI 老师单轮答疑） ---------------- */
   const STEP_LABEL = { prompt: '第 1 步 引导', hint: '第 2 步 提示', reveal: '第 3 步 解析' };
 
+  /* 把画板说明压成一行并截到 60 字：清单是给模型看的索引，太长会挤掉真正的答题规则。
+   * 截断处留「…」是为了让模型知道还有下文，不会把半句话当成完整约束。 */
+  function clipNote(text) {
+    const s = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+    return s.length > 60 ? s.slice(0, 60) + '…' : s;
+  }
+
   /* 画板能力清单：运行时从 Funclab.CAPABILITIES 生成（禁止在 prompt 里另抄一份）。
+   * note 同样只从 Funclab 取 —— 画板说明改了，追问 prompt 自动跟着改，
+   * 不会出现两份互相矛盾的能力描述。没有 note 就不加「适用：」段。
    * Funclab 未加载 / 能力清单为空时返回空串，由调用方降级为「无可用画板 → graph 填 null」。 */
   function capabilityListText() {
     const F = global.Funclab;
@@ -271,7 +280,9 @@
       const type = (F.CAP_TYPE && F.CAP_TYPE[name]) || cap.type || '';
       const can = (cap.canAnswer || []).join(' / ');
       const params = (cap.params || []).join(',');
-      return '- ' + name + '（type=' + type + '）：能回答 ' + can + '；参数 ' + params;
+      const note = clipNote(cap.note);
+      return '- ' + name + '（type=' + type + '）：能回答 ' + can + '；参数 ' + params
+        + (note ? '；适用：' + note : '');
     }).join('\n');
   }
 
@@ -291,24 +302,54 @@
       + '6) 不要写任何反斜杠命令（如 \sqrt、\frac 都不要用），根号用 √（如 2±√5）、分数用斜杠（如 1/2）。'
       + '7) 回答时如果涉及图，必须以「画板」这段描述为准。描述里说图上有什么，你才能说有；描述里没提到的元素，不要说它存在或不存在。图上是虚线还是实线、有没有箭头，一律照描述说。'
       + '8) 画板上刻意留白的量（描述里标为「留白」或「?」）不许你直接说出数值——哪怕前面「标准解析」「讲解进度」里已经写了这个数，学生问起来也只能引导他去看图、自己算，不许代他读出。'
-      + '9) graph.params 必须是学生这次问的那个函数的真实系数，不许为了「凑一个能画的参数」改动函数本身。'
-      + '10) 你自己指定要画的新图，它的顶点坐标、最大值/最小值同样不许在 text 里说出具体数值——和题面画板同一条纪律；学生问「x 是多少」，引导他去看图上的落点或自己算，不代他读出。也不要用「a=…、h=…、k=…」这种列出顶点式系数的方式把数值报出来（h 就是顶点横坐标、k 就是最值）；函数本身照学生问的原样写即可。'
+      + '9) graph.params 必须是本题这个函数的真实系数：函数本身（type 里的 fn）不许换，只允许改参数值；不许为了「凑一个能画的参数」把函数改掉。'
+      + '10) 你画的图（如果画），它的顶点坐标、最大值/最小值同样不许在 text 里说出具体数值——和题面画板同一条纪律；学生问「x 是多少」，引导他去看图上的落点或自己算，不代他读出。也不要用「a=…、h=…、k=…」这种列出顶点式系数的方式把数值报出来（h 就是顶点横坐标、k 就是最值）；函数本身照学生问的原样写即可。'
       + '11) lab 只能从下面给定的能力清单里选；清单里没有合适的就填 null，不许自创。\n' + capBlock + '\n'
-      + '12) user 消息里的「画板：」段落（ui.labDesc）是题面画板的描述，和这次追问要画的新图不是一回事；学生问的是题面之外的函数时，照样要给 graph，不要因为「题面画板已经画了」就不给。';
+      + '12) user 消息里的「画板：」是本题画板的描述；你要画的图只能是本题这个函数，只允许改参数值。学生要换函数时，用文字讲清为什么不能换，并说明换过去会怎样，不许给 graph。';
   }
 
-  function askUserPrompt(topic, q, userAnswer, steps, question, labDesc) {
+  /* 历史条目的单元格截到 200 字：一条长解析能把 token 预算吃满，
+   * 而当前问题通常只依赖上一两轮的结论，不需要原文全量。 */
+  function clipHistoryText(text) {
+    const s = String(text == null ? '' : text).trim();
+    return s.length > 200 ? s.slice(0, 200) + '…' : s;
+  }
+
+  /* 最近 2 轮问答的 prompt 段落。只回看 2 轮：更早的对话对当前追问基本没用，
+   * 反而会把普通追问的上下文挤掉。没正文 / 还在 pending 的轮次不参与 ——
+   * 那些是学生刚发出、老师还没答的占位，拼进去会让模型把问题当成已有答案。 */
+  function askHistoryText(history) {
+    if (!history || !history.length) return '';
+    const rounds = [];
+    for (let i = 0; i < history.length; i++) {
+      const e = history[i];
+      if (!e || e.pending) continue;
+      const qs = typeof e.q === 'string' ? e.q : '';
+      const as = typeof e.a === 'string' ? e.a : '';
+      if (!as.trim()) continue;
+      rounds.push({ q: qs, a: as });
+    }
+    const tail = rounds.slice(-2);
+    if (!tail.length) return '';
+    return '历史问答（最近 2 轮）：\n' + tail.map(function (r) {
+      return '学生：' + clipHistoryText(r.q) + '\n老师：' + clipHistoryText(r.a);
+    }).join('\n---\n');
+  }
+
+  function askUserPrompt(topic, q, userAnswer, steps, question, labDesc, history) {
     const typeLabel = ({ choice: '选择题', numeric: '填数字', short: '简答' })[q.type] || '题';
     const topicName = (topic && topic.name) || '';
     const stepsText = (steps || []).map(function (s) {
       return '  [' + (STEP_LABEL[s.kind] || s.kind) + '] ' + s.text;
     }).join('\n');
+    const hist = askHistoryText(history);
     return '题目（' + typeLabel + '）：' + q.prompt
       + '\n知识点：' + topicName
       + (labDesc ? '\n画板：' + labDesc : '')
       + '\n学生答案：' + (userAnswer === '' ? '（没填）' : userAnswer)
       + (q.explanation ? '\n标准解析（参考，不要照抄）：' + q.explanation : '')
       + '\n当前讲解进度（学生已看到的引导）：\n' + (stepsText || '（无）')
+      + (hist ? '\n\n' + hist : '')
       + '\n\n学生的问题：' + question;
   }
 
@@ -324,14 +365,14 @@
     });
   }
 
-  function llmAsk(topic, q, userAnswer, steps, question, labDesc) {
+  function llmAsk(topic, q, userAnswer, steps, question, labDesc, history) {
     /* 配置没加载就按离线处理：不把 null 传给 fetch（那会变成 TypeError） */
     if (!CFG) return Promise.reject(new Error('LLMConfig 未加载（llm-config.js 没引入）'));
     const body = {
       model: MODEL,
       messages: [
         { role: 'system', content: askSystemPrompt() },
-        { role: 'user', content: askUserPrompt(topic, q, userAnswer, steps, question, labDesc) }
+        { role: 'user', content: askUserPrompt(topic, q, userAnswer, steps, question, labDesc, history) }
       ],
       max_tokens: FOLLOWUP_MAX_TOKENS,
       temperature: 0.5,
@@ -374,8 +415,8 @@
    *   offline—— 网关不可用，text/graph 均为 null（UI 显示引导语）
    *  失败时文案按 reason 区分（noticeFor），并补一条与 generate() 同款的 console.warn 日志 ——
    *  追问路径以前零日志，出问题查不出原因。日志只放 reason/状态码/文案，不打 body 全文 / Authorization。 */
-  function ask(topic, q, userAnswer, steps, question, labDesc) {
-    return llmAsk(topic, q, userAnswer, steps, question, labDesc)
+  function ask(topic, q, userAnswer, steps, question, labDesc, history) {
+    return llmAsk(topic, q, userAnswer, steps, question, labDesc, history)
       .then(function (res) { return { text: res.text, graph: res.graph, from: 'llm' }; })
       .catch(function (err) {
         const f = failInfo(err);   // reason/httpStatus/degraded/detail 带出来
@@ -471,6 +512,8 @@
     /* 内部 prompt（t_85395e07 起可带 labDesc）；导出供测试直接断言画板段落 */
     _userPrompt: userPrompt,
     _askUserPrompt: askUserPrompt,
+    /* 历史段落单独导出：测试可以只断言「哪些轮次/怎么截断」，不必经过整个 prompt */
+    _askHistoryText: askHistoryText,
     _systemPrompt: systemPrompt,
     _askSystemPrompt: askSystemPrompt,
     /* 追问离线气泡文案选择函数（t_6df579b6）：导出供纯函数级测试断言各 reason 文案两两不同 */

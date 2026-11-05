@@ -969,6 +969,38 @@ function explainPanel(item) {
     return box;
   }
 
+/* 追问的最近 2 轮问答（只取有正文、不在 pending 的），供 LLM 上下文。
+ * 为什么不直接传整个 askHistory：历史里可能有半截的 pending 轮、离线兜底轮，
+ * 那些不是「问过且答过」的内容，塞进 prompt 只会让模型把没答上的话当成事实。 */
+function askHistoryForPrompt() {
+  const out = [];
+  const list = S.ui.askHistory || [];
+  for (let i = 0; i < list.length; i++) {
+    const e = list[i];
+    if (!e || e.pending) continue;
+    const qs = typeof e.q === 'string' ? e.q.trim() : '';
+    const as = typeof e.a === 'string' ? e.a.trim() : '';
+    if (!qs || !as) continue;
+    out.push({ q: qs, a: as });
+  }
+  return out.slice(-2);
+}
+
+/* 「这次没配图」的确定性陈述：文案只从 ChatGraph.absentNotice 取，
+ * 公式由 Funclab.formatFormula 渲染 —— app-flow 里不许手写公式，也不许掺模型文字，
+ * 否则模型胡讲一个函数，这句陈述反而成了它的背书。 */
+function askGraphNotice(labCfg) {
+  /* ChatGraph 未到货就先按需加载（LAZY_LAB 含 chatgraph.js）；本次先用固定一句，
+   * 到货后下一次渲染自然会补上真实公式，不为了等它把追问区卡住。 */
+  if (!window.ChatGraph && !S.lazyFailed.chat) Lazy.load(LAZY_LAB).then(null, lazyFail('chat'));
+  try {
+    if (window.ChatGraph && typeof window.ChatGraph.absentNotice === 'function') {
+      return window.ChatGraph.absentNotice(labCfg);
+    }
+  } catch (err) { /* ChatGraph 内部异常也不能拖垮追问区，降级为固定一句 */ }
+  return '本次回答没有配图。';
+}
+
 function askBox(item, steps) {
     const q = item.question;
     const t = S.D.graph.byId[item.topicId];
@@ -998,6 +1030,11 @@ function askBox(item, steps) {
       const rowEl = h('div', { class: 'ask-item' },
         h('div', { class: 'ask-q' }, '你：' + entry.q),
         answerEl);
+      /* 模型给了 graph:null，或给了图但被身份校验拒：补一句确定性陈述，说清「这次没配图」。
+       * 只对 llm 气泡生效 —— offline 气泡已有自己的 notice，再补一句会变成两种口径。 */
+      if (entry.from === 'llm' && !entry.graph) {
+        rowEl.append(h('div', { class: 'ask-graph-notice muted', id: 'ask-graph-notice-' + idx }, askGraphNotice(S.ui.labCfg)));
+      }
       const g = entry.graph;
       /* 画板库懒加载：气泡里的图要 Funclab；没到货先触发加载（Lazy.load 去重），
        * 加载完后重新渲染补图。没图的非 graph 气泡不触发加载，不影响文字回答。 */
@@ -1036,15 +1073,21 @@ function askBox(item, steps) {
       if (!window.ChatGraph && !S.lazyFailed.chat) {
         Lazy.load(LAZY_LAB).then(null, lazyFail('chat'));
       }
-      window.Explain.ask(t, q, S.ui.answer, steps, text, S.ui.labDesc).then(function (res) {
+      window.Explain.ask(t, q, S.ui.answer, steps, text, S.ui.labDesc, askHistoryForPrompt()).then(function (res) {
         if (tick !== explainTick || !S.ui || S.ui.phase !== 'explain') return;
+        /* 身份基线（本题画板配置）一并交给校验层：模型只能改参数，不能换函数。
+         * 校验不过/异常一律当没有图，不提示「画图失败」；reason 只留作复核证据，不显示给学生。 */
         let graph = null;
+        let graphRejected = null;
         try {
-          const v = window.ChatGraph ? window.ChatGraph.verifyChatGraph(res.graph) : { ok: false };
-          graph = v && v.ok ? v : null;   // 校验不过/异常一律当没有图，不提示「画图失败」
-        } catch (err) { graph = null; }
+          const v = window.ChatGraph
+            ? window.ChatGraph.verifyChatGraph(res.graph, S.ui.labCfg)
+            : { ok: false, reason: 'no-chatgraph' };
+          graph = v && v.ok ? v : null;
+          graphRejected = graph ? null : ((v && v.reason) || 'rejected');
+        } catch (err) { graph = null; graphRejected = 'threw'; }
         const entries2 = (S.ui.askHistory || []).slice();
-        entries2[idx] = { q: text, a: res.text, from: res.from, graph: graph, reason: res.reason, notice: res.notice };
+        entries2[idx] = { q: text, a: res.text, from: res.from, graph: graph, reason: res.reason, notice: res.notice, graphRejected: graphRejected };
         S.ui.askHistory = entries2;
         S.ui.askPending = false;
         S.ui.askScroll = true;   // 刚答完：本次渲染后滚到这条问答，否则答案落在折叠线以下看不见
