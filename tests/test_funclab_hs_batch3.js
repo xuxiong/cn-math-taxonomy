@@ -13,6 +13,9 @@
  */
 'use strict';
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const cp = require('child_process');
 
 let passed = 0;
 let failed = 0;
@@ -241,6 +244,355 @@ test('cnm_h221_q2 解析得出、被门禁挡下（不是解析不出）', funct
   const why = GATE.misfitOf(item, p);
   assert.ok(why, 'h221_q2 必须被门禁挡下');
   assert.ok(String(why).indexOf('∉') >= 0, '挡下原因应是「答案不属于画板标注」，实际：' + why);
+});
+
+/* ================================================================
+ * 1. 白名单：HS_ITEMS 恰好 30 条，旧 23 条逐字不动
+ * ================================================================ */
+
+console.log('\n--- 1. 白名单 30 条 ---');
+
+/* 批3 之前的 23 条（批1/1.5/1.6 的 14 + 批2 三角 9），逐条 deepStrictEqual 锁死。 */
+const OLD23 = {
+  'cnm_h023_q4': 'quadratic',
+  'cnm_h029_q2': 'quadratic',
+  'cnm_h032_q4': 'quadratic',
+  'cnm_h034_q2': 'quadratic',
+  'cnm_h034_q3': 'quadratic',
+  'cnm_h035_q1': 'quadratic',
+  'cnm_h036_q4': 'quadratic',
+  'cnm_h049_q1': 'quadratic',
+  'cnm_h226_q1': 'quadratic',
+  'cnm_h227_q2': 'quadratic',
+  'cnm_h032_q1': 'linear',
+  'cnm_h032_q2': 'linear',
+  'cnm_h049_q2': 'linear',
+  'cnm_h028_q3': 'inverse',
+  'cnm_h066_q1': 'trig',
+  'cnm_h066_q2': 'trig',
+  'cnm_h066_q3': 'trig',
+  'cnm_h066_q4': 'trig',
+  'cnm_h067_q1': 'trig',
+  'cnm_h067_q4': 'trig',
+  'cnm_h068_q4': 'trig',
+  'cnm_h075_q1': 'trig',
+  'cnm_h075_q2': 'trig'
+};
+
+test('HS_ITEMS 恰好 30 条：旧 23 条逐条键值不动 + 新增 7 条 exp/log', function () {
+  const ids = Object.keys(F.HS_ITEMS).sort();
+  assert.strictEqual(ids.length, 30, 'HS_ITEMS 应为 30 条（23 + 7），实际 ' + ids.length);
+  Object.keys(OLD23).forEach(function (id) {
+    assert.strictEqual(F.HS_ITEMS[id], OLD23[id], id + ' 的类型被改动（旧 23 条必须逐字不动）');
+  });
+  const NEW7 = {
+    'cnm_h029_q4': 'exp', 'cnm_h042_q1': 'exp', 'cnm_h042_q2': 'exp',
+    'cnm_h046_q2': 'log', 'cnm_h046_q4': 'log',
+    'cnm_h047_q1': 'log', 'cnm_h047_q2': 'log'
+  };
+  Object.keys(NEW7).forEach(function (id) {
+    assert.strictEqual(F.HS_ITEMS[id], NEW7[id], id + ' 应以 ' + NEW7[id] + ' 进白名单');
+  });
+  assert.deepStrictEqual(ids, Object.keys(OLD23).concat(Object.keys(NEW7)).sort(),
+    'HS_ITEMS 键集合应与「旧 23 + 新 7」完全一致');
+});
+
+/* ================================================================
+ * 2. 7 题逐题过「白名单 + intent + 代回」三道闸
+ * ================================================================ */
+
+console.log('\n--- 2. 7 题三道闸 ---');
+
+const LEDGER_LAB = {
+  'cnm_h029_q4': ['exp-curve', '值域'],
+  'cnm_h042_q1': ['exp-curve', '单调性'],
+  'cnm_h042_q2': ['exp-curve', '单调性'],
+  'cnm_h046_q2': ['log-curve', '定义域'],
+  'cnm_h046_q4': ['log-curve', '图象经过的定点'],
+  'cnm_h047_q1': ['log-curve', '单调性'],
+  'cnm_h047_q2': ['log-curve', '单调性']
+};
+
+test('7 题逐题过「白名单 + intent + 代回」三道闸', function () {
+  const L = require('../diagnose/labmatch.js');
+  const bad = [];
+  LEDGER.forEach(function (c) {
+    const item = q(c.id);
+    const pair = LEDGER_LAB[c.id];
+    const scene = F.labForScene(item.topicId, item.prompt, { itemId: c.id });
+    if (!scene) { bad.push(c.id + ' labForScene=null'); return; }
+    if (F.HS_ITEMS[c.id] !== c.type) bad.push(c.id + ' HS_ITEMS 类型=' + F.HS_ITEMS[c.id]);
+    if (!F.intentSupported(pair[0], pair[1])) { bad.push(c.id + ' intent 不支持'); return; }
+    const params = Object.assign({}, scene);
+    delete params.type;
+    const v = L.verifyParams(item.prompt, { match: pair[0], intent: pair[1], params: params }, { itemId: c.id });
+    if (!v.ok) bad.push(c.id + ' 代回不过：' + v.why.join('; '));
+    if (!F.noteText(pair[0], pair[1], params)) bad.push(c.id + ' 没有文案');
+  });
+  assert.deepStrictEqual(bad, [], bad.join(' / '));
+});
+
+/* ================================================================
+ * 3. fail-closed：7 题不带 itemId 一律不挂
+ * ================================================================ */
+
+console.log('\n--- 3. fail-closed ---');
+
+test('7 题不带 itemId 时 labFor / labForScene 都不挂', function () {
+  LEDGER.forEach(function (c) {
+    const item = q(c.id);
+    assert.strictEqual(F.labFor(item.topicId, item.prompt), null, c.id + ' labFor 无 itemId 不应挂');
+    assert.strictEqual(F.labForScene(item.topicId, item.prompt), null, c.id + ' labForScene 无 itemId 不应挂');
+  });
+});
+
+/* ================================================================
+ * 4. 高中全量挂载恰好 33 题
+ * ================================================================ */
+
+console.log('\n--- 4. 高中全量挂载 ---');
+
+test('高中（cnm_h*）全量挂载恰好 33 题（30 白名单 + cnm_h172 三题）', function () {
+  const hs = QUESTIONS.filter(function (x) { return /^cnm_h/.test(x.id); });
+  const mounted = hs.filter(function (x) {
+    return !!F.labForScene(x.topicId, x.prompt, { itemId: x.id });
+  }).map(function (x) { return x.id; }).sort();
+  const want = Object.keys(OLD23).concat(Object.keys(LEDGER_LAB))
+    .concat(['cnm_h172_q1', 'cnm_h172_q2', 'cnm_h172_q3']).sort();
+  assert.deepStrictEqual(mounted, want, '高中挂载清单与预期不符（多：' +
+    mounted.filter(function (id) { return want.indexOf(id) < 0; }).join(',') + '；少：' +
+    want.filter(function (id) { return mounted.indexOf(id) < 0; }).join(',') + '）');
+});
+
+/* ================================================================
+ * 8. 三个画板注册齐全 + TYPE_DEF 滑块键序
+ * ================================================================ */
+
+console.log('\n--- 8. 画板注册 / TYPE_DEF ---');
+
+const REG = {
+  'exp-curve': {
+    type: 'exp', canAnswer: ['值域', '单调性'],
+    params: ['a', 'base', 'w', 'phi', 'k'], sliders: ['a', 'base', 'k'],
+    defaults: { a: 1, base: 2, w: 1, phi: 0, k: 0 }
+  },
+  'log-curve': {
+    type: 'log', canAnswer: ['定义域', '单调性', '图象经过的定点'],
+    params: ['c', 'base', 'shift', 'd'], sliders: ['c', 'base', 'd'],
+    defaults: { c: 1, base: 2, shift: 0, d: 0 }
+  },
+  'power-curve': {
+    type: 'power', canAnswer: ['定义域', '单调性', '图象经过的定点', '值域'],
+    params: ['a', 'p', 'root', 'k'], sliders: ['a'],
+    defaults: { a: 1, p: 4, k: 0 }
+  }
+};
+
+test('CAP_TYPE / canAnswer / params / intentSupported / capabilitiesFor 三画板齐全', function () {
+  Object.keys(REG).forEach(function (lab) {
+    const want = REG[lab];
+    assert.strictEqual(F.CAP_TYPE[lab], want.type, lab + ' CAP_TYPE 不对');
+    assert.deepStrictEqual(F.CAPABILITIES[lab].canAnswer, want.canAnswer, lab + ' canAnswer 应逐字一致');
+    assert.deepStrictEqual(F.CAPABILITIES[lab].params, want.params, lab + ' params 应逐字一致');
+    want.canAnswer.forEach(function (it) {
+      assert.ok(F.intentSupported(lab, it), lab + '/' + it + ' 应受支持');
+      assert.ok(F.noteTemplate(lab, it), lab + '/' + it + ' 应有文案模板');
+    });
+    assert.deepStrictEqual(Object.keys(F.capabilitiesFor(want.type)), [lab],
+      'capabilitiesFor(' + want.type + ') 应恰好只有 ' + lab);
+  });
+});
+
+test('TYPE_DEF 三族滑块键序与默认值', function () {
+  Object.keys(REG).forEach(function (lab) {
+    const type = REG[lab].type;
+    const def = F.TYPE_DEF[type];
+    assert.ok(def, 'TYPE_DEF.' + type + ' 必须存在');
+    assert.deepStrictEqual(def.sliders.map(function (s) { return s.key; }), REG[lab].sliders,
+      type + ' 滑块键序不对');
+    Object.keys(REG[lab].defaults).forEach(function (k) {
+      assert.strictEqual(def.defaults[k], REG[lab].defaults[k], type + ' 默认值 ' + k + ' 不对');
+    });
+  });
+});
+
+/* ================================================================
+ * 9. 文案铁律：无派生结论 / 无 Markdown / 线型词与 paintModel 同源
+ * ================================================================ */
+
+console.log('\n--- 9. 文案铁律 ---');
+
+const SAMPLE = {
+  'exp-curve': { a: 1, base: 2, w: 1, phi: 0, k: 0 },
+  'log-curve': { c: 1, base: 2, shift: 0, d: 0 },
+  'power-curve': { a: 1, root: { b: 1, c: 0 }, k: 0 }
+};
+const STYLE_WORDS = ['灰色水平虚线', '灰色竖直虚线', '蓝色实线', '红色圆点', '浅色底纹'];
+
+test('三族全部 (lab, intent) 文案非空、无占位符残留、无派生结论/坐标', function () {
+  Object.keys(REG).forEach(function (lab) {
+    const p = SAMPLE[lab];
+    REG[lab].canAnswer.forEach(function (it) {
+      const s = F.noteText(lab, it, p);
+      assert.ok(s && s.length > 0, lab + '/' + it + ' 文案非空');
+      assert.strictEqual(/\{\w+\}/.test(s), false, lab + '/' + it + ' 有占位符残留：' + s);
+      assert.strictEqual(/undefined|NaN/.test(s), false, lab + '/' + it + ' 有 undefined/NaN：' + s);
+      assert.strictEqual(/\*\*/.test(s), false, lab + '/' + it + ' 不许出现 Markdown 强调符：' + s);
+      if (it === '值域') assert.strictEqual(/全体正实数|y\s*>\s*0|大于\s*0/.test(s), false, lab + '/' + it + ' 泄了值域结论：' + s);
+      if (it === '定义域') assert.strictEqual(/x\s*>\s*0|全体正实数/.test(s), false, lab + '/' + it + ' 泄了定义域结论：' + s);
+      if (it === '单调性') assert.strictEqual(/是(增|减)函数|单调递增|单调递减/.test(s), false, lab + '/' + it + ' 泄了增减结论：' + s);
+      if (it === '图象经过的定点') assert.strictEqual(/\(\s*-?\d+(\.\d+)?\s*[,，]\s*-?\d+/.test(s), false, lab + '/' + it + ' 泄了坐标：' + s);
+    });
+  });
+});
+
+test('文案里的线型/颜色词与 paintModel 描述逐字一致（防漂移）', function () {
+  Object.keys(REG).forEach(function (lab) {
+    const p = SAMPLE[lab];
+    REG[lab].canAnswer.forEach(function (it) {
+      const s = F.noteText(lab, it, p);
+      const d = F.describe(lab, it, p);
+      assert.ok(d, lab + '/' + it + ' describe 非空');
+      STYLE_WORDS.forEach(function (w) {
+        if (s.indexOf(w) >= 0) {
+          assert.ok(d.indexOf(w) >= 0, lab + '/' + it + ' 文案说「' + w + '」，但 paintModel 描述里没有：' + d);
+        }
+      });
+    });
+  });
+});
+
+/* ================================================================
+ * 10. paintModel 三族元素清单
+ * ================================================================ */
+
+console.log('\n--- 10. paintModel 元素清单 ---');
+
+function modelText(lab, it, p) {
+  const m = F.paintModel(lab, it, p);
+  assert.ok(m && m.elements, lab + '/' + it + ' paintModel 非空');
+  return m.elements.map(function (e) { return e.kind + '|' + e.text + '|' + (e.style || ''); }).join('\n');
+}
+
+test('exp：渐近线 + x=0/x=1 红点', function () {
+  const t = modelText('exp-curve', '值域', SAMPLE['exp-curve']);
+  assert.ok(/asymptote\|.*灰色水平虚线.*渐近线/.test(t), 'exp 应列灰色水平虚线渐近线：\n' + t);
+  assert.ok(/sample-points\|.*x=0 与 x=1.*红色圆点/.test(t), 'exp 应列 x=0/x=1 红点：\n' + t);
+});
+
+test('log：定义域底纹 + 灰色竖直虚线 + 定点红点', function () {
+  const t = modelText('log-curve', '定义域', SAMPLE['log-curve']);
+  assert.ok(/domain-band\|.*浅色底纹.*定义域/.test(t), 'log 应列定义域底纹：\n' + t);
+  assert.ok(/asymptote\|.*灰色竖直虚线.*渐近线/.test(t), 'log 应列灰色竖直虚线渐近线：\n' + t);
+  assert.ok(/fixed-point\|.*红色圆点.*定点/.test(t), 'log 应列定点红点：\n' + t);
+});
+
+test('power：根式定义域边界 / p<0 两条渐近线 / p>0 两个参考点', function () {
+  const root = modelText('power-curve', '定义域', { a: 1, root: { b: 1, c: -1 }, k: 0 });
+  assert.ok(/domain-boundary\|.*定义域边界.*灰色竖直虚线/.test(root), '根式应列定义域边界：\n' + root);
+  assert.ok(/fixed-point\|.*红色圆点/.test(root), '根式应列起点红点：\n' + root);
+  const neg = modelText('power-curve', '值域', { a: 1, p: -1 });
+  assert.ok(/asymptote\|.*x=0.*y=0.*渐近线/.test(neg), 'p<0 应列 x=0 / y=0 渐近线：\n' + neg);
+  const pos = modelText('power-curve', '图象经过的定点', { a: 1, p: 4 });
+  assert.ok(/fixed-point\|.*\(0,0\).*\(1,1\)/.test(pos), 'p>0 应列 (0,0)/(1,1)：\n' + pos);
+});
+
+/* ================================================================
+ * 11. labAnswerParts 输入行行为
+ * ================================================================ */
+
+console.log('\n--- 11. labAnswerParts ---');
+
+test('值域/定义域/单调性 → []；定点 → 两个数字框', function () {
+  assert.deepStrictEqual(F.labAnswerParts('exp-curve', '值域', SAMPLE['exp-curve']), []);
+  assert.deepStrictEqual(F.labAnswerParts('exp-curve', '单调性', SAMPLE['exp-curve']), []);
+  assert.deepStrictEqual(F.labAnswerParts('log-curve', '定义域', SAMPLE['log-curve']), []);
+  assert.deepStrictEqual(F.labAnswerParts('log-curve', '单调性', SAMPLE['log-curve']), []);
+
+  const lp = F.labAnswerParts('log-curve', '图象经过的定点', SAMPLE['log-curve']);
+  assert.strictEqual(lp.length, 1, 'log 定点应有一行');
+  assert.strictEqual(lp[0].kind, 'pair', 'log 定点应是两个数字框');
+  assert.deepStrictEqual(lp[0].values, [1, 0], 'log₂x 定点应为 (1,0)');
+
+  const rp = F.labAnswerParts('power-curve', '图象经过的定点', { a: 1, root: { b: 1, c: -1 }, k: 2 });
+  assert.strictEqual(rp[0].kind, 'pair');
+  assert.deepStrictEqual(rp[0].values, [1, 2], '√(x−1)+2 起点应为 (1,2)');
+
+  const pp = F.labAnswerParts('power-curve', '图象经过的定点', { a: 1, p: 4 });
+  assert.deepStrictEqual(pp[0].values, [1, 1], 'x^4 定点应为 (1,1)');
+  assert.deepStrictEqual(F.labAnswerParts('power-curve', '值域', { a: 1, p: 4 }), []);
+  assert.deepStrictEqual(F.labAnswerParts('power-curve', '定义域', { a: 1, p: 4 }), []);
+  assert.deepStrictEqual(F.labAnswerParts('power-curve', '单调性', { a: 1, p: 4 }), []);
+});
+
+/* ================================================================
+ * 12. verifyParams：代回通过 / base=1、base<0、w=0、改一个数 → 拒绝
+ * ================================================================ */
+
+console.log('\n--- 12. verifyParams ---');
+
+const L = require('../diagnose/labmatch.js');
+function verify(prompt, lab, intent, params, opts) {
+  return L.verifyParams(prompt, { match: lab, intent: intent, params: params }, opts);
+}
+
+test('三族参数代回通过（含 f(x)= 前缀）', function () {
+  const ok = [
+    ['y=2^x', 'exp-curve', '值域', { a: 1, base: 2, w: 1, phi: 0, k: 0 }],
+    ['y=log_2(x+1)-2', 'log-curve', '定义域', { c: 1, base: 2, shift: 1, d: -2 }],
+    ['y=x^4', 'power-curve', '值域', { a: 1, p: 4 }],
+    ['y=√(x−1)', 'power-curve', '定义域', { a: 1, root: { b: 1, c: -1 }, k: 0 }],
+    ['f(x)=2^x', 'exp-curve', '单调性', { a: 1, base: 2, w: 1, phi: 0, k: 0 }]
+  ];
+  ok.forEach(function (row) {
+    const v = verify(row[0], row[1], row[2], row[3]);
+    assert.ok(v.ok, row[0] + ' 应通过代回，实际：' + v.why.join('; '));
+  });
+});
+
+test('base=1 / base<0 / w=0 / 参数被改一个数 → 拒绝', function () {
+  const bad = [
+    ['y=2^x', 'exp-curve', '值域', { a: 1, base: 1, w: 1, phi: 0, k: 0 }],
+    ['y=2^x', 'exp-curve', '值域', { a: 1, base: -2, w: 1, phi: 0, k: 0 }],
+    ['y=2^x', 'exp-curve', '值域', { a: 1, base: 2, w: 0, phi: 0, k: 0 }],
+    ['y=2^x', 'exp-curve', '值域', { a: 3, base: 2, w: 1, phi: 0, k: 0 }],
+    ['y=log_2(x+1)-2', 'log-curve', '定义域', { c: 1, base: 2, shift: 0, d: -2 }],
+    ['y=log_2(x+1)-2', 'log-curve', '定义域', { c: 1, base: 1, shift: 1, d: -2 }],
+    ['y=x^4', 'power-curve', '值域', { a: 1, p: 5 }],
+    ['y=√(x−1)', 'power-curve', '定义域', { a: 1, root: { b: 1, c: 0 }, k: 0 }]
+  ];
+  bad.forEach(function (row) {
+    const v = verify(row[0], row[1], row[2], row[3]);
+    assert.strictEqual(v.ok, false, row[0] + ' 应被拒绝：' + JSON.stringify(row[3]));
+    assert.ok(v.why.length > 0, row[0] + ' 拒绝时必须给原因');
+  });
+});
+
+/* ================================================================
+ * 13. mount 对 w=0 / base=1 拒绝挂载（与批2 同口径：源码契约）
+ * ================================================================ */
+
+console.log('\n--- 13. mount 退化解拒绝 ---');
+
+test('mount 对 exp w=0、exp/log base=1 拒绝挂载', function () {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'funclab.js'), 'utf8');
+  assert.ok(/type === 'exp' && p\.w === 0/.test(src), 'mount 必须在 exp 且 w=0 时返回 null');
+  assert.ok(/\(type === 'exp' \|\| type === 'log'\) && \(!\(p\.base > 0\) \|\| Math\.abs\(p\.base - 1\) < 1e-12\)/.test(src),
+    'mount 必须在 exp/log 且 base≤0 或 base=1 时返回 null');
+});
+
+/* ================================================================
+ * 14. 审计预演：全库跑，三族零泄漏
+ * ================================================================ */
+
+console.log('\n--- 14. 审计 ---');
+
+test('audit_funclab_notes 全库跑：答案数字 0 处泄漏、组合无文案 0 条', function () {
+  const out = cp.execFileSync('node', [path.join(__dirname, '..', 'scripts', 'audit_funclab_notes.js')], {
+    cwd: path.join(__dirname, '..'), encoding: 'utf8'
+  });
+  assert.ok(out.indexOf('答案数字 0 处泄漏') >= 0, '审计应报 0 处泄漏：\n' + out.slice(0, 400));
+  assert.ok(out.indexOf('组合无文案：0 条') >= 0, '审计应报组合无文案 0 条');
 });
 
 /* ================================================================ */

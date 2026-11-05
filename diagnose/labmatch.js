@@ -295,6 +295,10 @@
         }
         continue;
       }
+      /* 批3：幂根式的 root 是结构参数（{b,c} 对象），不是数值；多项式形也没有 root/k。
+       * 这两种先跳过，等数值循环之后按「根式形 / 多项式形」二选一单独校验。 */
+      if (type === 'power' && (key === 'root'
+        || (key === 'k' && !p.root) || (key === 'p' && p.root))) continue;
       const v = Number(p[key]);
       if (!isFinite(v)) return { ok: false, why: ['参数缺失或非数值: ' + key] };
     }
@@ -302,6 +306,24 @@
     if ((type === 'linear' || type === 'inverse') && Number(p.k) === 0) return { ok: false, why: ['k=0 画不出图象'] };
     /* 批2：w=0 时 A·sin(0·x+φ)+k 是常函数，不是三角函数（mount 同口径拒绝） */
     if (type === 'trig' && Number(p.w) === 0) return { ok: false, why: ['w=0 不是三角函数（退化为常函数）'] };
+    /* 批3：底数必须 >0 且 ≠1（指数/对数曲线的前提）；指数 w=0 退化为常函数 */
+    if ((type === 'exp' || type === 'log')
+      && (!(Number(p.base) > 0) || Math.abs(Number(p.base) - 1) < 1e-12)) {
+      return { ok: false, why: ['base 必须是大于 0 且不等于 1 的常数: ' + p.base] };
+    }
+    if (type === 'exp' && Number(p.w) === 0) return { ok: false, why: ['w=0 不是指数函数（退化为常函数）'] };
+    if (type === 'power') {
+      if (Number(p.a) === 0) return { ok: false, why: ['a=0 画不出幂函数/根式函数'] };
+      if (p.root) {
+        const b = Number(p.root.b), cc = Number(p.root.c);
+        if (!isFinite(b) || b === 0 || !isFinite(cc)) {
+          return { ok: false, why: ['root 参数缺失或非数值（需要 b≠0、c 有限）'] };
+        }
+        if (!isFinite(Number(p.k))) return { ok: false, why: ['根式形缺 k'] };
+      } else if (!isFinite(Number(p.p))) {
+        return { ok: false, why: ['幂函数形缺 p'] };
+      }
+    }
 
     // 3'. 代回原式：题面规范参数 vs LLM 参数，展开后逐项比对
     let parsed = Funclab.fromPrompt(prompt);
@@ -336,6 +358,32 @@
         || !close(Number(p.phi), parsed.phi) || !close(Number(p.k), parsed.k)) {
         why.push('参数代回不符：LLM A=' + p.A + ',w=' + p.w + ',phi=' + p.phi + ',k=' + p.k
           + ' ≠ 题面 A=' + parsed.A + ',w=' + parsed.w + ',phi=' + parsed.phi + ',k=' + parsed.k);
+      }
+    } else if (type === 'exp') {
+      if (!close(Number(p.a), parsed.a) || !close(Number(p.base), parsed.base)
+        || !close(Number(p.w), parsed.w) || !close(Number(p.phi), parsed.phi)
+        || !close(Number(p.k), parsed.k)) {
+        why.push('参数代回不符：LLM a=' + p.a + ',base=' + p.base + ',w=' + p.w
+          + ',phi=' + p.phi + ',k=' + p.k + ' ≠ 题面 a=' + parsed.a + ',base=' + parsed.base
+          + ',w=' + parsed.w + ',phi=' + parsed.phi + ',k=' + parsed.k);
+      }
+    } else if (type === 'log') {
+      if (!close(Number(p.c), parsed.c) || !close(Number(p.base), parsed.base)
+        || !close(Number(p.shift), parsed.shift) || !close(Number(p.d), parsed.d)) {
+        why.push('参数代回不符：LLM c=' + p.c + ',base=' + p.base + ',shift=' + p.shift
+          + ',d=' + p.d + ' ≠ 题面 c=' + parsed.c + ',base=' + parsed.base
+          + ',shift=' + parsed.shift + ',d=' + parsed.d);
+      }
+    } else if (type === 'power') {
+      if (parsed.root) {
+        const got = p.root || {};
+        if (!close(Number(p.a), parsed.a) || !close(Number(got.b), parsed.root.b)
+          || !close(Number(got.c), parsed.root.c) || !close(Number(p.k), parsed.k)) {
+          why.push('参数代回不符：LLM a=' + p.a + ',root=' + JSON.stringify(got) + ',k=' + p.k
+            + ' ≠ 题面 a=' + parsed.a + ',root=' + JSON.stringify(parsed.root) + ',k=' + parsed.k);
+        }
+      } else if (!close(Number(p.a), parsed.a) || !close(Number(p.p), parsed.p)) {
+        why.push('参数代回不符：LLM a=' + p.a + ',p=' + p.p + ' ≠ 题面 a=' + parsed.a + ',p=' + parsed.p);
       }
     }
 
@@ -795,6 +843,17 @@
         params.fn = String(choice.params[k]);
         return;
       }
+      /* 批3：幂根式的 root 是 {b,c} 对象，不能 Number()；多项式形根本没有 root/k，
+       * 缺的键不塞 NaN（否则 mount 会把它当成根式形去画）。 */
+      if (k === 'root') {
+        const r = choice.params[k];
+        if (r && typeof r === 'object' && !Array.isArray(r)) {
+          params.root = { b: Number(r.b), c: Number(r.c == null ? 0 : r.c) };
+        }
+        return;
+      }
+      if (type === 'power' && k === 'k' && choice.params[k] == null) return;
+      if (type === 'power' && k === 'p' && choice.params.root) return;
       params[k] = Number(choice.params[k]);
     });
     const cfg = Object.assign({ type: type, lab: choice.match, intent: choice.intent }, params);
@@ -810,6 +869,9 @@
     PROXY: PROXY, MODEL: MODEL, CACHE_KEY: CACHE_KEY, LENIENT_CACHE_KEY: LENIENT_CACHE_KEY,
     MAX_TOKENS: MAX_TOKENS, EPS: EPS,
     matchLab: matchLab, resolve: resolve, verifyParams: verifyParams,
+    /* 批3：TYPE_DEF 实体在 funclab.js（滑杆/默认值表），这里透传一份只读引用，
+     * 供验收脚本按画板类型核对三族是「有滑杆、有默认值」的完整画板。 */
+    TYPE_DEF: Funclab.TYPE_DEF,
     /* t_1d3fe77a：choice → mount 配置（含 curves 字符串→对象规约），供测试直接验证 */
     buildCfg: buildCfg,
     getLastError: getLastError, lastFailure: getLastFailure,

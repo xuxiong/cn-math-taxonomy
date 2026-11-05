@@ -40,9 +40,9 @@ function q(id) {
   return item;
 }
 
-/* 白名单 23 题 × (画板, intent)；区间题另给端点来源（promptInterval 实抠）。
+/* 白名单 30 题 × (画板, intent)；区间题另给端点来源（promptInterval 实抠）。
  * 前 8 条是批1.5 已接通的，批1.6 只许它们零回退；中间 6 条是批1.6 新接通的；
- * 后 9 条是批2（三角函数）新接通的，since: '2'。 */
+ * 后 9 条是批2（三角函数）新接通的，since: '2'；最后 7 条是批3（指对），since: '3'。 */
 const LEDGER = [
   { id: 'cnm_h029_q2', lab: 'quadratic-vertex', intent: '最大值', since: '1.5' },
   { id: 'cnm_h034_q3', lab: 'quadratic-vertex', intent: '最大值', since: '1.5' },
@@ -68,7 +68,15 @@ const LEDGER = [
   { id: 'cnm_h067_q4', lab: 'trig-monotonic', intent: '单调性', since: '2' },
   { id: 'cnm_h068_q4', lab: 'trig-parity', intent: '奇偶性', since: '2' },
   { id: 'cnm_h075_q1', lab: 'trig-extremum', intent: '最大值', since: '2' },
-  { id: 'cnm_h075_q2', lab: 'trig-period', intent: '最小正周期除以 π 后的值', since: '2' }
+  { id: 'cnm_h075_q2', lab: 'trig-period', intent: '最小正周期除以 π 后的值', since: '2' },
+  /* 批3：指数 / 对数 7 题（白名单再 +7）。台账与 test_funclab_hs_batch3.js 逐条一致。 */
+  { id: 'cnm_h029_q4', lab: 'exp-curve', intent: '值域', since: '3' },
+  { id: 'cnm_h042_q1', lab: 'exp-curve', intent: '单调性', since: '3' },
+  { id: 'cnm_h042_q2', lab: 'exp-curve', intent: '单调性', since: '3' },
+  { id: 'cnm_h046_q2', lab: 'log-curve', intent: '定义域', since: '3' },
+  { id: 'cnm_h046_q4', lab: 'log-curve', intent: '图象经过的定点', since: '3' },
+  { id: 'cnm_h047_q1', lab: 'log-curve', intent: '单调性', since: '3' },
+  { id: 'cnm_h047_q2', lab: 'log-curve', intent: '单调性', since: '3' }
 ];
 
 /** 按台账一题一遍走三道闸；返回失败原因数组（空 = 全过） */
@@ -80,7 +88,7 @@ function gateAll() {
     if (!scene) { bad.push(c.id + ' labForScene=null'); return; }
     const params = Object.assign({}, scene);
     delete params.type;
-    delete params.base;
+    if (params.base && typeof params.base === 'object') delete params.base;
     const iv = L.promptInterval(item.prompt);
     if (iv) { params.xMin = iv.xMin; params.xMax = iv.xMax; }
     if (!F.intentSupported(c.lab, c.intent)) { bad.push(c.id + ' ' + c.lab + '/' + c.intent + ' intent 不支持'); return; }
@@ -95,21 +103,22 @@ function gateAll() {
  * 1. 14 题全部线上可见（8→14 的机器判据）
  * ================================================================ */
 
-test('白名单 23 题逐题过「表 + intent + 代回」三道闸（14 条旧题零回退）', function () {
+test('白名单 30 题逐题过「表 + intent + 代回」三道闸（14 条旧题零回退）', function () {
   const bad = gateAll();
   assert.deepStrictEqual(bad, [], bad.join(' / '));
-  assert.strictEqual(LEDGER.length, 23, '台账必须恰好 23 题');
+  assert.strictEqual(LEDGER.length, 30, '台账必须恰好 30 题');
   assert.strictEqual(LEDGER.filter(function (c) { return c.since === '1.6'; }).length, 6, '批1.6 接通 6 题');
   assert.strictEqual(LEDGER.filter(function (c) { return c.since === '2'; }).length, 9, '批2 新接通 9 题');
+  assert.strictEqual(LEDGER.filter(function (c) { return c.since === '3'; }).length, 7, '批3 新接通 7 题');
 });
 
-test('HS_ITEMS 23 条（批1/1.5 的 14 + 批2 的 9），与台账逐题一致', function () {
+test('HS_ITEMS 30 条（批1/1.5 的 14 + 批2 的 9 + 批3 的 7），与台账逐题一致', function () {
   const ids = Object.keys(F.HS_ITEMS).sort();
-  assert.strictEqual(ids.length, 23);
+  assert.strictEqual(ids.length, 30);
   assert.deepStrictEqual(ids, LEDGER.map(function (c) { return c.id; }).sort());
 });
 
-test('高中全量挂载 26 题（本批 23 + 既有 cnm_h172 三题），没有顺手放宽', function () {
+test('高中全量挂载 33 题（本批 30 + 既有 cnm_h172 三题），没有顺手放宽', function () {
   const hs = QUESTIONS.filter(function (x) { return /^cnm_h/.test(x.id); });
   const mounted = hs.filter(function (x) {
     return !!F.labForScene(x.topicId, x.prompt, { itemId: x.id });

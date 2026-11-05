@@ -1335,7 +1335,12 @@ const DESC_LABS = {
   'trig-period': { fn: 'sin', A: 1, w: 3, phi: 0, k: 0 },
   'trig-parity': { fn: 'cos', A: 1, w: 1, phi: 0, k: 0 },
   'trig-domain': { fn: 'tan', A: 1, w: 1, phi: 0, k: 0 },
-  'trig-monotonic': { fn: 'sin', A: 1, w: 1, phi: 0, k: 0, xMin: -Math.PI / 2, xMax: Math.PI / 2 }
+  'trig-monotonic': { fn: 'sin', A: 1, w: 1, phi: 0, k: 0, xMin: -Math.PI / 2, xMax: Math.PI / 2 },
+  /* 批3：指数/对数/幂根式三画板样参 —— paintModel 对缺参返回 null，通用 describe 遍历
+   * 全部 CAPABILITIES，所以 base/w/phi/c/shift/d、root 必须给齐。 */
+  'exp-curve': { a: 1, base: 2, w: 1, phi: 0, k: 0 },
+  'log-curve': { c: 1, base: 2, shift: 0, d: 0 },
+  'power-curve': { a: 1, root: { b: 1, c: 0 }, k: 0 }
 };
 function descParams(lab) {
   const p = Object.assign({}, DESC_LABS[lab]);
