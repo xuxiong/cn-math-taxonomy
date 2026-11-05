@@ -54,6 +54,21 @@ function annotationValues(p, topicId) {
     push(p.d);
     push(-p.shift + p.base);
     push(p.c + p.d);
+  } else if (p.type === 'cubic') {
+    /* 批4：cubic 画板标出的是「由升转降 / 由降转升」的转折点（极值点横坐标）——
+       f'(x)=3a x²+2b x+c=0 的两个实根。判别式必须 >0：=0 时驻点两侧不变号（是拐点不是极值，
+       如 y=x³ 的 x=0），画板文案「转折点」并不成立，故不标注。
+       （口径依据：批4 红线要求 31 条 misleading 一条不松，cnm_h035_q4 的答案 0 正是
+        y=x³ 的退化驻点 —— 列进来就会数值巧合放行。） */
+    const A = 3 * p.a;
+    const B = 2 * p.b;
+    const C = p.c;
+    const disc = B * B - 4 * A * C;
+    if (A !== 0 && isFinite(disc) && disc > 0) {
+      const sq = Math.sqrt(disc);
+      push((-B + sq) / (2 * A));
+      push((-B - sq) / (2 * A));
+    }
   } else if (p.type === 'power') {
     if (p.root) {
       /* 根式形：起点横坐标 -c/b 与纵坐标 k（起点坐标两个分量都在集合里）。 */

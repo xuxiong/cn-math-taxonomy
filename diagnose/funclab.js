@@ -1,9 +1,14 @@
 /* 初中函数实验室：把题面里的函数参数解析出来，渲染可拖拽的画板。
  *
- * 支持的函数类型（初中全部函数）：
+ * 支持的函数类型（初中全部函数 + 高中批2/批3/批4 扩展族）：
  *   quadratic  二次函数  y = a(x-h)² + k    滑块 a(开口/宽窄)、h(左右平移)、k(上下平移)
  *   linear     一次函数  y = kx + b         滑块 k(斜率)、b(截距)
  *   inverse    反比例    y = k / x          滑块 k(象限/离轴远近)
+ *   trig       三角函数  y = A·sin(ωx+φ)+k （批2）
+ *   exp        指数函数  y = a·b^(wx+φ)+k   （批3）
+ *   log        对数函数  y = c·log_b(x+shift)+d（批3）
+ *   power      幂根式    y = a·x^p / a·√(bx+c)+k（批3）
+ *   cubic      三次函数  y = ax³+bx²+cx+d   （批4）
  *
  * 方案：配置驱动（预置组件，LLM 零参与）。题型白名单 + 题面解析出参数就挂载，
  * 解析不出就不挂（静默降级），因此对题库内容零侵入。
@@ -361,6 +366,70 @@
     return { type: 'log', c: c, base: base, shift: shift === 0 ? 0 : shift, d: d === 0 ? 0 : d };
   }
 
+  /* 三次多项式（批4）：y = a x³ + b x² + c x + d，只认「x³ 打头」的显式式。
+   * famSeg 已把 ³ → ^3、`f(x)=` → `y=`；四项系数必须是数值字面量，缺省项补 0，-0 归一成 0。
+   * 头匹配后由本族给出结论（对象 / null / FAM_NO_HEAD），不许被后面的幂/二次分支误读：
+   *   · 多项式头之后还写别的「= 含 x 的表达式」（两道导数题面 …则 f'(x)=3x²…）→ FAM_NO_HEAD，
+   *     交回既有 quadratic 通道，保持 cnm_h217_q2 / cnm_h220_q3 的原解析逐字不变；
+   *   · 剩余出现 `/x`、二次以上幂、字母系数 / 括号 / 乘号续写 → null（确认画不了，硬拦截）；
+   *   · 尾部中文说明（`y=x³−3x，x>0 时…`）不参与判型，仍解析成 cubic（是否挂载由 labmatch 判）。
+   */
+  function famCubic(rhs) {
+    if (rhs == null) return FAM_NO_HEAD;
+    const hm = /^\s*([+-]?\d*\.?\d*)\s*\*?\s*x\s*\^\s*3/.exec(rhs);
+    if (!hm) return FAM_NO_HEAD;
+    const a = coeffNum(hm[1]);
+    if (!isFinite(a) || a === 0) return null;
+    let rest = rhs.slice(hm[0].length);
+
+    /* 兼容闸：任一处 `=` 之后（到 。；， 之前）出现含 x 的表达式 → 这不是要画的三次式。
+       返回 FAM_NO_HEAD 而不是 null，是为了让既有 quadratic 分支继续解析导数题面。 */
+    const eqRe = /=/g;
+    let em;
+    while ((em = eqRe.exec(rest)) !== null) {
+      const after = rest.slice(em.index + 1).split(/[。；;，,]/)[0];
+      if (/x/i.test(after)) return FAM_NO_HEAD;
+    }
+
+    /* b x² 项 */
+    let b = 0;
+    let tm = /^\s*([+-])\s*(\d*\.?\d*)\s*\*?\s*x\s*\^\s*2/.exec(rest);
+    if (tm) {
+      const v = tm[2] === '' ? 1 : parseFloat(tm[2]);
+      if (!isFinite(v)) return null;
+      b = (tm[1] === '-' ? -1 : 1) * v;
+      rest = rest.slice(tm[0].length);
+    }
+    /* c x 项（`x` 后面不能还是幂/上标，否则不是一次项） */
+    let c = 0;
+    tm = /^\s*([+-])\s*(\d*\.?\d*)\s*\*?\s*x(?![²³⁴⁵⁶⁷⁸⁹\^])/.exec(rest);
+    if (tm) {
+      const v = tm[2] === '' ? 1 : parseFloat(tm[2]);
+      if (!isFinite(v)) return null;
+      c = (tm[1] === '-' ? -1 : 1) * v;
+      rest = rest.slice(tm[0].length);
+    }
+    /* d 常数项 */
+    let d = 0;
+    tm = /^\s*([+-])\s*(\d+\.?\d*)/.exec(rest);
+    if (tm) {
+      d = (tm[1] === '-' ? -1 : 1) * parseFloat(tm[2]);
+      if (!isFinite(d)) return null;
+      rest = rest.slice(tm[0].length);
+    }
+    /* 多项式之后若还接着数学符号（/、^、x、字母、乘号、括号、数字）→ 不是纯三次式，硬拦截 */
+    const tail = rest.replace(/^\s+/, '');
+    if (tail && /^[\x00-\x7F]/.test(tail)) return null;
+
+    return {
+      type: 'cubic',
+      a: a,
+      b: b === 0 ? 0 : b,
+      c: c === 0 ? 0 : c,
+      d: d === 0 ? 0 : d
+    };
+  }
+
   /** 幂根式：y = a·x^p（p∉{1,2,3}）/ y = a·√(bx+c)+k。p∈{1,2,3} → FAM_SKIP 交既有通道。 */
   function famPower(rhs) {
     if (rhs == null) return FAM_NO_HEAD;
@@ -395,11 +464,12 @@
   }
 
   /**
-   * 从题面解析函数参数 → {type, ...params}，解析不出返回 null。
+   * 既有解析内核：入参 s 必须**已经 normalize 过**（fromPrompt 负责这一步）。
+   * 这一段是批1–批3 的原始函数体，逻辑一行未改；新增族只在这里追加分支。
    * 二次：{type:'quadratic', a, h, k}   一次：{type:'linear', k, b}   反比例：{type:'inverse', k}
+   * 三次：{type:'cubic', a, b, c, d}（批4）
    */
-  function fromPrompt(prompt) {
-    const s = normalize(prompt);
+  function parseCore(s) {
     if (!s) return null;
 
     // ---------- t_1d3fe77a：隐式直线 ax+by=c（x+y=5 / x−y=1 / 2x+3y=6）----------
@@ -417,17 +487,20 @@
       if (k !== 0 && isFinite(k)) return { type: 'inverse', k: k };
     }
 
-    // ---------- 批3：指数 / 对数 / 幂根式（t_3dc2f23b）----------
+    // ---------- 批3：指数 / 对数 / 幂根式（t_3dc2f23b）；批4：三次多项式（t_34817311）----------
     // 位置铁律：反比例之后、一次函数之前（三角之前/之后均可，这里放三角之前）。
-    // 三族头匹配成功就必须由本族给出结论（对象或 null），只有「头没匹配」才继续往下走；
-    // 唯一例外是 power 的 p∈{1,2,3}：明确交回既有一次/二次通道（FAM_SKIP），不许截走 y=x²。
-    // famSeg 只在这三支内部做下标/根号/上标/`f(x)=` 前缀的局部归一 —— normalize() 一个字不动。
+    // 分发顺序：exp → log → cubic → power；头匹配成功就必须由本族给出结论（对象或 null），
+    // 只有「头没匹配」才继续往下走；例外是 power 的 p∈{1,2,3} 与 cubic 的导数题面兼容闸：
+    // 明确交回既有一次/二次通道（FAM_SKIP / FAM_NO_HEAD），不许截走 y=x² 或 …f'(x)=3x²…。
+    // famSeg 只在这几支内部做下标/根号/上标/`f(x)=` 前缀的局部归一 —— normalize() 一个字不动。
     const fam = famSeg(s);
     const fRhs = famRhs(fam);
     const fe = famExp(fRhs);
     if (fe !== FAM_NO_HEAD && fe !== FAM_SKIP) return fe;
     const fl = famLog(fRhs);
     if (fl !== FAM_NO_HEAD && fl !== FAM_SKIP) return fl;
+    const fc = famCubic(fRhs);
+    if (fc !== FAM_NO_HEAD && fc !== FAM_SKIP) return fc;
     const fp = famPower(fRhs);
     if (fp !== FAM_NO_HEAD && fp !== FAM_SKIP) return fp;
 
@@ -510,6 +583,81 @@
     if (k === 0) k = 0;
     if (!isFinite(h) || !isFinite(k)) return null;
     return { type: 'quadratic', a: a, h: h, k: k };
+  }
+
+  /* expandAreaRhs 专用：把括号内的一次式拆成 kx+b 的 (k,b)。
+     两种书写顺序都认：`2x+3`（kx+b）与 `10-x`（常数在前，k=-1）—— 题库的面积式是后者。
+     只认纯数值系数；`ax+b` 之类含字母 → null。 */
+  function linearInX(str) {
+    const t = String(str == null ? '' : str).replace(/\s+/g, '').replace(/\*/g, '');
+    let m = /^([+-]?\d*\.?\d*)x(?:([+-])(\d+\.?\d*))?$/.exec(t);
+    if (m) {
+      const k = coeffNum(m[1]);
+      const b = m[2] ? (m[2] === '-' ? -1 : 1) * parseFloat(m[3]) : 0;
+      if (!isFinite(k) || !isFinite(b)) return null;
+      return { k: k, b: b };
+    }
+    m = /^([+-]?\d+\.?\d*)([+-])(\d*\.?\d*)x$/.exec(t);
+    if (m) {
+      const b = parseFloat(m[1]);
+      const kAbs = m[3] === '' ? 1 : parseFloat(m[3]);
+      const k = (m[2] === '-' ? -1 : 1) * kAbs;
+      if (!isFinite(k) || !isFinite(b)) return null;
+      return { k: k, b: b };
+    }
+    m = /^([+-]?\d+\.?\d*)$/.exec(t);
+    if (m) return { k: 0, b: parseFloat(m[1]) };
+    return null;
+  }
+
+  /**
+   * 面积式乘法展开（批4，t_34817311）—— **只允许 fromPrompt 的 S= 窄门调用**。
+   * 其他入口一律不许用：否则任何题面里的 `x(10−x)`（含物理的 S=、体积式子）都会被当成函数式。
+   *
+   * 只收「x 乘一个一次式」的四种写法：x(10-x) / x*(10−x) / (10-x)x / (10-x)*x。
+   * 展开成 y = ax² + bx（常数项恒为 0）后重新交给 parseCore（内部先 normalize 成 x²）。
+   * 式子后面紧跟中文/标点视为题面叙述结束；紧跟 /、*、x、^、+ 等数学符号 → 不是纯面积式，返回 null
+   * （`x(10-x)/2` 就死在这里，不会被别名读成 y=x 的 linear）。
+   */
+  function expandAreaRhs(rhs) {
+    const s = String(rhs == null ? '' : rhs).replace(/^\s+/, '');
+    let m = /^x\s*\*?\s*\(\s*([^()]*)\s*\)/.exec(s);
+    if (!m) m = /^\(\s*([^()]*)\s*\)\s*\*?\s*x/.exec(s);
+    if (!m) return null;
+    const f = linearInX(m[1]);
+    if (!f) return null;
+    /* 式子边界：后面必须是叙述（非 ASCII 的中文/中文标点）或结尾，数学符号续写一律拒绝 */
+    const tail = s.slice(m[0].length).replace(/^\s+/, '');
+    if (tail && /^[\x00-\x7F]/.test(tail)) return null;
+    /* x·(k x + b) = k x² + b x */
+    const expr = 'y=' + f.k + 'x^2' + (f.b === 0 ? '' : (f.b > 0 ? '+' : '') + f.b + 'x');
+    return parseCore(normalize(expr));
+  }
+
+  /**
+   * 从题面解析函数参数 → {type, ...params}，解析不出返回 null。
+   * 薄壳顺序（批4）：先走既有内核 parseCore（行为一字不变，direct 非 null 直接返回），
+   * 只有 direct === null 且题面出现独立 `S=` 时，才启用面积式窄门：
+   *   1) 「视同 y=」的窄别名 parseCore('y=' + rhs)；
+   *   2) 面积式乘法展开 expandAreaRhs(rhs)（仅 x 乘一次式）；
+   *   3) 都不成 → null。
+   * 别名只对不含括号的右式生效：parseCore 是前缀匹配，含括号的式子（x(10-x)）会被
+   * 读成 linear 而不是展开后的 quadratic —— 含括号一律交 expandAreaRhs，它拒收即 null。
+   */
+  function fromPrompt(prompt) {
+    const s = normalize(prompt);
+    const direct = parseCore(s);
+    if (direct) return direct;
+
+    /* S= 窄门：无 S= 的题面永远不到这里（既有 197+ 题行为零变化） */
+    const sm = /(?:^|[^0-9A-Za-z_.])S\s*=/.exec(s);
+    if (!sm) return null;
+    const rhs = s.slice(sm.index + sm[0].length);
+    if (!/[()]/.test(rhs)) {
+      const alias = parseCore('y=' + rhs);
+      if (alias) return alias;
+    }
+    return expandAreaRhs(rhs);
   }
 
   /** 三角函数解析（批2）：fromPrompt 的三角头已匹配（m[1]=A 系数串、m[2]=fn），这里解析余下部分。

@@ -149,11 +149,12 @@ test('含参 / 叠幂 / 根号内非一次：一律 null（头匹配后不许掉
   });
 });
 
-test('x / x² / x³ / x^2 交回既有通道（p∈{1,2,3} 不截走）', function () {
+test('x / x² / x^2 交回既有通道（p∈{1,2} 不截走；x³ 批4 归 cubic）', function () {
   assert.deepStrictEqual(F.fromPrompt('y=x'), { type: 'linear', k: 1, b: 0 });
   assert.deepStrictEqual(F.fromPrompt('y=x²'), { type: 'quadratic', a: 1, h: 0, k: 0 });
   assert.deepStrictEqual(F.fromPrompt('y=x^2'), { type: 'quadratic', a: 1, h: 0, k: 0 });
-  assert.strictEqual(F.fromPrompt('y=x^3'), null);
+  /* 批4（t_34817311）：三次多项式独立成 cubic 族，不再交回 null。 */
+  assert.deepStrictEqual(F.fromPrompt('y=x^3'), { type: 'cubic', a: 1, b: 0, c: 0, d: 0 });
 });
 
 /* ================================================================

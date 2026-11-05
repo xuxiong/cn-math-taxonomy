@@ -894,11 +894,12 @@ test('[缺陷2] 缺项解析不会把含参系数误认（y=ax² / y=(m-2)x²）
   assert.strictEqual(F.fromPrompt('y=(m-2)x²'), null);
 });
 
-test('[缺陷3] 三次式不被当成一次函数（x³ / x^n 一律不画）', function () {
-  assert.strictEqual(F.fromPrompt('y=x³+1'), null);
-  assert.strictEqual(F.fromPrompt('y=2x³-1'), null);
+test('[缺陷3] 三次式不被当成一次函数（批4：x³ 归 cubic；含参/叠幂一律不画）', function () {
+  /* 批4（t_34817311）新增 cubic 族：显式三次多项式从此给出 cubic，而不是被 x 抢成 linear。 */
+  assert.deepStrictEqual(F.fromPrompt('y=x³+1'), { type: 'cubic', a: 1, b: 0, c: 0, d: 1 });
+  assert.deepStrictEqual(F.fromPrompt('y=2x³-1'), { type: 'cubic', a: 2, b: 0, c: 0, d: -1 });
   assert.strictEqual(F.fromPrompt('y=2x^(m^2-3) 是正比例函数，求 m'), null);
-  assert.strictEqual(F.fromPrompt('y=x^3'), null);
+  assert.deepStrictEqual(F.fromPrompt('y=x^3'), { type: 'cubic', a: 1, b: 0, c: 0, d: 0 });
 });
 
 test('[缺陷4] 顶点式系数为字母时不再默认 a=1（y=a(x-2)²-1，cnm_231_q4）', function () {
