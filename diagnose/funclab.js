@@ -789,7 +789,17 @@
     'cnm_h046_q2': 'log',         // y=log₂x 的定义域 → 曲线只在竖直渐近线右侧
     'cnm_h046_q4': 'log',         // y=log₂x 经过的定点 → 红色圆点
     'cnm_h047_q1': 'log',         // y=log₂x 在 (0,+∞) 上的增减 → 曲线走向
-    'cnm_h047_q2': 'log'          // y=log_(1/2)x 在定义域上的增减 → 曲线走向
+    'cnm_h047_q2': 'log',         // y=log_(1/2)x 在定义域上的增减 → 曲线走向
+    /* ---- 批4（t_34817311）：最后 4 题补齐（二次 2 + 三次 2） ----
+     * 来源：scripts/measure_highschool_funclab_coverage.js 的 gated ok ——
+     *   二次族 12 条 ok 里的 h225_q1 / h228_q2（问 f'(x)=0 的横坐标，恰是顶点横坐标），
+     *   三次族 12 题 ok 2 条（h035_q2 奇偶性 / h229_q2 极值点横坐标）。
+     * h228_q2 依赖 fromPrompt 的 S= 窄门（S=x(10−x) 视同面积式展开成二次）。
+     * 三次两题各挂一块新画板（cubic-parity / cubic-extremum），类型与 fromPrompt 逐字一致。 */
+    'cnm_h225_q1': 'quadratic',   // f(x)=x²−4x，f'(x)=0 → 顶点横坐标 2
+    'cnm_h228_q2': 'quadratic',   // 面积 S=x(10−x)，S'(x)=0 → 顶点横坐标 5（依赖 S= 窄门）
+    'cnm_h035_q2': 'cubic',       // f(x)=x³ 的奇偶性 → 绕 y 轴交点转 180°
+    'cnm_h229_q2': 'cubic'        // f(x)=x³−3x 的极值点横坐标 → 左右两个实驻点
   };
 
   /** 高中逐题放行：返回画板类型，未放行返回 null（按题 id，不看章） */
@@ -892,6 +902,8 @@
     if (type === 'trig') return null;
     /* 批3：指数 / 对数 / 幂根式同样不叠画基准曲线（画板自带渐近线/定义域边界） */
     if (type === 'exp' || type === 'log' || type === 'power') return null;
+    /* 批4：三次曲线没有「基准曲线」概念，不叠画 */
+    if (type === 'cubic') return null;
     const s = normalize(prompt);
     const shiftWord = /平移|向左|向右|向上|向下/.test(s);
     const explicitBase = /y\s*=\s*[+-]?\s*x²/.test(s) && !/y\s*=\s*[+-]?\s*\d/.test(s);
@@ -1127,6 +1139,24 @@
         + '根式形只画在定义域内，红色圆点标出定义域起点，灰色竖直虚线标定义域边界。'
         + '定义域、值域、单调性与定点都从图上读。'
     },
+    /* ---- 三次函数（批4：t_34817311） ----
+     * 拆成两块画板，而不是一块「三次函数」画板：
+     * 一条 note 同时描述「绕 y 轴交点转 180°」和「两个转折点红点」，必然有一半与画布不符 ——
+     * 这正是批2 F1 的漂移缺陷。两块各自 note ↔ 画布逐字对齐：
+     *   cubic-parity   —— 图上只标 y 轴交点，讲对称（绕该点转 180° / 左右是否像照镜子）；
+     *   cubic-extremum —— 图上只标实驻点，讲极值点横坐标（左右各一个）。
+     * 文案铁律同批2/批3：只印题面已知量 {y} + 引导提问，不印坐标/数值；
+     * 线型颜色必须与 annotate 的绘制逐字一致；渲染层是 textContent，文案不出现 ** 强调符。 */
+    'cubic-parity': {
+      canAnswer: ['奇偶性'],
+      params: ['a', 'b', 'c', 'd'],
+      note: '三次函数 y=ax³+bx²+cx+d 的图象：蓝色实线是曲线，黑色粗实线是 y 轴（x = 0），红色圆点是曲线与 y 轴的交点。把整条曲线绕这个点转 180°，看转过来的曲线能否与原来那条完全重合、左右两侧的走势是否像照镜子一样连在一起 —— 这是从图上读。坐标不印数值。'
+    },
+    'cubic-extremum': {
+      canAnswer: ['极值点的横坐标'],
+      params: ['a', 'b', 'c', 'd'],
+      note: '三次函数 y=ax³+bx²+cx+d 的图象：蓝色实线是曲线，黑色粗实线是 y 轴（x = 0），红色圆点标出曲线由升转降、由降转升的转折点（只标点、不印数值）。转折点在 y 轴左右各一个，横坐标从 x 轴刻度上读。'
+    },
     /* ---- 多曲线：一个坐标系里两条曲线 + 它们的交点（t_1d3fe77a） ---- */
     'two-curves-intersect': {
       type: 'curves',
@@ -1167,6 +1197,8 @@
     'exp-curve': 'exp',
     'log-curve': 'log',
     'power-curve': 'power',
+    'cubic-parity': 'cubic',
+    'cubic-extremum': 'cubic',
     'two-curves-intersect': 'curves'
   };
 
@@ -1319,6 +1351,15 @@
       '值域': '题面给的函数是 {y2}。看蓝色实线在整张图上能取到哪些 y 值：'
         + '曲线向上、向下各能延伸到多远？值域该怎么写？ '
         + '自己从图上读，图上不标范围。'
+    },
+    /* 三次函数（批4）：两块画板各有自己的讲法，互不串台。
+     * 只印题面已知量 {y}；红色圆点的位置（y 轴交点 / 实驻点）不印数值。
+     * cubic-parity 的文案不出现「奇 / 偶」二字 —— 让学生自己按图判断（防答案泄漏）。 */
+    'cubic-parity': {
+      '奇偶性': '题面给的函数是 {y}。图上蓝色实线是它的图象，黑色粗实线是 y 轴（x = 0），红色圆点是曲线与 y 轴的交点。把整条曲线绕这个红点转 180°：转过来的曲线和原来那条能完全重合吗？再看这个红点左右两侧：两边的曲线是像照镜子一样连在一起，还是两边朝着同一个方向走？自己对着图判断。'
+    },
+    'cubic-extremum': {
+      '极值点的横坐标': '题面给的函数是 {y}。图上蓝色实线是它的图象，黑色粗实线是 y 轴（x = 0），红色圆点标出曲线由上升转为下降、又由下降转为上升的转折点（只标点、不印数值）。这些点一个在 y 轴左边、一个在 y 轴右边：题面问的那个正的横坐标，对着 x 轴刻度读出来是多少？自己从图上读。'
     },
     /* 多曲线画板（t_1d3fe77a）：两条曲线的表达式是题面已知量，交点坐标是派生量 → 一律留白。
      * 文案里不许出现「根」字（test_labmatch 的通用断言），只说「交点」。 */
@@ -1856,6 +1897,22 @@
   }
 
   /**
+   * 三次函数的实驻点（f'(x)=3a x²+2b x+c=0 的实根）。
+   * 判别式 >0 → 两个；=0 → 一个；<0 → 没有。绘制、describe、视野共用这一条口径。
+   * 退化 a=0 不是三次函数 → []（调用方另有 a≠0 闸）。
+   */
+  function cubicCritPoints(p) {
+    const a = Number(p && p.a), b = Number(p && p.b), c = Number(p && p.c);
+    if (!isFinite(a) || a === 0 || !isFinite(b) || !isFinite(c)) return [];
+    const A = 3 * a, B = 2 * b, C = c;
+    const disc = B * B - 4 * A * C;
+    if (disc < -1e-12) return [];
+    if (Math.abs(disc) <= 1e-12) return [-B / (2 * A)];
+    const r = Math.sqrt(disc);
+    return [(-B - r) / (2 * A), (-B + r) / (2 * A)].sort(function (x, y) { return x - y; });
+  }
+
+  /**
    * 抛物线视野（x 方向世界坐标范围）—— 必须与 mount 内部 view() 的 quadratic 分支逐行同口径。
    * 绘制路径用 `if (X < 0 || X > w.w) return;` 裁掉视野外的点，describe 要判断「这个点到底画没画」就得有同一份视野。
    * view() 里 y 范围不影响 x 方向裁剪，故这里只算 xMin/xMax。
@@ -1876,6 +1933,14 @@
       }
       const pw = isFinite(p.p) ? p.p : 1;
       return pw < 0 ? { xMin: -6, xMax: 6 } : { xMin: -2, xMax: 2 };
+    }
+    if (t === 'cubic') {
+      /* 批4：x 方向要同时装下两个实驻点与 y 轴上的交点 (0,d)；
+       * 默认至少 [-4,4]，有驻点落在外面时向两侧扩 1.5 格。 */
+      const xs = [0].concat(cubicCritPoints(p));
+      let lo = Math.min.apply(null, xs), hi = Math.max.apply(null, xs);
+      lo = Math.min(lo, -4); hi = Math.max(hi, 4);
+      return { xMin: lo - 1.5, xMax: hi + 1.5 };
     }
     const refs = [{ h: p.h, k: p.k }];
     if (base) refs.push({ h: base.h, k: base.k });
@@ -1929,6 +1994,7 @@
             : type === 'exp' ? '指数函数图象（曲线与水平渐近线）'
               : type === 'log' ? '对数函数图象（曲线与竖直渐近线）'
                 : type === 'power' ? '幂函数 / 根式函数图象'
+                : type === 'cubic' ? '三次函数图象（曲线与转折点）'
                   : '二次函数图象（抛物线）';
   }
 
@@ -1952,12 +2018,17 @@
     if (type === 'power') {
       return '题面给出的幂函数 / 根式函数图象（' + formatFormula(Object.assign({ type: 'power' }, p)) + '）';
     }
+    if (type === 'cubic') {
+      return '题面给出的三次函数图象（' + formatFormula(Object.assign({ type: 'cubic' }, p)) + '）';
+    }
     return '题面给出的抛物线（a = ' + fmtQuad(p.a) + '，' + (p.a > 0 ? '开口向上' : '开口向下') + '）';
   }
 
   /** 哪些画板类型的 base 是「基准曲线」配置：仅这四族。
    *  exp/log 的 base 是数值底数，power 没有基准曲线；curves 走独立分支。 */
   function hasBaseCurve(type) {
+    /* 批4：三次曲线不叠基准曲线（画板自带 y 轴与驻点，没有「原曲线 → 目标曲线」的平移对比语义） */
+    if (type === 'cubic') return false;
     return type === 'quadratic' || type === 'linear' || type === 'inverse' || type === 'trig';
   }
 
@@ -2047,6 +2118,9 @@
       || !(p.base > 0) || Math.abs(p.base - 1) < 1e-12)) return null;
     if (type === 'power' && (!isFinite(p.a) || p.a === 0
       || !((p.root && isFinite(p.root.b) && isFinite(p.root.c) && p.root.b !== 0) || isFinite(p.p)))) return null;
+    /* 批4：三次四项系数全要齐且 a≠0 —— 空参数/退化时宁可不出描述 */
+    if (type === 'cubic' && (!isFinite(p.a) || p.a === 0 || !isFinite(p.b)
+      || !isFinite(p.c) || !isFinite(p.d))) return null;
     /* curves：缺 curves（或不合法）时**照样出描述** —— 通用测试会拿空参数调 describe，
      * 那时只能说「两条曲线」的通用措辞，不能返回 null（返回 null 会让 AI 讲解拿不到画板）。 */
     if (type === 'curves') return paintCurves(it, p);
@@ -2158,6 +2232,27 @@
         elements.push({
           kind: 'fixed-point',
           text: '红色圆点：(0,0) 与 (1,1) 两个参考点（只标点、不印数值）',
+          style: '红色圆点'
+        });
+      }
+    } else if (type === 'cubic') {
+      /* 批4：两块画板各自只描述自己画的那套东西（拆板理由见 CAPABILITIES 三次注释）。
+       * 元素用词与 annotate 的绘制逐字同源：蓝色实线 = 曲线、黑色粗实线 = y 轴、红色圆点 = 标点。 */
+      elements.push({
+        kind: 'y-axis-emphasis',
+        text: '黑色粗实线：y 轴（x = 0）',
+        style: '黑色粗实线'
+      });
+      if (lab === 'cubic-parity') {
+        elements.push({
+          kind: 'fixed-point',
+          text: '红色圆点：曲线与 y 轴的交点（只标点、不印数值）',
+          style: '红色圆点'
+        });
+      } else {
+        elements.push({
+          kind: 'extremum-point',
+          text: '红色圆点：曲线由升转降、由降转升的转折点（只标点、不印数值）',
           style: '红色圆点'
         });
       }
@@ -2695,6 +2790,17 @@
         { key: 'a', label: 'a(纵向伸缩与方向)', min: -4, max: 4, step: 0.1 }
       ],
       defaults: { a: 1, p: 4, k: 0 }
+    },
+    /* 批4：三次多项式 y=ax³+bx²+cx+d。d 是常数项（y 轴交点纵坐标），
+     * 在奇偶性画板里正是学生要读的点，不给滑块（避免一拖就换题）；a/b/c 可拖。 */
+    cubic: {
+      params: ['a', 'b', 'c', 'd'],
+      sliders: [
+        { key: 'a', label: 'a(三次项,决定两端走向)', min: -4, max: 4, step: 0.05 },
+        { key: 'b', label: 'b(二次项)', min: -6, max: 6, step: 0.1 },
+        { key: 'c', label: 'c(一次项,影响驻点位置)', min: -8, max: 8, step: 0.1 }
+      ],
+      defaults: { a: 1, b: 0, c: 0, d: 0 }
     }
   };
 
@@ -3139,6 +3245,33 @@
       const pPart = pw === 0.5 ? '(1/2)' : pw < 0 ? '(' + fmt(pw) + ')' : fmt(pw);
       return 'y = ' + aPart + 'x^' + pPart;
     }
+    if (type === 'cubic') {
+      /* 批4：y = ax³+bx²+cx+d。项为 0 省略、系数 ±1 省略、负号用「 - 」分隔 →
+       * y = x³、y = x³ - 3x、y = 2x³ - 3x² + 1 这种写法。 */
+      const a = isFinite(p.a) ? p.a : 1;
+      const b = isFinite(p.b) ? p.b : 0;
+      const c = isFinite(p.c) ? p.c : 0;
+      const d = isFinite(p.d) ? p.d : 0;
+      const parts = [];
+      const addTerm = function (v, body) {
+        if (v === 0) return;
+        const abs = Math.abs(v);
+        /* 系数 ±1 只在带 x 的项里省略（x³ / -x），常数项必须写 1（y = x³ + 1） */
+        const coef = (abs === 1 && body) ? '' : fmt(abs);
+        parts.push({ neg: v < 0, text: coef + body });
+      };
+      addTerm(a, 'x³');
+      addTerm(b, 'x²');
+      addTerm(c, 'x');
+      addTerm(d, '');
+      if (!parts.length) return 'y = 0';
+      let s = 'y = ';
+      parts.forEach(function (t, i) {
+        if (i === 0) s += (t.neg ? '-' : '') + t.text;
+        else s += (t.neg ? ' - ' : ' + ') + t.text;
+      });
+      return s;
+    }
     // quadratic
     let aPart;
     if (p.a === 1) aPart = '';
@@ -3188,6 +3321,9 @@
     // 批3：指数 w=0 退化成常函数；底数 base≤0 或 base=1 都画不出指数/对数曲线
     if ((type === 'exp' || type === 'log') && (!(p.base > 0) || Math.abs(p.base - 1) < 1e-12)) return null;
     if (type === 'exp' && p.w === 0) return null;
+    /* 批4：三次函数 a≠0，b/c/d 必须是有限数（参数残缺/退化解不挂） */
+    if (type === 'cubic' && (!isFinite(p.a) || p.a === 0 || !isFinite(p.b)
+      || !isFinite(p.c) || !isFinite(p.d))) return null;
     // 原曲线（题目给出/默认参数那条）：只有调用方给了才叠画，没给就降级为单曲线
     const baseRaw = (hasBaseCurve(type) && o.base && typeof o.base === 'object'
       && (!o.base.type || o.base.type === type)) ? o.base : null;
@@ -3373,8 +3509,9 @@
           yMin = mid - 2.5; yMax = mid + 2.5;
           if (yMin > 0) yMin = 0; else if (yMax < 0) yMax = 0;
         }
-      } else if (type === 'exp' || type === 'log' || type === 'power') {
+      } else if (type === 'exp' || type === 'log' || type === 'power' || type === 'cubic') {
         /* 批3：三族共用 curveWindow 的 x 范围，y 方向按曲线实际取值自适应；
+         * 批4 三次曲线同一套（x 覆盖两驻点与 y 轴交点，y 由采样定且含 0）。
          * 一律含 0 与关键水平线（指数渐近线 / 幂函数 y=0），保证读数有参照。 */
         const cw = curveWindow(p);
         xMin = cw.xMin; xMax = cw.xMax;
@@ -3428,6 +3565,7 @@
         }
         return q.a * Math.pow(x, q.p);
       }
+      if (type === 'cubic') return ((q.a * x + q.b) * x + q.c) * x + q.d;
       return q.a * (x - q.h) * (x - q.h) + q.k;
     }
 
@@ -3903,6 +4041,33 @@
             markers.push(markerRect(X, Y, 4.5));
           });
         }
+      } else if (type === 'cubic') {
+        /* 批4：两块画板共用同一底座 —— 黑色粗实线 y 轴（照 quadratic 奇偶性分支的画法），
+         * 再按画板名标红点：cubic-parity 标 (0, d)，cubic-extremum 标每个实驻点。
+         * 红点旁**绝不印数值**（坐标是答案，留给学生从刻度读）。 */
+        ctx.save();
+        ctx.strokeStyle = '#111';
+        ctx.lineWidth = 2.2;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        const X0 = sx({ x: 0 }, w);
+        if (X0 >= 0 && X0 <= w.w) { ctx.moveTo(X0, 0); ctx.lineTo(X0, w.hp); }
+        ctx.stroke();
+        ctx.restore();
+        const dots = [];
+        if (noteLab === 'cubic-parity') {
+          dots.push({ x: 0, y: fAt(p, 0) });
+        } else if (noteLab === 'cubic-extremum') {
+          cubicCritPoints(p).forEach(function (x) { dots.push({ x: x, y: fAt(p, x) }); });
+        }
+        dots.forEach(function (pt) {
+          if (!isFinite(pt.y)) return;
+          const X = sx({ x: pt.x }, w), Y = sy({ y: pt.y }, w);
+          if (X < 0 || X > w.w || Y < 0 || Y > w.hp) return;
+          ctx.fillStyle = '#c0392b';
+          ctx.beginPath(); ctx.arc(X, Y, 5, 0, Math.PI * 2); ctx.fill();
+          markers.push(markerRect(X, Y, 5));
+        });
       } else {
         // inverse：双曲线两支 + 渐近线虚线（文案同样由 intent 生成）
       }
@@ -4131,7 +4296,10 @@
             parity: type === 'quadratic' && intent === '奇偶性',
             /* 一次函数：标出的两个截距 / 反比例：标出象限说明 */
             intercepts: type === 'linear',
-            quadrants: type === 'inverse'
+            quadrants: type === 'inverse',
+            /* 批4：三次曲线两块画板各自的视觉重点（E2E/排查用） */
+            cubicParity: type === 'cubic' && noteLab === 'cubic-parity',
+            cubicExtremum: type === 'cubic' && noteLab === 'cubic-extremum'
           }
         };
       },
@@ -4151,7 +4319,7 @@
     TYPE_DEF: TYPE_DEF,
     labFor: labFor, labForScene: labForScene, baseOf: baseOf, mount: mount, formatFormula: formatFormula,
     /* 任务一：能力清单 + intent 文案（匹配层/审计脚本/测试的唯一来源） */
-    CAPABILITIES: CAPABILITIES, CAP_TYPE: CAP_TYPE, NOTE_BY_INTENT: NOTE_BY_INTENT, noteTemplate: noteTemplate,
+    CAPABILITIES: CAPABILITIES, CAP_TYPE: CAP_TYPE, NOTE_BY_INTENT: NOTE_BY_INTENT, NOTE_INTENT: NOTE_INTENT, noteTemplate: noteTemplate,
     intentKey: intentKey, intentSupported: intentSupported, intentUsesRoots: intentUsesRoots,
     capabilityIntents: capabilityIntents,
     noteText: noteText, ROOT_INTENTS: ROOT_INTENTS.slice(),

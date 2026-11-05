@@ -112,7 +112,12 @@ const WANT = {
   'cnm_h046_q2': 'log',
   'cnm_h046_q4': 'log',
   'cnm_h047_q1': 'log',
-  'cnm_h047_q2': 'log'
+  'cnm_h047_q2': 'log',
+  /* 批4 新增 4 题：二次 2（顶点横坐标）+ 三次 2（奇偶性 / 极值点横坐标） */
+  'cnm_h225_q1': 'quadratic',
+  'cnm_h228_q2': 'quadratic',
+  'cnm_h035_q2': 'cubic',
+  'cnm_h229_q2': 'cubic'
 };
 
 /* 测算判 `misleading` 的 31 条（docs/highschool-funclab-coverage.md §3/§6）：
@@ -153,17 +158,16 @@ const MISLEADING = [
   'cnm_h229_q3'  // needs-tangent-board
 ];
 
-/* 敏感项（板主 2026-11-05 裁定「严读」）：
- *   · 三题问 `f'(x)=0` 的横坐标 —— 虽然画板标了极值点横坐标，但凡问导数一律归「切线画板」
- *     （尚未立项），本批不放行；
+/* 敏感项（板主 2026-11-05 裁定）：
+ *   · 批4 改宽口径：`f'(x)=0` 的三题（h225_q1 / h228_q2 / h229_q2）按 docs §8
+ *     已列明的二选一放行 —— 画板标出的极值点横坐标就是答案，不再是敏感项；
  *   · 灰区（简报 §2）：cnm_h069_q4 的 tan 90° 画板虽有渐近线，但答案是「无定义」这种
- *     否定式结论，画板不能替学生下结论 —— 按敏感项处理，不放进白名单。
+ *     否定式结论，画板不能替学生下结论 —— 仍按敏感项处理，不放进白名单。
  *     （批1 登记过的 cnm_h066_q4「sin 定义域」已随批2 放行，移出本清单。） */
 const SENSITIVE = [
-  'cnm_h225_q1', // f(x)=x²−4x，f'(x)=0 → x（二次族，测算判 ok）
-  'cnm_h228_q2', // 面积 S=x(10−x)，S'(x)=0 → x（二次族，测算判 ok；且 S= 记法解析不出）
-  'cnm_h229_q2', // f(x)=x³−3x，f'(x)=0 → 正的 x（三次族，本批不做）
-  'cnm_h069_q4'  // y=tan x 在 x=90°（三角族，批2 仍不放行；测算判 misleading）
+  /* 板主批4 裁定改宽口径：`f'(x)=0` 的三题（h225_q1 / h228_q2 / h229_q2）按 docs §8
+   * 已列明的二选一放行（画板标出的极值点横坐标就是答案），灰区 tan 90° 仍按敏感项挡。 */
+  'cnm_h069_q4'  // y=tan x 在 x=90°（三角族；测算判 misleading，板主灰区裁定仍不放行）
 ];
 
 /* 本批明确不做的族（永久排除），这些题一条都不许挂。
@@ -184,7 +188,7 @@ const PRE_EXISTING_CURVES = ['cnm_h172_q1', 'cnm_h172_q2', 'cnm_h172_q3'];
  * 1. 放行表 ↔ 实现：一字不差
  * ================================================================ */
 
-test('HS_ITEMS 是逐题表，键集合与契约表一致（30 题）', function () {
+test('HS_ITEMS 是逐题表，键集合与契约表一致（34 题）', function () {
   assert.ok(F.HS_ITEMS, 'funclab 必须导出 HS_ITEMS（放行表），否则测试无法核对');
   const got = Object.keys(F.HS_ITEMS).sort();
   const want = Object.keys(WANT).sort();
@@ -195,10 +199,10 @@ test('HS_ITEMS 是逐题表，键集合与契约表一致（30 题）', function
   });
 });
 
-test('HS_ITEMS 的题族配比 = 二次 10 / 一次 3 / 反比例 1 / 三角 9 / 指数 3 / 对数 4', function () {
-  const cnt = { quadratic: 0, linear: 0, inverse: 0, trig: 0, exp: 0, log: 0 };
+test('HS_ITEMS 的题族配比 = 二次 12 / 一次 3 / 反比例 1 / 三角 9 / 指数 3 / 对数 4 / 三次 2', function () {
+  const cnt = { quadratic: 0, linear: 0, inverse: 0, trig: 0, exp: 0, log: 0, cubic: 0 };
   Object.keys(F.HS_ITEMS).forEach(function (id) { cnt[F.HS_ITEMS[id]]++; });
-  assert.deepStrictEqual(cnt, { quadratic: 10, linear: 3, inverse: 1, trig: 9, exp: 3, log: 4 });
+  assert.deepStrictEqual(cnt, { quadratic: 12, linear: 3, inverse: 1, trig: 9, exp: 3, log: 4, cubic: 2 });
 });
 
 test('表内 id 全部真实存在，且题面就在对应知识点下', function () {
@@ -212,7 +216,7 @@ test('表内 id 全部真实存在，且题面就在对应知识点下', functio
  * 2. 表内每题必须挂得上（漏挂 = 本批白干）
  * ================================================================ */
 
-test('表内 30 题 labFor 全部挂得上，类型与表一致', function () {
+test('表内 34 题 labFor 全部挂得上，类型与表一致', function () {
   Object.keys(WANT).forEach(function (id) {
     const item = q(id);
     const got = F.labFor(item.topicId, item.prompt, { itemId: id });
@@ -221,7 +225,7 @@ test('表内 30 题 labFor 全部挂得上，类型与表一致', function () {
   });
 });
 
-test('表内 30 题 labForScene 全部挂得上（学生实际走的入口）', function () {
+test('表内 34 题 labForScene 全部挂得上（学生实际走的入口）', function () {
   Object.keys(WANT).forEach(function (id) {
     const item = q(id);
     const scene = F.labForScene(item.topicId, item.prompt, { itemId: id });
@@ -275,7 +279,7 @@ test('测算判 misleading 的 31 题：labFor 与 labForScene 都必须返回 n
   assert.deepStrictEqual(bad, [], '这些题挂了就是误挂回归：' + bad.join(','));
 });
 
-test('敏感项 4 题（f\'(x)=0 三题 + 灰区 tan 90°）不在表内、也挂不上', function () {
+test('敏感项 1 题（灰区 tan 90°）不在表内、也挂不上', function () {
   SENSITIVE.forEach(function (id) {
     assert.strictEqual(F.HS_ITEMS[id], undefined, id + ' 不应进 HS_ITEMS（板主严读口径）');
     const item = q(id);
@@ -294,11 +298,11 @@ test('本批不做的族（含参 / 只给值 / 只给导数 / 复合式）一�
 });
 
 /* ================================================================
- * 5. 高中挂载总量：恰好 33 = 本批 30 + 既有 cnm_h172 三题
+ * 5. 高中挂载总量：恰好 37 = 本批 34 + 既有 cnm_h172 三题
  *    （多一条就是「顺手放宽」，少一条就是本批漏挂 —— 两头都算红）
  * ================================================================ */
 
-test('高中（cnm_h*）全量挂载恰好 33 题，逐题可点名', function () {
+test('高中（cnm_h*）全量挂载恰好 37 题，逐题可点名', function () {
   const hs = QUESTIONS.filter(function (x) { return /^cnm_h/.test(x.id); });
   const mounted = hs.filter(function (x) {
     return !!F.labForScene(x.topicId, x.prompt, { itemId: x.id });
@@ -367,8 +371,8 @@ test('初中典型放行口原样：一次/二次/反比例/方程门禁/双曲�
  *    —— 防止以后有人把 extend / misleading 的题塞进表里，或按喜好加题
  * ================================================================ */
 
-test('表内集合 = 六族 gated ok（二次 12 / 一次 3 / 反比例 1 / 三角 9 / 指数 3 / 对数 4）减敏感项', function () {
-  const okFam = { 'existing.quadratic': [], 'existing.linear': [], 'existing.inverse': [], 'trig': [], 'exp': [], 'log': [], 'power': [] };
+test('表内集合 = 七族 gated ok（二次 12 / 一次 3 / 反比例 1 / 三角 9 / 指数 3 / 对数 4 / 三次 2）减敏感项', function () {
+  const okFam = { 'existing.quadratic': [], 'existing.linear': [], 'existing.inverse': [], 'trig': [], 'exp': [], 'log': [], 'power': [], 'cubic': [] };
   QUESTIONS.filter(function (x) { return /^cnm_h/.test(x.id) && inMain(x); }).forEach(function (item) {
     const m = measureOf(item);
     if (m.j && m.j.verdict === 'ok' && okFam[m.fam]) okFam[m.fam].push(item.id);
@@ -380,14 +384,16 @@ test('表内集合 = 六族 gated ok（二次 12 / 一次 3 / 反比例 1 / 三�
   assert.strictEqual(okFam['exp'].length, 3, '指数 gated ok 应为 3（口径变了？）');
   assert.strictEqual(okFam['log'].length, 4, '对数 gated ok 应为 4（口径变了？）');
   assert.strictEqual(okFam['power'].length, 0, '幂根式本批应为 0 条 gated ok（口径变了？）');
+  assert.strictEqual(okFam['cubic'].length, 2, '三次 gated ok 应为 2（口径变了？）');
 
   const expect = okFam['existing.quadratic']
     .filter(function (id) { return SENSITIVE.indexOf(id) < 0; })
     .concat(okFam['existing.linear'], okFam['existing.inverse'],
       okFam['trig'].filter(function (id) { return SENSITIVE.indexOf(id) < 0; }),
-      okFam['exp'], okFam['log']).sort();
+      okFam['exp'], okFam['log'],
+      okFam['cubic'].filter(function (id) { return SENSITIVE.indexOf(id) < 0; })).sort();
   assert.deepStrictEqual(Object.keys(WANT).sort(), expect,
-    '表内集合与「六族 ok − 敏感项」不一致（多/少都算漂移）');
+    '表内集合与「七族 ok − 敏感项」不一致（多/少都算漂移）');
 });
 
 test('表内每题在测算脚本里都是 gated ok，且不是 extend/misleading', function () {
@@ -491,7 +497,12 @@ const EXPECT_MOUNT = {
   'cnm_h046_q2': ['log-curve', '定义域'],
   'cnm_h046_q4': ['log-curve', '图象经过的定点'],
   'cnm_h047_q1': ['log-curve', '单调性'],
-  'cnm_h047_q2': ['log-curve', '单调性']
+  'cnm_h047_q2': ['log-curve', '单调性'],
+  /* 批4：二次 2（顶点横坐标）+ 三次 2（奇偶性 / 极值点横坐标） */
+  'cnm_h225_q1': ['quadratic-vertex', '顶点坐标'],
+  'cnm_h228_q2': ['quadratic-vertex', '顶点坐标'],
+  'cnm_h035_q2': ['cubic-parity', '奇偶性'],
+  'cnm_h229_q2': ['cubic-extremum', '极值点的横坐标']
 };
 
 /* 能力缺口（批1.5 时点登记）→ **批1.6（t_e63a9673）已补齐**：quadratic 画板新增
@@ -508,7 +519,7 @@ const CLOSED_CAP_GAPS = ['cnm_h023_q4', 'cnm_h032_q4', 'cnm_h035_q1', 'cnm_h036_
  * 归一化只作用于区间解析这一个函数，Funclab.fromPrompt 的曲线解析语义零改动。 */
 const CLOSED_INTERVAL_GAPS = ['cnm_h034_q2', 'cnm_h227_q2'];
 
-test('白名单里 24 题能过「表 + intent + 代回」三道闸（批1.5 的 8 + 批2 三角 9 + 批3 指对 7）', function () {
+test('白名单里 28 题能过「表 + intent + 代回」三道闸（批1.5 的 8 + 批2 三角 9 + 批3 指对 7 + 批4 的 4）', function () {
   const bad = [];
   Object.keys(EXPECT_MOUNT).forEach(function (id) {
     const pair = EXPECT_MOUNT[id];
@@ -528,9 +539,9 @@ test('白名单里 24 题能过「表 + intent + 代回」三道闸（批1.5 的
     if (!F.noteText(pair[0], pair[1], params)) bad.push(id + ' 没有文案');
   });
   assert.deepStrictEqual(bad, [], bad.join(' / '));
-  assert.strictEqual(Object.keys(EXPECT_MOUNT).length, 24, '可挂契约应为 24 题（8 + 批2 三角 9 + 批3 指对 7）');
+  assert.strictEqual(Object.keys(EXPECT_MOUNT).length, 28, '可挂契约应为 28 题（8 + 批2 三角 9 + 批3 指对 7 + 批4 的 4）');
   assert.strictEqual(Object.keys(EXPECT_MOUNT).length + CLOSED_CAP_GAPS.length + CLOSED_INTERVAL_GAPS.length,
-    30, '24 可挂 + 4 能力缺口 + 2 区间缺口 = 白名单 30 题，一题都不许漏账');
+    34, '28 可挂 + 4 能力缺口 + 2 区间缺口 = 白名单 34 题，一题都不许漏账');
 });
 
 test('批1.6：4 条原能力缺口现在都有对应 intent（缺口已补齐，退回缺口状态就红）', function () {
