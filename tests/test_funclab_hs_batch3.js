@@ -149,11 +149,12 @@ test('含参 / 叠幂 / 根号内非一次：一律 null（头匹配后不许掉
   });
 });
 
-test('x / x² / x³ / x^2 交回既有通道（p∈{1,2,3} 不截走）', function () {
+test('x / x² / x^2 交回既有通道（p∈{1,2} 不截走；x³ 批4 归 cubic）', function () {
   assert.deepStrictEqual(F.fromPrompt('y=x'), { type: 'linear', k: 1, b: 0 });
   assert.deepStrictEqual(F.fromPrompt('y=x²'), { type: 'quadratic', a: 1, h: 0, k: 0 });
   assert.deepStrictEqual(F.fromPrompt('y=x^2'), { type: 'quadratic', a: 1, h: 0, k: 0 });
-  assert.strictEqual(F.fromPrompt('y=x^3'), null);
+  /* 批4（t_34817311）：三次多项式独立成 cubic 族，不再交回 null。 */
+  assert.deepStrictEqual(F.fromPrompt('y=x^3'), { type: 'cubic', a: 1, b: 0, c: 0, d: 0 });
 });
 
 /* ================================================================
@@ -247,10 +248,10 @@ test('cnm_h221_q2 解析得出、被门禁挡下（不是解析不出）', funct
 });
 
 /* ================================================================
- * 1. 白名单：HS_ITEMS 恰好 30 条，旧 23 条逐字不动
+ * 1. 白名单：HS_ITEMS 恰好 34 条，旧 23 条逐字不动
  * ================================================================ */
 
-console.log('\n--- 1. 白名单 30 条 ---');
+console.log('\n--- 1. 白名单 34 条 ---');
 
 /* 批3 之前的 23 条（批1/1.5/1.6 的 14 + 批2 三角 9），逐条 deepStrictEqual 锁死。 */
 const OLD23 = {
@@ -279,9 +280,9 @@ const OLD23 = {
   'cnm_h075_q2': 'trig'
 };
 
-test('HS_ITEMS 恰好 30 条：旧 23 条逐条键值不动 + 新增 7 条 exp/log', function () {
+test('HS_ITEMS 恰好 34 条：旧 23 条逐条键值不动 + 新增 7 条 exp/log + 批4 的 4 条', function () {
   const ids = Object.keys(F.HS_ITEMS).sort();
-  assert.strictEqual(ids.length, 30, 'HS_ITEMS 应为 30 条（23 + 7），实际 ' + ids.length);
+  assert.strictEqual(ids.length, 34, 'HS_ITEMS 应为 34 条（23 + 7 + 4），实际 ' + ids.length);
   Object.keys(OLD23).forEach(function (id) {
     assert.strictEqual(F.HS_ITEMS[id], OLD23[id], id + ' 的类型被改动（旧 23 条必须逐字不动）');
   });
@@ -293,8 +294,15 @@ test('HS_ITEMS 恰好 30 条：旧 23 条逐条键值不动 + 新增 7 条 exp/l
   Object.keys(NEW7).forEach(function (id) {
     assert.strictEqual(F.HS_ITEMS[id], NEW7[id], id + ' 应以 ' + NEW7[id] + ' 进白名单');
   });
-  assert.deepStrictEqual(ids, Object.keys(OLD23).concat(Object.keys(NEW7)).sort(),
-    'HS_ITEMS 键集合应与「旧 23 + 新 7」完全一致');
+  const NEW4 = {
+    'cnm_h225_q1': 'quadratic', 'cnm_h228_q2': 'quadratic',
+    'cnm_h035_q2': 'cubic', 'cnm_h229_q2': 'cubic'
+  };
+  Object.keys(NEW4).forEach(function (id) {
+    assert.strictEqual(F.HS_ITEMS[id], NEW4[id], id + ' 应以 ' + NEW4[id] + ' 进白名单');
+  });
+  assert.deepStrictEqual(ids, Object.keys(OLD23).concat(Object.keys(NEW7), Object.keys(NEW4)).sort(),
+    'HS_ITEMS 键集合应与「旧 23 + 新 7 + 批4 的 4」完全一致');
 });
 
 /* ================================================================
@@ -347,17 +355,18 @@ test('7 题不带 itemId 时 labFor / labForScene 都不挂', function () {
 });
 
 /* ================================================================
- * 4. 高中全量挂载恰好 33 题
+ * 4. 高中全量挂载恰好 37 题
  * ================================================================ */
 
 console.log('\n--- 4. 高中全量挂载 ---');
 
-test('高中（cnm_h*）全量挂载恰好 33 题（30 白名单 + cnm_h172 三题）', function () {
+test('高中（cnm_h*）全量挂载恰好 37 题（34 白名单 + cnm_h172 三题）', function () {
   const hs = QUESTIONS.filter(function (x) { return /^cnm_h/.test(x.id); });
   const mounted = hs.filter(function (x) {
     return !!F.labForScene(x.topicId, x.prompt, { itemId: x.id });
   }).map(function (x) { return x.id; }).sort();
-  const want = Object.keys(OLD23).concat(Object.keys(LEDGER_LAB))
+  const want = Object.keys(OLD23).concat(Object.keys(LEDGER_LAB),
+    ['cnm_h225_q1', 'cnm_h228_q2', 'cnm_h035_q2', 'cnm_h229_q2'])
     .concat(['cnm_h172_q1', 'cnm_h172_q2', 'cnm_h172_q3']).sort();
   assert.deepStrictEqual(mounted, want, '高中挂载清单与预期不符（多：' +
     mounted.filter(function (id) { return want.indexOf(id) < 0; }).join(',') + '；少：' +

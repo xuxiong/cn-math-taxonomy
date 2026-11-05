@@ -2,7 +2,7 @@
 /* 高中函数画板 批2：三角函数 9 题上线 —— y = A·sin(ωx+φ)+k 解析 + 5 个 trig-* 画板
  *   node tests/test_funclab_hs_batch2.js
  *
- * 白名单 14 → 30（+9 三角、批3 再 +7 指对），高中挂载 17 → 33。批1/1.5/1.6 的 14 条契约一题不动，
+ * 白名单 14 → 34（+9 三角、批3 再 +7 指对、批4 再 +4），高中挂载 17 → 37。批1/1.5/1.6 的 14 条契约一题不动，
  * 逐题台账仍在 tests/test_funclab_hs_batch1.js / test_funclab_hs_batch16.js。
  *
  * 本文件锁十三件事：
@@ -94,9 +94,9 @@ const MISLEADING = [
 
 console.log('\n--- 1. 白名单 +9（14 → 23；批3 再 +7 → 30） ---');
 
-test('HS_ITEMS 恰好 30 条：旧 14 条逐字不动 + 三角 9 条 + 批3 指对 7 条', function () {
+test('HS_ITEMS 恰好 34 条：旧 14 条逐字不动 + 三角 9 条 + 批3 指对 7 条 + 批4 的 4 条', function () {
   const ids = Object.keys(F.HS_ITEMS).sort();
-  assert.strictEqual(ids.length, 30, 'HS_ITEMS 应为 30 条（14 + 9 + 7），实际 ' + ids.length);
+  assert.strictEqual(ids.length, 34, 'HS_ITEMS 应为 34 条（14 + 9 + 7 + 4），实际 ' + ids.length);
   BATCH3.forEach(function (id) {
     assert.ok(ids.indexOf(id) >= 0, '批3 的 ' + id + ' 不许从白名单里消失');
     assert.ok(['exp', 'log'].indexOf(F.HS_ITEMS[id]) >= 0, id + ' 应以 exp/log 进白名单');
@@ -140,12 +140,13 @@ test('h069_q4（y=tan x 在 x=90°，测算判 misleading）不进白名单、�
   assert.strictEqual(F.labForScene(item.topicId, item.prompt, { itemId: item.id }), null, 'h069_q4 不应挂画板');
 });
 
-test('高中全量挂载恰好 33 题（批1 14 + 批2 9 + 批3 7 + 既有 cnm_h172 三题）', function () {
+test('高中全量挂载恰好 37 题（批1 14 + 批2 9 + 批3 7 + 批4 4 + 既有 cnm_h172 三题）', function () {
   const hs = QUESTIONS.filter(function (x) { return /^cnm_h/.test(x.id); });
   const mounted = hs.filter(function (x) {
     return !!F.labForScene(x.topicId, x.prompt, { itemId: x.id });
   }).map(function (x) { return x.id; }).sort();
-  const want = OLD14.concat(BATCH3, LEDGER.map(function (c) { return c.id; }))
+  const want = OLD14.concat(BATCH3, LEDGER.map(function (c) { return c.id; }),
+    ['cnm_h225_q1', 'cnm_h228_q2', 'cnm_h035_q2', 'cnm_h229_q2'])
     .concat(['cnm_h172_q1', 'cnm_h172_q2', 'cnm_h172_q3']).sort();
   assert.deepStrictEqual(mounted, want, '高中挂载清单与预期不符（多：' +
     mounted.filter(function (id) { return want.indexOf(id) < 0; }).join(',') + '；少：' +

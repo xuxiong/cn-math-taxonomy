@@ -303,6 +303,8 @@
       if (!isFinite(v)) return { ok: false, why: ['参数缺失或非数值: ' + key] };
     }
     if (type === 'quadratic' && Number(p.a) === 0) return { ok: false, why: ['a=0 不是二次函数'] };
+    /* 批4：三次函数 a≠0（b/c/d 在上面的数值循环里已逐个校验有限） */
+    if (type === 'cubic' && Number(p.a) === 0) return { ok: false, why: ['a=0 不是三次函数'] };
     if ((type === 'linear' || type === 'inverse') && Number(p.k) === 0) return { ok: false, why: ['k=0 画不出图象'] };
     /* 批2：w=0 时 A·sin(0·x+φ)+k 是常函数，不是三角函数（mount 同口径拒绝） */
     if (type === 'trig' && Number(p.w) === 0) return { ok: false, why: ['w=0 不是三角函数（退化为常函数）'] };
@@ -349,6 +351,14 @@
       }
     } else if (type === 'inverse') {
       if (!close(Number(p.k), parsed.k)) why.push('参数代回不符：LLM k=' + p.k + ' ≠ 题面 k=' + parsed.k);
+    } else if (type === 'cubic') {
+      /* 批4：a/b/c/d 四项系数逐一 close 代回（题面解析结果由 fromPrompt 独立给出，
+       * LLM 给的参数只要有一项对不上就拒绝 —— 与二次「展开系数逐项比对」同一口径） */
+      if (!close(Number(p.a), parsed.a) || !close(Number(p.b), parsed.b)
+        || !close(Number(p.c), parsed.c) || !close(Number(p.d), parsed.d)) {
+        why.push('参数代回不符：LLM a=' + p.a + ',b=' + p.b + ',c=' + p.c + ',d=' + p.d
+          + ' ≠ 题面 a=' + parsed.a + ',b=' + parsed.b + ',c=' + parsed.c + ',d=' + parsed.d);
+      }
     } else if (type === 'trig') {
       /* 批2：函数名先比（字符串），数值参数逐项 close（φ 是 π 的倍数，浮点安全走 EPS 容差） */
       if (String(p.fn) !== parsed.fn) {

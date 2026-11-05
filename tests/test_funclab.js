@@ -807,7 +807,7 @@ test('formatFormula：全部真实题库可解析题面都能被格式化且不�
 });
 
 test('formatFormula：未知 type 退回二次格式（不抛错、不返回 undefined）', function () {
-  const s = F.formatFormula({ type: 'cubic', a: 1, h: 0, k: 0 });
+  const s = F.formatFormula({ type: 'no-such-type', a: 1, h: 0, k: 0 });
   assert.strictEqual(s, 'y = x²');
   // 参数缺失不在契约内（mount 总会用 TYPE_DEF.defaults 补齐），只要求不抛错
   assert.doesNotThrow(function () { F.formatFormula({}); });
@@ -894,11 +894,13 @@ test('[缺陷2] 缺项解析不会把含参系数误认（y=ax² / y=(m-2)x²）
   assert.strictEqual(F.fromPrompt('y=(m-2)x²'), null);
 });
 
-test('[缺陷3] 三次式不被当成一次函数（x³ / x^n 一律不画）', function () {
-  assert.strictEqual(F.fromPrompt('y=x³+1'), null);
-  assert.strictEqual(F.fromPrompt('y=2x³-1'), null);
+test('[缺陷3] 三次式不被当成一次函数（批4 起改挂 cubic 画板；含参/叠幂一律不画）', function () {
+  /* 批4（t_34817311）新增 cubic 族：显式三次多项式从此给出 cubic，而不是被 x 抢成 linear。 */
+  assert.notStrictEqual(F.fromPrompt('y=x³+1'), 'linear', '三次式绝不能再被当成一次函数');
+  assert.deepStrictEqual(F.fromPrompt('y=x³+1'), { type: 'cubic', a: 1, b: 0, c: 0, d: 1 });
+  assert.deepStrictEqual(F.fromPrompt('y=2x³-1'), { type: 'cubic', a: 2, b: 0, c: 0, d: -1 });
   assert.strictEqual(F.fromPrompt('y=2x^(m^2-3) 是正比例函数，求 m'), null);
-  assert.strictEqual(F.fromPrompt('y=x^3'), null);
+  assert.deepStrictEqual(F.fromPrompt('y=x^3'), { type: 'cubic', a: 1, b: 0, c: 0, d: 0 });
 });
 
 test('[缺陷4] 顶点式系数为字母时不再默认 a=1（y=a(x-2)²-1，cnm_231_q4）', function () {
@@ -1340,7 +1342,10 @@ const DESC_LABS = {
    * 全部 CAPABILITIES，所以 base/w/phi/c/shift/d、root 必须给齐。 */
   'exp-curve': { a: 1, base: 2, w: 1, phi: 0, k: 0 },
   'log-curve': { c: 1, base: 2, shift: 0, d: 0 },
-  'power-curve': { a: 1, root: { b: 1, c: 0 }, k: 0 }
+  'power-curve': { a: 1, root: { b: 1, c: 0 }, k: 0 },
+  /* 批4：两次三次画板 —— 四项系数给齐（a≠0） */
+  'cubic-parity': { a: 1, b: 0, c: 0, d: 0 },
+  'cubic-extremum': { a: 1, b: 0, c: -3, d: 0 }
 };
 function descParams(lab) {
   const p = Object.assign({}, DESC_LABS[lab]);

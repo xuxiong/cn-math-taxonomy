@@ -1,9 +1,14 @@
 /* 初中函数实验室：把题面里的函数参数解析出来，渲染可拖拽的画板。
  *
- * 支持的函数类型（初中全部函数）：
+ * 支持的函数类型（初中全部函数 + 高中批2/批3/批4 扩展族）：
  *   quadratic  二次函数  y = a(x-h)² + k    滑块 a(开口/宽窄)、h(左右平移)、k(上下平移)
  *   linear     一次函数  y = kx + b         滑块 k(斜率)、b(截距)
  *   inverse    反比例    y = k / x          滑块 k(象限/离轴远近)
+ *   trig       三角函数  y = A·sin(ωx+φ)+k （批2）
+ *   exp        指数函数  y = a·b^(wx+φ)+k   （批3）
+ *   log        对数函数  y = c·log_b(x+shift)+d（批3）
+ *   power      幂根式    y = a·x^p / a·√(bx+c)+k（批3）
+ *   cubic      三次函数  y = ax³+bx²+cx+d   （批4）
  *
  * 方案：配置驱动（预置组件，LLM 零参与）。题型白名单 + 题面解析出参数就挂载，
  * 解析不出就不挂（静默降级），因此对题库内容零侵入。
@@ -361,6 +366,70 @@
     return { type: 'log', c: c, base: base, shift: shift === 0 ? 0 : shift, d: d === 0 ? 0 : d };
   }
 
+  /* 三次多项式（批4）：y = a x³ + b x² + c x + d，只认「x³ 打头」的显式式。
+   * famSeg 已把 ³ → ^3、`f(x)=` → `y=`；四项系数必须是数值字面量，缺省项补 0，-0 归一成 0。
+   * 头匹配后由本族给出结论（对象 / null / FAM_NO_HEAD），不许被后面的幂/二次分支误读：
+   *   · 多项式头之后还写别的「= 含 x 的表达式」（两道导数题面 …则 f'(x)=3x²…）→ FAM_NO_HEAD，
+   *     交回既有 quadratic 通道，保持 cnm_h217_q2 / cnm_h220_q3 的原解析逐字不变；
+   *   · 剩余出现 `/x`、二次以上幂、字母系数 / 括号 / 乘号续写 → null（确认画不了，硬拦截）；
+   *   · 尾部中文说明（`y=x³−3x，x>0 时…`）不参与判型，仍解析成 cubic（是否挂载由 labmatch 判）。
+   */
+  function famCubic(rhs) {
+    if (rhs == null) return FAM_NO_HEAD;
+    const hm = /^\s*([+-]?\d*\.?\d*)\s*\*?\s*x\s*\^\s*3/.exec(rhs);
+    if (!hm) return FAM_NO_HEAD;
+    const a = coeffNum(hm[1]);
+    if (!isFinite(a) || a === 0) return null;
+    let rest = rhs.slice(hm[0].length);
+
+    /* 兼容闸：任一处 `=` 之后（到 。；， 之前）出现含 x 的表达式 → 这不是要画的三次式。
+       返回 FAM_NO_HEAD 而不是 null，是为了让既有 quadratic 分支继续解析导数题面。 */
+    const eqRe = /=/g;
+    let em;
+    while ((em = eqRe.exec(rest)) !== null) {
+      const after = rest.slice(em.index + 1).split(/[。；;，,]/)[0];
+      if (/x/i.test(after)) return FAM_NO_HEAD;
+    }
+
+    /* b x² 项 */
+    let b = 0;
+    let tm = /^\s*([+-])\s*(\d*\.?\d*)\s*\*?\s*x\s*\^\s*2/.exec(rest);
+    if (tm) {
+      const v = tm[2] === '' ? 1 : parseFloat(tm[2]);
+      if (!isFinite(v)) return null;
+      b = (tm[1] === '-' ? -1 : 1) * v;
+      rest = rest.slice(tm[0].length);
+    }
+    /* c x 项（`x` 后面不能还是幂/上标，否则不是一次项） */
+    let c = 0;
+    tm = /^\s*([+-])\s*(\d*\.?\d*)\s*\*?\s*x(?![²³⁴⁵⁶⁷⁸⁹\^])/.exec(rest);
+    if (tm) {
+      const v = tm[2] === '' ? 1 : parseFloat(tm[2]);
+      if (!isFinite(v)) return null;
+      c = (tm[1] === '-' ? -1 : 1) * v;
+      rest = rest.slice(tm[0].length);
+    }
+    /* d 常数项 */
+    let d = 0;
+    tm = /^\s*([+-])\s*(\d+\.?\d*)/.exec(rest);
+    if (tm) {
+      d = (tm[1] === '-' ? -1 : 1) * parseFloat(tm[2]);
+      if (!isFinite(d)) return null;
+      rest = rest.slice(tm[0].length);
+    }
+    /* 多项式之后若还接着数学符号（/、^、x、字母、乘号、括号、数字）→ 不是纯三次式，硬拦截 */
+    const tail = rest.replace(/^\s+/, '');
+    if (tail && /^[\x00-\x7F]/.test(tail)) return null;
+
+    return {
+      type: 'cubic',
+      a: a,
+      b: b === 0 ? 0 : b,
+      c: c === 0 ? 0 : c,
+      d: d === 0 ? 0 : d
+    };
+  }
+
   /** 幂根式：y = a·x^p（p∉{1,2,3}）/ y = a·√(bx+c)+k。p∈{1,2,3} → FAM_SKIP 交既有通道。 */
   function famPower(rhs) {
     if (rhs == null) return FAM_NO_HEAD;
@@ -395,11 +464,12 @@
   }
 
   /**
-   * 从题面解析函数参数 → {type, ...params}，解析不出返回 null。
+   * 既有解析内核：入参 s 必须**已经 normalize 过**（fromPrompt 负责这一步）。
+   * 这一段是批1–批3 的原始函数体，逻辑一行未改；新增族只在这里追加分支。
    * 二次：{type:'quadratic', a, h, k}   一次：{type:'linear', k, b}   反比例：{type:'inverse', k}
+   * 三次：{type:'cubic', a, b, c, d}（批4）
    */
-  function fromPrompt(prompt) {
-    const s = normalize(prompt);
+  function parseCore(s) {
     if (!s) return null;
 
     // ---------- t_1d3fe77a：隐式直线 ax+by=c（x+y=5 / x−y=1 / 2x+3y=6）----------
@@ -417,17 +487,20 @@
       if (k !== 0 && isFinite(k)) return { type: 'inverse', k: k };
     }
 
-    // ---------- 批3：指数 / 对数 / 幂根式（t_3dc2f23b）----------
+    // ---------- 批3：指数 / 对数 / 幂根式（t_3dc2f23b）；批4：三次多项式（t_34817311）----------
     // 位置铁律：反比例之后、一次函数之前（三角之前/之后均可，这里放三角之前）。
-    // 三族头匹配成功就必须由本族给出结论（对象或 null），只有「头没匹配」才继续往下走；
-    // 唯一例外是 power 的 p∈{1,2,3}：明确交回既有一次/二次通道（FAM_SKIP），不许截走 y=x²。
-    // famSeg 只在这三支内部做下标/根号/上标/`f(x)=` 前缀的局部归一 —— normalize() 一个字不动。
+    // 分发顺序：exp → log → cubic → power；头匹配成功就必须由本族给出结论（对象或 null），
+    // 只有「头没匹配」才继续往下走；例外是 power 的 p∈{1,2,3} 与 cubic 的导数题面兼容闸：
+    // 明确交回既有一次/二次通道（FAM_SKIP / FAM_NO_HEAD），不许截走 y=x² 或 …f'(x)=3x²…。
+    // famSeg 只在这几支内部做下标/根号/上标/`f(x)=` 前缀的局部归一 —— normalize() 一个字不动。
     const fam = famSeg(s);
     const fRhs = famRhs(fam);
     const fe = famExp(fRhs);
     if (fe !== FAM_NO_HEAD && fe !== FAM_SKIP) return fe;
     const fl = famLog(fRhs);
     if (fl !== FAM_NO_HEAD && fl !== FAM_SKIP) return fl;
+    const fc = famCubic(fRhs);
+    if (fc !== FAM_NO_HEAD && fc !== FAM_SKIP) return fc;
     const fp = famPower(fRhs);
     if (fp !== FAM_NO_HEAD && fp !== FAM_SKIP) return fp;
 
@@ -510,6 +583,81 @@
     if (k === 0) k = 0;
     if (!isFinite(h) || !isFinite(k)) return null;
     return { type: 'quadratic', a: a, h: h, k: k };
+  }
+
+  /* expandAreaRhs 专用：把括号内的一次式拆成 kx+b 的 (k,b)。
+     两种书写顺序都认：`2x+3`（kx+b）与 `10-x`（常数在前，k=-1）—— 题库的面积式是后者。
+     只认纯数值系数；`ax+b` 之类含字母 → null。 */
+  function linearInX(str) {
+    const t = String(str == null ? '' : str).replace(/\s+/g, '').replace(/\*/g, '');
+    let m = /^([+-]?\d*\.?\d*)x(?:([+-])(\d+\.?\d*))?$/.exec(t);
+    if (m) {
+      const k = coeffNum(m[1]);
+      const b = m[2] ? (m[2] === '-' ? -1 : 1) * parseFloat(m[3]) : 0;
+      if (!isFinite(k) || !isFinite(b)) return null;
+      return { k: k, b: b };
+    }
+    m = /^([+-]?\d+\.?\d*)([+-])(\d*\.?\d*)x$/.exec(t);
+    if (m) {
+      const b = parseFloat(m[1]);
+      const kAbs = m[3] === '' ? 1 : parseFloat(m[3]);
+      const k = (m[2] === '-' ? -1 : 1) * kAbs;
+      if (!isFinite(k) || !isFinite(b)) return null;
+      return { k: k, b: b };
+    }
+    m = /^([+-]?\d+\.?\d*)$/.exec(t);
+    if (m) return { k: 0, b: parseFloat(m[1]) };
+    return null;
+  }
+
+  /**
+   * 面积式乘法展开（批4，t_34817311）—— **只允许 fromPrompt 的 S= 窄门调用**。
+   * 其他入口一律不许用：否则任何题面里的 `x(10−x)`（含物理的 S=、体积式子）都会被当成函数式。
+   *
+   * 只收「x 乘一个一次式」的四种写法：x(10-x) / x*(10−x) / (10-x)x / (10-x)*x。
+   * 展开成 y = ax² + bx（常数项恒为 0）后重新交给 parseCore（内部先 normalize 成 x²）。
+   * 式子后面紧跟中文/标点视为题面叙述结束；紧跟 /、*、x、^、+ 等数学符号 → 不是纯面积式，返回 null
+   * （`x(10-x)/2` 就死在这里，不会被别名读成 y=x 的 linear）。
+   */
+  function expandAreaRhs(rhs) {
+    const s = String(rhs == null ? '' : rhs).replace(/^\s+/, '');
+    let m = /^x\s*\*?\s*\(\s*([^()]*)\s*\)/.exec(s);
+    if (!m) m = /^\(\s*([^()]*)\s*\)\s*\*?\s*x/.exec(s);
+    if (!m) return null;
+    const f = linearInX(m[1]);
+    if (!f) return null;
+    /* 式子边界：后面必须是叙述（非 ASCII 的中文/中文标点）或结尾，数学符号续写一律拒绝 */
+    const tail = s.slice(m[0].length).replace(/^\s+/, '');
+    if (tail && /^[\x00-\x7F]/.test(tail)) return null;
+    /* x·(k x + b) = k x² + b x */
+    const expr = 'y=' + f.k + 'x^2' + (f.b === 0 ? '' : (f.b > 0 ? '+' : '') + f.b + 'x');
+    return parseCore(normalize(expr));
+  }
+
+  /**
+   * 从题面解析函数参数 → {type, ...params}，解析不出返回 null。
+   * 薄壳顺序（批4）：先走既有内核 parseCore（行为一字不变，direct 非 null 直接返回），
+   * 只有 direct === null 且题面出现独立 `S=` 时，才启用面积式窄门：
+   *   1) 「视同 y=」的窄别名 parseCore('y=' + rhs)；
+   *   2) 面积式乘法展开 expandAreaRhs(rhs)（仅 x 乘一次式）；
+   *   3) 都不成 → null。
+   * 别名只对不含括号的右式生效：parseCore 是前缀匹配，含括号的式子（x(10-x)）会被
+   * 读成 linear 而不是展开后的 quadratic —— 含括号一律交 expandAreaRhs，它拒收即 null。
+   */
+  function fromPrompt(prompt) {
+    const s = normalize(prompt);
+    const direct = parseCore(s);
+    if (direct) return direct;
+
+    /* S= 窄门：无 S= 的题面永远不到这里（既有 197+ 题行为零变化） */
+    const sm = /(?:^|[^0-9A-Za-z_.])S\s*=/.exec(s);
+    if (!sm) return null;
+    const rhs = s.slice(sm.index + sm[0].length);
+    if (!/[()]/.test(rhs)) {
+      const alias = parseCore('y=' + rhs);
+      if (alias) return alias;
+    }
+    return expandAreaRhs(rhs);
   }
 
   /** 三角函数解析（批2）：fromPrompt 的三角头已匹配（m[1]=A 系数串、m[2]=fn），这里解析余下部分。
@@ -641,7 +789,17 @@
     'cnm_h046_q2': 'log',         // y=log₂x 的定义域 → 曲线只在竖直渐近线右侧
     'cnm_h046_q4': 'log',         // y=log₂x 经过的定点 → 红色圆点
     'cnm_h047_q1': 'log',         // y=log₂x 在 (0,+∞) 上的增减 → 曲线走向
-    'cnm_h047_q2': 'log'          // y=log_(1/2)x 在定义域上的增减 → 曲线走向
+    'cnm_h047_q2': 'log',         // y=log_(1/2)x 在定义域上的增减 → 曲线走向
+    /* ---- 批4（t_34817311）：最后 4 题补齐（二次 2 + 三次 2） ----
+     * 来源：scripts/measure_highschool_funclab_coverage.js 的 gated ok ——
+     *   二次族 12 条 ok 里的 h225_q1 / h228_q2（问 f'(x)=0 的横坐标，恰是顶点横坐标），
+     *   三次族 12 题 ok 2 条（h035_q2 奇偶性 / h229_q2 极值点横坐标）。
+     * h228_q2 依赖 fromPrompt 的 S= 窄门（S=x(10−x) 视同面积式展开成二次）。
+     * 三次两题各挂一块新画板（cubic-parity / cubic-extremum），类型与 fromPrompt 逐字一致。 */
+    'cnm_h225_q1': 'quadratic',   // f(x)=x²−4x，f'(x)=0 → 顶点横坐标 2
+    'cnm_h228_q2': 'quadratic',   // 面积 S=x(10−x)，S'(x)=0 → 顶点横坐标 5（依赖 S= 窄门）
+    'cnm_h035_q2': 'cubic',       // f(x)=x³ 的奇偶性 → 绕 y 轴交点转 180°
+    'cnm_h229_q2': 'cubic'        // f(x)=x³−3x 的极值点横坐标 → 左右两个实驻点
   };
 
   /** 高中逐题放行：返回画板类型，未放行返回 null（按题 id，不看章） */
@@ -744,6 +902,8 @@
     if (type === 'trig') return null;
     /* 批3：指数 / 对数 / 幂根式同样不叠画基准曲线（画板自带渐近线/定义域边界） */
     if (type === 'exp' || type === 'log' || type === 'power') return null;
+    /* 批4：三次曲线没有「基准曲线」概念，不叠画 */
+    if (type === 'cubic') return null;
     const s = normalize(prompt);
     const shiftWord = /平移|向左|向右|向上|向下/.test(s);
     const explicitBase = /y\s*=\s*[+-]?\s*x²/.test(s) && !/y\s*=\s*[+-]?\s*\d/.test(s);
@@ -979,6 +1139,24 @@
         + '根式形只画在定义域内，红色圆点标出定义域起点，灰色竖直虚线标定义域边界。'
         + '定义域、值域、单调性与定点都从图上读。'
     },
+    /* ---- 三次函数（批4：t_34817311） ----
+     * 拆成两块画板，而不是一块「三次函数」画板：
+     * 一条 note 同时描述「绕 y 轴交点转 180°」和「两个转折点红点」，必然有一半与画布不符 ——
+     * 这正是批2 F1 的漂移缺陷。两块各自 note ↔ 画布逐字对齐：
+     *   cubic-parity   —— 图上只标 y 轴交点，讲对称（绕该点转 180° / 左右是否像照镜子）；
+     *   cubic-extremum —— 图上只标实驻点，讲极值点横坐标（左右各一个）。
+     * 文案铁律同批2/批3：只印题面已知量 {y} + 引导提问，不印坐标/数值；
+     * 线型颜色必须与 annotate 的绘制逐字一致；渲染层是 textContent，文案不出现 ** 强调符。 */
+    'cubic-parity': {
+      canAnswer: ['奇偶性'],
+      params: ['a', 'b', 'c', 'd'],
+      note: '三次函数 y=ax³+bx²+cx+d 的图象：蓝色实线是曲线，黑色粗实线是 y 轴（x = 0），红色圆点是曲线与 y 轴的交点。把整条曲线绕这个点转 180°，看转过来的曲线能否与原来那条完全重合、左右两侧的走势是否像照镜子一样连在一起 —— 这是从图上读。坐标不印数值。'
+    },
+    'cubic-extremum': {
+      canAnswer: ['极值点的横坐标'],
+      params: ['a', 'b', 'c', 'd'],
+      note: '三次函数 y=ax³+bx²+cx+d 的图象：蓝色实线是曲线，黑色粗实线是 y 轴（x = 0），红色圆点标出曲线由升转降、由降转升的转折点（只标点、不印数值）。转折点在 y 轴左右各一个，横坐标从 x 轴刻度上读。'
+    },
     /* ---- 多曲线：一个坐标系里两条曲线 + 它们的交点（t_1d3fe77a） ---- */
     'two-curves-intersect': {
       type: 'curves',
@@ -1019,6 +1197,8 @@
     'exp-curve': 'exp',
     'log-curve': 'log',
     'power-curve': 'power',
+    'cubic-parity': 'cubic',
+    'cubic-extremum': 'cubic',
     'two-curves-intersect': 'curves'
   };
 
@@ -1171,6 +1351,15 @@
       '值域': '题面给的函数是 {y2}。看蓝色实线在整张图上能取到哪些 y 值：'
         + '曲线向上、向下各能延伸到多远？值域该怎么写？ '
         + '自己从图上读，图上不标范围。'
+    },
+    /* 三次函数（批4）：两块画板各有自己的讲法，互不串台。
+     * 只印题面已知量 {y}；红色圆点的位置（y 轴交点 / 实驻点）不印数值。
+     * cubic-parity 的文案不出现「奇 / 偶」二字 —— 让学生自己按图判断（防答案泄漏）。 */
+    'cubic-parity': {
+      '奇偶性': '题面给的函数是 {y}。图上蓝色实线是它的图象，黑色粗实线是 y 轴（x = 0），红色圆点是曲线与 y 轴的交点。把整条曲线绕这个红点转 180°：转过来的曲线和原来那条能完全重合吗？再看这个红点左右两侧：两边的曲线是像照镜子一样连在一起，还是两边朝着同一个方向走？自己对着图判断。'
+    },
+    'cubic-extremum': {
+      '极值点的横坐标': '题面给的函数是 {y}。图上蓝色实线是它的图象，黑色粗实线是 y 轴（x = 0），红色圆点标出曲线由上升转为下降、又由下降转为上升的转折点（只标点、不印数值）。这些点一个在 y 轴左边、一个在 y 轴右边：题面问的那个正的横坐标，对着 x 轴刻度读出来是多少？自己从图上读。'
     },
     /* 多曲线画板（t_1d3fe77a）：两条曲线的表达式是题面已知量，交点坐标是派生量 → 一律留白。
      * 文案里不许出现「根」字（test_labmatch 的通用断言），只说「交点」。 */
@@ -1708,6 +1897,22 @@
   }
 
   /**
+   * 三次函数的实驻点（f'(x)=3a x²+2b x+c=0 的实根）。
+   * 判别式 >0 → 两个；=0 → 一个；<0 → 没有。绘制、describe、视野共用这一条口径。
+   * 退化 a=0 不是三次函数 → []（调用方另有 a≠0 闸）。
+   */
+  function cubicCritPoints(p) {
+    const a = Number(p && p.a), b = Number(p && p.b), c = Number(p && p.c);
+    if (!isFinite(a) || a === 0 || !isFinite(b) || !isFinite(c)) return [];
+    const A = 3 * a, B = 2 * b, C = c;
+    const disc = B * B - 4 * A * C;
+    if (disc < -1e-12) return [];
+    if (Math.abs(disc) <= 1e-12) return [-B / (2 * A)];
+    const r = Math.sqrt(disc);
+    return [(-B - r) / (2 * A), (-B + r) / (2 * A)].sort(function (x, y) { return x - y; });
+  }
+
+  /**
    * 抛物线视野（x 方向世界坐标范围）—— 必须与 mount 内部 view() 的 quadratic 分支逐行同口径。
    * 绘制路径用 `if (X < 0 || X > w.w) return;` 裁掉视野外的点，describe 要判断「这个点到底画没画」就得有同一份视野。
    * view() 里 y 范围不影响 x 方向裁剪，故这里只算 xMin/xMax。
@@ -1728,6 +1933,14 @@
       }
       const pw = isFinite(p.p) ? p.p : 1;
       return pw < 0 ? { xMin: -6, xMax: 6 } : { xMin: -2, xMax: 2 };
+    }
+    if (t === 'cubic') {
+      /* 批4：x 方向要同时装下两个实驻点与 y 轴上的交点 (0,d)；
+       * 默认至少 [-4,4]，有驻点落在外面时向两侧扩 1.5 格。 */
+      const xs = [0].concat(cubicCritPoints(p));
+      let lo = Math.min.apply(null, xs), hi = Math.max.apply(null, xs);
+      lo = Math.min(lo, -4); hi = Math.max(hi, 4);
+      return { xMin: lo - 1.5, xMax: hi + 1.5 };
     }
     const refs = [{ h: p.h, k: p.k }];
     if (base) refs.push({ h: base.h, k: base.k });
@@ -1781,6 +1994,7 @@
             : type === 'exp' ? '指数函数图象（曲线与水平渐近线）'
               : type === 'log' ? '对数函数图象（曲线与竖直渐近线）'
                 : type === 'power' ? '幂函数 / 根式函数图象'
+                : type === 'cubic' ? '三次函数图象（曲线与转折点）'
                   : '二次函数图象（抛物线）';
   }
 
@@ -1804,12 +2018,17 @@
     if (type === 'power') {
       return '题面给出的幂函数 / 根式函数图象（' + formatFormula(Object.assign({ type: 'power' }, p)) + '）';
     }
+    if (type === 'cubic') {
+      return '题面给出的三次函数图象（' + formatFormula(Object.assign({ type: 'cubic' }, p)) + '）';
+    }
     return '题面给出的抛物线（a = ' + fmtQuad(p.a) + '，' + (p.a > 0 ? '开口向上' : '开口向下') + '）';
   }
 
   /** 哪些画板类型的 base 是「基准曲线」配置：仅这四族。
    *  exp/log 的 base 是数值底数，power 没有基准曲线；curves 走独立分支。 */
   function hasBaseCurve(type) {
+    /* 批4：三次曲线不叠基准曲线（画板自带 y 轴与驻点，没有「原曲线 → 目标曲线」的平移对比语义） */
+    if (type === 'cubic') return false;
     return type === 'quadratic' || type === 'linear' || type === 'inverse' || type === 'trig';
   }
 
@@ -1899,6 +2118,9 @@
       || !(p.base > 0) || Math.abs(p.base - 1) < 1e-12)) return null;
     if (type === 'power' && (!isFinite(p.a) || p.a === 0
       || !((p.root && isFinite(p.root.b) && isFinite(p.root.c) && p.root.b !== 0) || isFinite(p.p)))) return null;
+    /* 批4：三次四项系数全要齐且 a≠0 —— 空参数/退化时宁可不出描述 */
+    if (type === 'cubic' && (!isFinite(p.a) || p.a === 0 || !isFinite(p.b)
+      || !isFinite(p.c) || !isFinite(p.d))) return null;
     /* curves：缺 curves（或不合法）时**照样出描述** —— 通用测试会拿空参数调 describe，
      * 那时只能说「两条曲线」的通用措辞，不能返回 null（返回 null 会让 AI 讲解拿不到画板）。 */
     if (type === 'curves') return paintCurves(it, p);
@@ -2010,6 +2232,27 @@
         elements.push({
           kind: 'fixed-point',
           text: '红色圆点：(0,0) 与 (1,1) 两个参考点（只标点、不印数值）',
+          style: '红色圆点'
+        });
+      }
+    } else if (type === 'cubic') {
+      /* 批4：两块画板各自只描述自己画的那套东西（拆板理由见 CAPABILITIES 三次注释）。
+       * 元素用词与 annotate 的绘制逐字同源：蓝色实线 = 曲线、黑色粗实线 = y 轴、红色圆点 = 标点。 */
+      elements.push({
+        kind: 'y-axis-emphasis',
+        text: '黑色粗实线：y 轴（x = 0）',
+        style: '黑色粗实线'
+      });
+      if (lab === 'cubic-parity') {
+        elements.push({
+          kind: 'fixed-point',
+          text: '红色圆点：曲线与 y 轴的交点（只标点、不印数值）',
+          style: '红色圆点'
+        });
+      } else {
+        elements.push({
+          kind: 'extremum-point',
+          text: '红色圆点：曲线由升转降、由降转升的转折点（只标点、不印数值）',
           style: '红色圆点'
         });
       }
@@ -2547,6 +2790,17 @@
         { key: 'a', label: 'a(纵向伸缩与方向)', min: -4, max: 4, step: 0.1 }
       ],
       defaults: { a: 1, p: 4, k: 0 }
+    },
+    /* 批4：三次多项式 y=ax³+bx²+cx+d。d 是常数项（y 轴交点纵坐标），
+     * 在奇偶性画板里正是学生要读的点，不给滑块（避免一拖就换题）；a/b/c 可拖。 */
+    cubic: {
+      params: ['a', 'b', 'c', 'd'],
+      sliders: [
+        { key: 'a', label: 'a(三次项,决定两端走向)', min: -4, max: 4, step: 0.05 },
+        { key: 'b', label: 'b(二次项)', min: -6, max: 6, step: 0.1 },
+        { key: 'c', label: 'c(一次项,影响驻点位置)', min: -8, max: 8, step: 0.1 }
+      ],
+      defaults: { a: 1, b: 0, c: 0, d: 0 }
     }
   };
 
@@ -2991,6 +3245,33 @@
       const pPart = pw === 0.5 ? '(1/2)' : pw < 0 ? '(' + fmt(pw) + ')' : fmt(pw);
       return 'y = ' + aPart + 'x^' + pPart;
     }
+    if (type === 'cubic') {
+      /* 批4：y = ax³+bx²+cx+d。项为 0 省略、系数 ±1 省略、负号用「 - 」分隔 →
+       * y = x³、y = x³ - 3x、y = 2x³ - 3x² + 1 这种写法。 */
+      const a = isFinite(p.a) ? p.a : 1;
+      const b = isFinite(p.b) ? p.b : 0;
+      const c = isFinite(p.c) ? p.c : 0;
+      const d = isFinite(p.d) ? p.d : 0;
+      const parts = [];
+      const addTerm = function (v, body) {
+        if (v === 0) return;
+        const abs = Math.abs(v);
+        /* 系数 ±1 只在带 x 的项里省略（x³ / -x），常数项必须写 1（y = x³ + 1） */
+        const coef = (abs === 1 && body) ? '' : fmt(abs);
+        parts.push({ neg: v < 0, text: coef + body });
+      };
+      addTerm(a, 'x³');
+      addTerm(b, 'x²');
+      addTerm(c, 'x');
+      addTerm(d, '');
+      if (!parts.length) return 'y = 0';
+      let s = 'y = ';
+      parts.forEach(function (t, i) {
+        if (i === 0) s += (t.neg ? '-' : '') + t.text;
+        else s += (t.neg ? ' - ' : ' + ') + t.text;
+      });
+      return s;
+    }
     // quadratic
     let aPart;
     if (p.a === 1) aPart = '';
@@ -3040,6 +3321,9 @@
     // 批3：指数 w=0 退化成常函数；底数 base≤0 或 base=1 都画不出指数/对数曲线
     if ((type === 'exp' || type === 'log') && (!(p.base > 0) || Math.abs(p.base - 1) < 1e-12)) return null;
     if (type === 'exp' && p.w === 0) return null;
+    /* 批4：三次函数 a≠0，b/c/d 必须是有限数（参数残缺/退化解不挂） */
+    if (type === 'cubic' && (!isFinite(p.a) || p.a === 0 || !isFinite(p.b)
+      || !isFinite(p.c) || !isFinite(p.d))) return null;
     // 原曲线（题目给出/默认参数那条）：只有调用方给了才叠画，没给就降级为单曲线
     const baseRaw = (hasBaseCurve(type) && o.base && typeof o.base === 'object'
       && (!o.base.type || o.base.type === type)) ? o.base : null;
@@ -3225,8 +3509,9 @@
           yMin = mid - 2.5; yMax = mid + 2.5;
           if (yMin > 0) yMin = 0; else if (yMax < 0) yMax = 0;
         }
-      } else if (type === 'exp' || type === 'log' || type === 'power') {
+      } else if (type === 'exp' || type === 'log' || type === 'power' || type === 'cubic') {
         /* 批3：三族共用 curveWindow 的 x 范围，y 方向按曲线实际取值自适应；
+         * 批4 三次曲线同一套（x 覆盖两驻点与 y 轴交点，y 由采样定且含 0）。
          * 一律含 0 与关键水平线（指数渐近线 / 幂函数 y=0），保证读数有参照。 */
         const cw = curveWindow(p);
         xMin = cw.xMin; xMax = cw.xMax;
@@ -3280,6 +3565,7 @@
         }
         return q.a * Math.pow(x, q.p);
       }
+      if (type === 'cubic') return ((q.a * x + q.b) * x + q.c) * x + q.d;
       return q.a * (x - q.h) * (x - q.h) + q.k;
     }
 
@@ -3755,6 +4041,33 @@
             markers.push(markerRect(X, Y, 4.5));
           });
         }
+      } else if (type === 'cubic') {
+        /* 批4：两块画板共用同一底座 —— 黑色粗实线 y 轴（照 quadratic 奇偶性分支的画法），
+         * 再按画板名标红点：cubic-parity 标 (0, d)，cubic-extremum 标每个实驻点。
+         * 红点旁**绝不印数值**（坐标是答案，留给学生从刻度读）。 */
+        ctx.save();
+        ctx.strokeStyle = '#111';
+        ctx.lineWidth = 2.2;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        const X0 = sx({ x: 0 }, w);
+        if (X0 >= 0 && X0 <= w.w) { ctx.moveTo(X0, 0); ctx.lineTo(X0, w.hp); }
+        ctx.stroke();
+        ctx.restore();
+        const dots = [];
+        if (noteLab === 'cubic-parity') {
+          dots.push({ x: 0, y: fAt(p, 0) });
+        } else if (noteLab === 'cubic-extremum') {
+          cubicCritPoints(p).forEach(function (x) { dots.push({ x: x, y: fAt(p, x) }); });
+        }
+        dots.forEach(function (pt) {
+          if (!isFinite(pt.y)) return;
+          const X = sx({ x: pt.x }, w), Y = sy({ y: pt.y }, w);
+          if (X < 0 || X > w.w || Y < 0 || Y > w.hp) return;
+          ctx.fillStyle = '#c0392b';
+          ctx.beginPath(); ctx.arc(X, Y, 5, 0, Math.PI * 2); ctx.fill();
+          markers.push(markerRect(X, Y, 5));
+        });
       } else {
         // inverse：双曲线两支 + 渐近线虚线（文案同样由 intent 生成）
       }
@@ -3983,7 +4296,10 @@
             parity: type === 'quadratic' && intent === '奇偶性',
             /* 一次函数：标出的两个截距 / 反比例：标出象限说明 */
             intercepts: type === 'linear',
-            quadrants: type === 'inverse'
+            quadrants: type === 'inverse',
+            /* 批4：三次曲线两块画板各自的视觉重点（E2E/排查用） */
+            cubicParity: type === 'cubic' && noteLab === 'cubic-parity',
+            cubicExtremum: type === 'cubic' && noteLab === 'cubic-extremum'
           }
         };
       },
@@ -4003,7 +4319,7 @@
     TYPE_DEF: TYPE_DEF,
     labFor: labFor, labForScene: labForScene, baseOf: baseOf, mount: mount, formatFormula: formatFormula,
     /* 任务一：能力清单 + intent 文案（匹配层/审计脚本/测试的唯一来源） */
-    CAPABILITIES: CAPABILITIES, CAP_TYPE: CAP_TYPE, NOTE_BY_INTENT: NOTE_BY_INTENT, noteTemplate: noteTemplate,
+    CAPABILITIES: CAPABILITIES, CAP_TYPE: CAP_TYPE, NOTE_BY_INTENT: NOTE_BY_INTENT, NOTE_INTENT: NOTE_INTENT, noteTemplate: noteTemplate,
     intentKey: intentKey, intentSupported: intentSupported, intentUsesRoots: intentUsesRoots,
     capabilityIntents: capabilityIntents,
     noteText: noteText, ROOT_INTENTS: ROOT_INTENTS.slice(),
