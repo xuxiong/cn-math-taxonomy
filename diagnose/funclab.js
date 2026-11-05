@@ -353,6 +353,54 @@
   }
 
   /**
+   * t_d3c2ba81 批1：高中（cnm_h*）函数画板**逐题**放行表 —— 白名单只加不删。
+   *
+   * 为什么逐题而不是按章：高中函数章的 topicId（cnm_h0xx–cnm_h24x）一章几十题，同一章里既有
+   * 「顶点/零点/定义域边界就是答案」的题，也有「求 f'(a)」「f(2)+f(−2)」这类答案根本不在图上
+   * 的题。测算（docs/highschool-funclab-coverage.md）里 384 题能解析出 96 条曲线，但只有 34 题
+   * 的答案落在画板标注语义里，另外 31 条挂了就是误导（21 切线读数 + 8 和差 + 1 概念判断 +
+   * 1 边界读数）。按章整片放行等于把初中 R2 那 163 题误挂重演一遍，所以这里只认题 id。
+   *
+   * 表内题全部来自 scripts/measure_highschool_funclab_coverage.js 判 `gated ok`（答案就是画板
+   * 标出来的量：顶点/零点/单调/奇偶/定义域边界）。本批只收二次、一次、反比例三族，且按严读
+   * 口径处理敏感项：
+   *   · 二次 12 条 ok 里 cnm_h225_q1 / cnm_h228_q2 问的是 `f'(x)=0` 的极值横坐标 —— 板主裁定
+   *     「凡问导数先归切线画板」，本批**不放行**（cnm_h229_q2 是三次题，也不在本批）。
+   *     故二次进表 10 条：12 − 2 条敏感项。
+   *   · cnm_h228_q2 还有第二重障碍：题面写的是 `S=x(10−x)`，fromPrompt 只认 `y=` 起头的显式
+   *     式子，本批不碰解析器，所以即便不敏感它也挂不上（差额来源见 docs §8.2 的 16→14 说明）。
+   *   · 三角（批2）、指对/幂根式（批3）、三次、导函数族本批一律不进表。
+   * 值 = 画板类型；labFor 仍会用 fromPrompt 的 type 复核，类型不符照样不挂（双保险）。
+   * 键是 questions.json 的题 id，题不存在时本表不会命中 —— 测试里锁了「表内 id 必须真实存在」。
+   */
+  const HS_ITEMS = {
+    /* ---- 二次函数 gated ok（10）：绿点个数 / 顶点极值 / 单调 / 奇偶 / 零点 ---- */
+    'cnm_h023_q4': 'quadratic',   // y=x²+1 与 x 轴有几个交点 → 图上绿点个数
+    'cnm_h029_q2': 'quadratic',   // f(x)=−x² 的最大值 → 顶点纵坐标
+    'cnm_h032_q4': 'quadratic',   // y=x² 在 [0,+∞) 上 → 曲线走向
+    'cnm_h034_q2': 'quadratic',   // f(x)=x²，x∈[−1,2] 的最小值 → 顶点/端点
+    'cnm_h034_q3': 'quadratic',   // f(x)=−(x−1)²+5 的最大值 → 顶点纵坐标
+    'cnm_h035_q1': 'quadratic',   // f(x)=x² 的奇偶性 → 关于 y 轴对称
+    'cnm_h036_q4': 'quadratic',   // f(x)=x²+x 的奇偶性 → 对称性
+    'cnm_h049_q1': 'quadratic',   // f(x)=x²−4 的正零点 → 绿点
+    'cnm_h226_q1': 'quadratic',   // f(x)=x²−4x+1 的极值点横坐标 → 顶点横坐标
+    'cnm_h227_q2': 'quadratic',   // f(x)=x²−2x 在 [0,3] 上的最小值 → 顶点纵坐标
+    /* ---- 一次函数 gated ok（3）：单调 / 零点 ---- */
+    'cnm_h032_q1': 'linear',      // f(x)=2x+1 在实数集上的增减 → 直线走向
+    'cnm_h032_q2': 'linear',      // f(x)=−3x+1 在实数集上的增减 → 直线走向
+    'cnm_h049_q2': 'linear',      // f(x)=x−5 的零点 → 与 x 轴交点绿点
+    /* ---- 反比例 gated ok（1）：定义域边界 = 渐近线 ---- */
+    'cnm_h028_q3': 'inverse'      // f(x)=1/x 的定义域 → 两支与 y 轴渐近线
+  };
+
+  /** 高中逐题放行：返回画板类型，未放行返回 null（按题 id，不看章） */
+  function hsItemKind(itemId) {
+    if (!itemId) return null;
+    const id = String(itemId);
+    return Object.prototype.hasOwnProperty.call(HS_ITEMS, id) ? HS_ITEMS[id] : null;
+  }
+
+  /**
    * 一元二次方程章（cnm_220..224）的题面门禁：画板只在"答案就是方程的根"时才挂。
    *
    * 学生看图会把 x 轴交点（绿点）当答案 —— 答案若其实是判别式、配方常数、m/n、k 的范围，
@@ -471,14 +519,23 @@
     return cs.length >= 2 && cs.length <= 2;
   }
 
+  /** 白名单题面的**记法别名**：高中题库用 `f(x)=…` 写函数式，而 fromPrompt 只认 `y=…`。
+   *  这里只把前缀 `f(x)=` / `g(x)=` 等价成 `y=`（数学上同一个式子），**不动 fromPrompt 的任何
+   *  分词/匹配逻辑**，且只在题目命中 HS_ITEMS 时才走这条路 —— 表外题目行为零变化。 */
+  function hsPromptAlias(prompt) {
+    return String(prompt == null ? '' : prompt).replace(/(^|[^a-zA-Z0-9])[fg]\s*\(\s*x\s*\)\s*=/g, '$1y=');
+  }
+
   /** 组合入口：知识点支持 && 题面能解析 && 类型匹配 && 题面门禁 → 参数对象，否则 null
    *  opts.itemId 可选（题库题 id）：方程章里决定个别题是否放行（cnm_221_q3）
    *  注意：labFor 维持「单曲线解析」语义不变（它有独立的通用测试锁着类型一致性）；
    *  多曲线候选由 labForScene 产出（见下）。 */
   function labFor(topicId, prompt, opts) {
-    const kind = topicKind(topicId);
+    const hsKind = hsItemKind(opts && opts.itemId);
+    const kind = topicKind(topicId) || hsKind;
     if (!kind) return null;
-    const r = fromPrompt(prompt);
+    let r = fromPrompt(prompt);
+    if (!r && hsKind) r = fromPrompt(hsPromptAlias(prompt));   // 批1：仅白名单题认 f(x)= 记法
     if (!r || r.type !== kind) return null;
     // 一元二次方程章：答案必须是根，且根要能被绿点精确标出来
     if (/^cnm_22[0-4]$/.test(String(topicId)) && r.type === 'quadratic') {
@@ -493,7 +550,7 @@
    *  （type:'curves' + curves 数组），绝不落到单曲线画板 —— cnm_208_q1 只取第一条直线、
    *  cnm_241_q1 只取那条双曲线，画出来都答非所问。 */
   function labForScene(topicId, prompt, opts) {
-    const kind = topicKind(topicId);
+    const kind = topicKind(topicId) || hsItemKind(opts && opts.itemId);
     const curvesTopic = !!CURVES_TOPICS[String(topicId || '')];
     if ((kind || curvesTopic) && isMultiCurveIntersect(prompt)) {
       const cs = curvesFromPrompt(prompt);
@@ -2733,6 +2790,8 @@
 
   return {
     fromPrompt: fromPrompt, topicSupported: topicSupported, topicKind: topicKind,
+    /* t_d3c2ba81 批1：高中逐题放行表（只读导出，供测试/测算脚本核对「白名单只加不删」） */
+    HS_ITEMS: HS_ITEMS, hsItemKind: hsItemKind,
     TYPE_DEF: TYPE_DEF,
     labFor: labFor, labForScene: labForScene, baseOf: baseOf, mount: mount, formatFormula: formatFormula,
     /* 任务一：能力清单 + intent 文案（匹配层/审计脚本/测试的唯一来源） */
