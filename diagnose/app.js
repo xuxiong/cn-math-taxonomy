@@ -22,6 +22,7 @@
     startStage: '',
     startErr: null,
     chapterOpen: false,
+    focusSearch: false,   // 结果页「再测一个知识点」置位：renderStart 渲染后聚焦搜索框（用完即清）
     gradeSel: '七',
     volSel: '',
     seedParam: null,
@@ -1759,7 +1760,11 @@
       '可以诊断的知识点：' + S.D.topics.length + ' 个。进度和出过的题只保存在这台浏览器里。'));
     show(withRouteBack(page));
     fillList(listBox);
-    if (S.startQuery) { const el = document.getElementById('search'); if (el) el.focus(); }
+    if (S.startQuery || S.focusSearch) {
+      const el = document.getElementById('search');
+      if (el) el.focus();
+      S.focusSearch = false;   // 用完即清：只有结果页「再测一个知识点」会预置，正常刷新/回退不强制聚焦
+    }
   }
 
   function seniorGrade(sel) {

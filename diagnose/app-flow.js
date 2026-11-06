@@ -1491,6 +1491,31 @@ function noBankCard(sum) {
         '这一轮的结论既不能说明掌握，也不能说明薄弱。换个有网的网络后，回到开始页重新点一次这个知识点，工具会重新取整套题。'));
   }
 
+/* 「再测/换一个知识点」入口（结果页 → 选题页）：只回选题页，绝不碰存档。
+ * restart() 会清存档（本文件 122 行），不能走它 —— 用户可能还想「继续」续跑本轮，
+ * 选题页的「有一份未清除的诊断」横幅（app.js renderStart 开头）必须保留。
+ * renderStart 已在 CORE 暴露（app.js:142），这里走文件头既有别名（行 32），不新建模块环；
+ * focusSearch 标记让选题页渲染后自动聚焦搜索框（app.js 的 renderStart 末尾 focus 逻辑）。 */
+function retestPickAnother() {
+  S.focusSearch = true;
+  S.startQuery = '';
+  renderStart();
+}
+/* 副文案里的两个更快选项：整章（展开章节浏览）与按年级（定位年级卡）。同样只回选题页、不清存档。 */
+function retestByChapter() {
+  S.chapterOpen = true;
+  S.startQuery = '';
+  renderStart();
+  const b = document.getElementById('chapter-browser');
+  if (b) b.scrollIntoView({ block: 'start' });
+}
+function retestByGrade() {
+  S.startQuery = '';
+  renderStart();
+  const g = document.getElementById('grade-card');
+  if (g) g.scrollIntoView({ block: 'start' });
+}
+
 function renderResult() {
     const sum = eng().summarize(S.D.graph, S.session);
     /* 阶段 3：进结果页（详情 / 课标对照）才取课标条目正文；两个 ensure 都到货后原地换掉占位文字，不重绘。 */
@@ -1534,11 +1559,20 @@ function renderResult() {
         S.session.limit >= 60 ? null : h('button', { class: 'no-print', style: 'margin-left:8px', onclick: function () { rebuild(S.session.answers, Math.min(S.session.limit + more, 60)); } }, '再多答 ' + Math.min(more, 60 - S.session.limit) + ' 题')) : null,
       h('p', { class: 'muted small' }, '自动判题只是近似的，答题记录里可以更正任何一题。生成时间：' + new Date().toLocaleString('zh-CN')),
       h('div', { class: 'row no-print' },
-        h('button', { class: 'primary', id: 'btn-share', onclick: openShare }, '生成分享图'),
+        /* 主 CTA：回选题页再测一个知识点（不清存档，选题页横幅可「继续」）。
+         * 生成分享图降为普通按钮：同一排两个 primary 会互相抢主次，续测才是结果页的新主路径。 */
+        h('button', { class: 'primary', id: 'btn-retest', onclick: retestPickAnother }, '再测一个知识点'),
+        h('button', { id: 'btn-share', onclick: openShare }, '生成分享图'),
         h('button', { id: 'btn-export', onclick: exportJson }, '导出 JSON'),
         h('button', { id: 'btn-print', onclick: printPage }, '打印 / 另存为 PDF'),
         h('button', { onclick: function () { if (confirm('重新开始会清除当前进度，确定吗？')) restart(); } }, '重新开始'),
-        S.session.answers.length ? h('button', { onclick: function () { rebuild(S.session.answers.slice(0, -1)); } }, '撤销上一题') : null));
+        S.session.answers.length ? h('button', { onclick: function () { rebuild(S.session.answers.slice(0, -1)); } }, '撤销上一题') : null),
+      h('p', { class: 'muted small no-print', id: 'retest-hints' },
+        '想一次多测一点？也可以',
+        h('button', { class: 'small', onclick: retestByChapter }, '按整章诊断'),
+        '或',
+        h('button', { class: 'small', onclick: retestByGrade }, '按年级整体诊断'),
+        '。'))
     page.append(summaryCard);
     const blindCard = blindResultCard(sum);
     if (blindCard) page.append(blindCard);
