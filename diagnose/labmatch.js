@@ -63,6 +63,14 @@
 
   const NO_FUNCLAB = 'Labmatch 需要先加载 funclab.js（能力清单的唯一来源）';
 
+  /** 归一 trig 画板的 fn 参数；剥不出白名单就原样返回 */
+  function normalizeTrigFn(v) {
+    if (typeof v !== 'string') return v;
+    const s = v.trim().toLowerCase().replace(/^y\s*=\s*/, '');
+    const m = s.match(/^(sin|cos|tan)\s*(?:\(\s*x\s*\)|x)?$/);
+    return m ? m[1] : v;
+  }
+
   /* ============================================================ 缓存 */
 
   /** 内存存储（Node 测试 / 无 localStorage 环境） */
@@ -115,7 +123,7 @@
     if (typeof e.intent !== 'string' || !e.intent) return false;
     if (Object.keys(e.params).some(function (k) {
       /* 批2：fn 是字符串参数（sin/cos/tan），不参与 Number() —— 否则 trig 缓存条目永远无效 */
-      if (k === 'fn') return ['sin', 'cos', 'tan'].indexOf(String(e.params[k])) < 0;
+      if (k === 'fn') return ['sin', 'cos', 'tan'].indexOf(String(normalizeTrigFn(e.params[k]))) < 0;
       return !isFinite(Number(e.params[k]));
     })) return false;
     return true;
@@ -290,7 +298,7 @@
       /* 批2：fn 是字符串参数（sin/cos/tan）—— Number('sin') 是 NaN，
        * 若混进数值检查，LLM 给对了也全被拒。单独校验字面量。 */
       if (key === 'fn') {
-        if (['sin', 'cos', 'tan'].indexOf(String(p.fn)) < 0) {
+        if (['sin', 'cos', 'tan'].indexOf(String(normalizeTrigFn(p.fn))) < 0) {
           return { ok: false, why: ['fn 参数必须是 sin/cos/tan 之一: ' + (p.fn == null ? '(缺失)' : p.fn)] };
         }
         continue;
@@ -361,7 +369,7 @@
       }
     } else if (type === 'trig') {
       /* 批2：函数名先比（字符串），数值参数逐项 close（φ 是 π 的倍数，浮点安全走 EPS 容差） */
-      if (String(p.fn) !== parsed.fn) {
+      if (String(normalizeTrigFn(p.fn)) !== parsed.fn) {
         why.push('参数代回不符：函数名 fn=' + p.fn + ' ≠ 题面 ' + parsed.fn);
       }
       if (!close(Number(p.A), parsed.A) || !close(Number(p.w), parsed.w)
@@ -850,7 +858,7 @@
       /* 批2：fn 是字符串（sin/cos/tan），原样透传 —— Number('sin') 是 NaN，
        * mount 拿到 NaN 会画不出曲线（verifyParams 已校验过字面量） */
       if (k === 'fn') {
-        params.fn = String(choice.params[k]);
+        params.fn = String(normalizeTrigFn(choice.params[k]));
         return;
       }
       /* 批3：幂根式的 root 是 {b,c} 对象，不能 Number()；多项式形根本没有 root/k，

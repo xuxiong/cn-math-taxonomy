@@ -178,6 +178,65 @@ test('promptInterval 能从 cnm_235_q4 抠出 [2,4]', function () {
 
 /* ================================================================ */
 
+console.log('\n--- 1b. trig fn 窄门归一化 ---');
+
+test('正例：fn 写成 "sin x" / "y=sin x" / "sin(x)" 通过；"COS X" 在 cos 题上通过（真实 LLM 回流形态）', function () {
+  ['sin x', 'y=sin x', 'sin(x)'].forEach(function (fn) {
+    const v = L.verifyParams(q('cnm_h066_q4'), {
+      match: 'trig-domain', params: { fn: fn, A: 1, w: 1, phi: 0, k: 0 }, intent: '定义域'
+    });
+    assert.strictEqual(v.ok, true, fn + ' → ' + JSON.stringify(v.why));
+  });
+  /* 任务书原写 'COS X' 也在 cnm_h066_q4 上通过，但该题题面是 sin：归一成 cos 后必须被代回校验拒，
+   * 否则 cos≠sin 也放行（与「fn=tan 仍拒」互相矛盾）。这里改用真实 cos 题锁大小写归一。 */
+  const cosv = L.verifyParams(q('cnm_h068_q4'), {
+    match: 'trig-parity', params: { fn: 'COS X', A: 1, w: 1, phi: 0, k: 0 }, intent: '奇偶性'
+  });
+  assert.strictEqual(cosv.ok, true, 'COS X → ' + JSON.stringify(cosv.why));
+});
+
+test('反例不放宽：sec x / sine / y=x / 空串仍按原始入参拒绝', function () {
+  const bad = ['sec x', 'sine', 'y=x', ''];
+  bad.forEach(function (fn) {
+    const v = L.verifyParams(q('cnm_h066_q4'), {
+      match: 'trig-domain', params: { fn: fn, A: 1, w: 1, phi: 0, k: 0 }, intent: '定义域'
+    });
+    assert.strictEqual(v.ok, false, fn + ' 不该通过');
+  });
+  const sec = L.verifyParams(q('cnm_h066_q4'), {
+    match: 'trig-domain', params: { fn: 'sec x', A: 1, w: 1, phi: 0, k: 0 }, intent: '定义域'
+  });
+  assert.ok(sec.why.join(';').indexOf('fn 参数必须是 sin/cos/tan 之一: sec x') >= 0,
+    'why 打原始入参：' + sec.why.join(';'));
+});
+
+test('buildCfg 归一后产出可直接喂 mount 的 fn', function () {
+  const cfg = L.buildCfg('trig', { type: 'trig', fn: 'sin' }, {
+    match: 'trig-domain', params: { fn: 'sin x', A: 1, w: 1, phi: 0, k: 0 }, intent: '定义域'
+  });
+  assert.ok(cfg, 'buildCfg 不该返回 null');
+  assert.strictEqual(cfg.fn, 'sin');
+});
+
+test('缓存校验路径：validEntry 认 "sin x"，仍拒 "sec x"', function () {
+  assert.strictEqual(L.validEntry({
+    match: 'trig-domain', params: { fn: 'sin x', A: 1, w: 1, phi: 0, k: 0 }, intent: '定义域'
+  }), true);
+  assert.strictEqual(L.validEntry({
+    match: 'trig-domain', params: { fn: 'sec x', A: 1, w: 1, phi: 0, k: 0 }, intent: '定义域'
+  }), false);
+});
+
+test('不回归：题面是 sin 时 fn=tan 仍被代回校验拒（归一化不放行换函数）', function () {
+  const v = L.verifyParams(q('cnm_h066_q4'), {
+    match: 'trig-domain', params: { fn: 'tan', A: 1, w: 1, phi: 0, k: 0 }, intent: '定义域'
+  });
+  assert.strictEqual(v.ok, false);
+  assert.ok(v.why.join(';').indexOf('函数名 fn=tan') >= 0, v.why.join(';'));
+});
+
+/* ================================================================ */
+
 console.log('\n--- 2. 画板 / intent 白名单 ---');
 
 test('未注册画板名（含字符串 "null"）→ 拒绝', function () {
