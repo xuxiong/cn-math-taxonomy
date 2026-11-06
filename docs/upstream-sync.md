@@ -3,10 +3,13 @@
 写给下一个要把 `xiaoyang111222/cn-math-taxonomy` 的新提交并进本 fork 的人（或 agent）。
 **不要凭本文推演，照着命令跑。** 每条命令的当前输出记在最后一节「实测记录」。
 
-- 本仓库 = fork，本地 `main` 领先上游 **166 个提交**，merge-base 与上游 HEAD 同为 `dc764bd`（2026-10-31）。
+- 本仓库 = fork，本地 `main`（`b4167cd`，**尚未快进到本轮合入结果、未 push**）领先上游 **253 个提交**；
+  merge-base 与上游 HEAD 同为 `cf73951`（2026-11-06）。按本轮合入结果（`wt/up-integ` 头 `2816bc6`）量是 **264 个提交**、落后上游 0。
+- 上一轮合入的区间是上游 `dc764bd..cf73951`（**11 个提交**）。同一对父提交的 `merge-tree` 干跑冲突 5 个文件：
+  `README.md`、`assets/home.js`、`diagnose/app.js`、`diagnose/engine.js`、`sw.js`。
 - 上游 remote 已配好：`git remote get-url upstream` → `https://github.com/xiaoyang111222/cn-math-taxonomy.git`。
 - 已有的基建，**只接入，不重写**：
-  - `docs/fork-divergences.md` —— 9 条分叉表。合并时「**表里有的按表，表里没有的才上游优先**」。
+  - `docs/fork-divergences.md` —— 10 条分叉表。合并时「**表里有的按表，表里没有的才上游优先**」。
   - `scripts/fork-guard.mjs` —— 幂等清理（跑第二遍必须全 `clean:`）。
   - `tests/test_fork_guards.js` —— 18 条回流守卫。
   - `scripts/upstream-sync.sh` —— 本 SOP 配的只读体检脚本。
@@ -80,7 +83,7 @@ git merge --no-ff upstream/main
 ## 3. 解冲突的唯一规则
 
 ```sh
-grep -n '^| [0-9]' docs/fork-divergences.md    # 9 条分叉表，逐条对照
+grep -n '^| [0-9]' docs/fork-divergences.md    # 10 条分叉表，逐条对照
 ```
 
 **规则：表里有的按表；表里没有的才「上游优先」。**
@@ -94,9 +97,9 @@ grep -n '^| [0-9]' docs/fork-divergences.md    # 9 条分叉表，逐条对照
 那次回流了 15 处外链推广位（顶部横幅 / 智商测试卡 / 资源搜索），事后靠 `c652a49` 再清一遍。
 所以解冲突前先查表；解完还必须跑第 4 节的三条命令 —— 它们才是「回流了会红」的兜底。
 
-表里 9 条速览（细节看 `docs/fork-divergences.md`）：①顶部横幅 ②首页智商测试卡 ③「资源搜索」导航 + CSS
+表里 10 条速览（细节看 `docs/fork-divergences.md`）：①顶部横幅 ②首页智商测试卡 ③「资源搜索」导航 + CSS
 ④`scripts/deploy-cf.sh` ⑤统计 `endpoint` 置空 ⑥分享图/二维码指向本站 ⑦关于/Issue 链接 ⑧LLM 型号唯一真源
-⑨Umami 匿名统计。
+⑨Umami 匿名统计 ⑩首页「使用手册」飞书外链。
 
 ---
 
@@ -116,7 +119,7 @@ for f in tests/test_*.js; do node "$f" 2>&1; done | grep -oE '[0-9]+ passed|[0-9
   | awk '/passed/{p+=$1} /failed/{f+=$1} END{print "total passed:", p, "total failed:", f}'
 ```
 
-当前基线：**24 个文件、1131 passed / 0 failed**（2026-11-02 实测）。
+当前基线：**39 个文件、1442 passed / 0 failed**（2026-11-07 实测；逐文件 `node --test` 39/39 退出码 0）。
 
 **这个数字会变**（每次合上游、每次加功能都会变）。规矩是：
 
@@ -124,7 +127,11 @@ for f in tests/test_*.js; do node "$f" 2>&1; done | grep -oE '[0-9]+ passed|[0-9
 - **不许为了让套件变绿而删断言、改输入范围、`skip`、放宽比较**。红了就查代码，不是查测试。
 
 `tests/test_children_browser.js` 需要 Node 22+ 与 Chrome/Chromium，输出的是 `PASS: …` 而不是 `N passed`，
-所以 1131 是其余 23 个文件的合计；它失败会以非 0 退出码体现，上面的 `ok/FAIL` 循环能抓到。
+所以 1442 是其余 38 个文件的合计；它失败会以非 0 退出码体现，上面的 `ok/FAIL` 循环能抓到。
+
+**另一处口径坑**：`tests/test_socratic_gate.js` 打印 `passed=5 failed=0`，上面那条 awk 聚合会把 `passed=5` 里的
+`5 failed` 读成一次失败，于是打印 `total failed: 5`（2026-11-07 实测就是如此）——真实 failed 是 0。
+判红一律以**逐文件退出码**为准，别信聚合行里的 failed 数。
 
 ---
 
@@ -221,14 +228,14 @@ git diff --stat $BEFORE..HEAD -- diagnose/ assets/ data/ sw.js index.html
 
 ## 7. 上游动了数据集，就要重算守恒与阈值
 
-当前数据集（2026-11-02 实测，`data/stats.json` + `data/questions.json`）：
+当前数据集（2026-11-07 实测，`data/stats.json` + `data/questions.json`）：
 
 ```sh
 node -e "const s=require('./data/stats.json');console.log('nodes',s.total.topics,'edges',s.total.edges)"
 node -e "console.log('questions',require('./data/questions.json').length)"
 ```
 
-→ **节点 2997 / 边 4456 / 题 12135**。
+→ **节点 3297 / 边 4868 / 题 13335**（课标 786 条）。
 
 下面这些常量都是**照这批数据调出来的**，数据一变它们就该跟着变，但**套件不会叫**：
 
@@ -278,7 +285,7 @@ node tests/test_llm_settings.js && node tests/test_labmatch.js
 ### 8.2 `sw.js` 的 `VERSION`
 
 ```sh
-grep -n "var VERSION" sw.js        # 当前 v9
+grep -n "var VERSION" sw.js        # 当前 v10
 ```
 
 `SHELL` / `DATA` 列表变了、或数据结构变了，`VERSION` 必须加一。上游改了缓存列表却留着旧 `VERSION`，
@@ -350,5 +357,29 @@ git status --porcelain                       # 应为空
 （与本地改动撞成 modify/delete 冲突），一笔只新增一个文件（不冲突），跑完 `git update-ref refs/remotes/upstream/main`
 恢复成 `dc764bd`。
 
-未在本轮实跑的：`git fetch`（联网项，只写不跑）、`git merge --no-ff upstream/main` 与 `git merge --ff-only wt/sync`
-（落后 0，没有可合的内容）。这三条命令第一次真正用上时，把实际输出补进本表。
+未在本轮实跑的：`git fetch`（联网项，只写不跑）、`git merge --ff-only wt/sync`
+（落后 0，没有可合的内容；2026-11-07 那一轮也仍未跑 —— `main` 还没快进到合入结果）。
+`git merge --no-ff upstream/main` 已在 2026-11-07 那次合入里真跑，输出见下一节的表。
+
+---
+
+## 实测记录（2026-11-07，合入上游 `dc764bd..cf73951`）
+
+这一轮是上面 SOP 第一次**完整走通**（前面几轮都停在「落后 0」）。实际命令与输出：
+
+| 命令 | 实际输出 |
+|---|---|
+| `bash scripts/upstream-sync.sh`（不 fetch，基准 `main` `b4167cd`） | `落后（main..upstream/main）：11 个提交` / `领先（upstream/main..main）：253 个提交` / `上游改动的文件：52 个`；`merge-tree` 干跑冲突 5 个文件：`README.md`、`assets/home.js`、`diagnose/app.js`、`diagnose/engine.js`、`sw.js`；结论「需同步：11 个提交、5 个冲突文件」，**退出码 1** |
+| `git merge-base HEAD upstream/main` | `cf73951`（= 上游 HEAD；合入结果里上游已全含） |
+| `git rev-list --count upstream/main..HEAD`（集成分支 `wt/up-integ` 头 `2816bc6`） | `264`；按 `main` 量是 `253` |
+| `git log --oneline dc764bd..cf73951` | 11 行：`cf73951` 新增初中语文 / `972f9bb` 化学配图 / `3e07669` 重触发 Pages / `7dad0da` 新增初中化学 / `276b88c` 地理配图 / `faaf902` 生物配图 / `08959e4` 新增初中生物 / `63757ad` 删「AI 生成初稿」声明 / `d95bb9b` README 突出商业授权 / `c935017` #33 勘误 / `74de284` #32 教材对照 |
+| `git merge --no-ff upstream/main` | 合并提交 `9f1d340`（父 `b4167cd` + `cf73951`），5 个冲突按 `docs/fork-divergences.md` 解；随后 `3b151ad` 重生成全部拆分产物、`b114b38` 上调测试的学科枚举与总数 |
+| `node scripts/build-questions-split.mjs` | `948 个 bundle、13335 题`（合入前 894 / 12135；本轮实测 `data/questions/*.json` 有 948 个文件） |
+| `node scripts/build-topics-lite.mjs` | `3297 条 → data/topics-lite.json`（640106 字节；合入前 2997 条） |
+| `node scripts/build-payload-split.mjs` | `topics-detail 948 个文件`（合入前 894；本轮实测 948） |
+| `node scripts/fork-guard.mjs`（连跑两遍） | 两遍都是 `0 fixed, 8 clean, 0 warn`，退出码 0 —— **本轮上游回流 0 处**，第一遍就没有需要清理的东西（前四张卡都按分叉表解的冲突） |
+| `node tests/test_fork_guards.js` | `全部通过：18 passed, 0 failed` |
+| 全量测试（39 个 `tests/test_*.js` 逐个 `node --test`） | `39/39 rc=0`；SOP 第 4 节那条 awk 聚合打印 `total passed: 1437 total failed: 5`，那 5 是 `tests/test_socratic_gate.js` 的 `passed=5 failed=0` 被误匹配（真实 failed 0） |
+| `python3 scripts/validate.py` | `VALIDATION PASSED`，退出码 0（3297 点 / 13335 题 / 课标 items 786） |
+| `node scripts/measure_funclab_coverage.js` 等三条 measure 脚本 | 三条都退出码 0；高中口径 stdout 576 行，与 `docs/highschool-funclab-coverage.md` 的 §0–§7 只差 3 处（§0 分母、§1 初中行、文末 `[timing]` 行） |
+| 数据守恒（合入前后） | 点 2997 → **3297**；边 4456 → **4868**；题 12135 → **13335**；课标 734 → **786**；bundle / topics-detail 894 → **948** |

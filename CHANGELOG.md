@@ -1,5 +1,14 @@
 # 变更日志
 
+## 2026-11-07（合入上游 11 个提交：初中语文、初中生物、初中化学 + 三科配图 + 教材对照表）
+
+- 2026-11-07：合入上游 `dc764bd..cf73951` 的 11 个提交，数据集重生成后共 **3297 个知识点 / 4868 条先修边 / 13335 题 / 786 条课标**（`data/stats.json` 实测；合入前 2997 / 4456 / 12135 / 734）。分片产物 `data/questions/*.json` 与 `data/topics-detail/` 各 948 个文件（合入前 894）。可复跑：`node scripts/build-questions-split.mjs`、`node scripts/build-topics-lite.mjs`、`node scripts/build-payload-split.mjs`。本地提交，未推送、未部署。
+- 2026-11-07：新增初中语文（统编版七上至九下，`cnc_j001`–`cnc_j189`）：189 个知识点、756 题、先修边 243 条（hard 59，soft 184）、课标条目 12 条 `ccs-2022:4.*`。诊断的语文年级选框到九年级、默认仍是一年级，会话键仍是 `cncDiagnose.session.v2`；没有高中语文。可复跑：`python3 scripts/zhj_build.py`。本地提交，未推送、未部署。
+- 2026-11-07：新增初中生物（人教版七上至八下，`cnb_j001`–`cnb_j066`）：66 个知识点、264 题、先修边 89 条（hard 60，soft 29）、课标条目 18 条 `cbs-2022:`。首页、知识图谱、诊断加上「生物」切换。可复跑：`python3 scripts/bio_build.py`。本地提交，未推送、未部署。
+- 2026-11-07：新增初中化学（人教版九上、九下，`cnk_j001`–`cnk_j045`）：45 个知识点、180 题、先修边 80 条（hard 57，soft 23）、课标条目 22 条 `cks-2022:`。首页、知识图谱、诊断加上「化学」切换。可复跑：`python3 scripts/chem_build.py`。本地提交，未推送、未部署。
+- 2026-11-07：初中化学、初中生物、初中地理各 48 题补了内联示意图（`data/questions.json` 实测 `cnk_j` 48/180 题、`cnb_j` 48/264 题、`cng_j` 48/236 题；初中语文本轮没有配图，0 题）。图只用 currentColor，不引用外网。可复跑：`python3 scripts/chem_figs.py`、`python3 scripts/bio_figs.py`、`python3 scripts/geo_figs.py`，自检 `python3 scripts/check_figures.py`。本地提交，未推送、未部署。
+- 2026-11-07：新增苏教版数学 277 条、译林版英语 230 条教材对照（`data/mappings/sujiao_math.json`、`data/mappings/yilin_english.json`，`status` 都是 `draft`，待核）；同步把 `entries[].topicId` 的校验放宽为「`*_math` 只对照数学点、`*_english` 只对照英语点」。`cnm_p106`、`cnm_p107` 章节勘误与 `cnm_p205` 收窄为增长率题见下面 2026-11-02 条。可复跑：`python3 scripts/validate.py`。本地提交，未推送、未部署。
+
 ## 2026-11-06（新增初中语文）
 
 - 2026-11-06：新增初中语文（统编版七上至九下，`cnc_j001`–`cnc_j189`，189 个知识点、756 题、先修边 243 条（hard 59，soft 184；其中 19 条硬边指向小学语文；约简删去 0）、课标条目 12 条 `ccs-2022:4.*`）。七上至九上按 2024 审定公开目录，九下修订版未上线，暂用现行统编目录。领域：识字写字 1、词语 1、句子 2、阅读理解 74、古诗文积累 24、文言文阅读 30、名著阅读 11、习作基础 46。课标是《义务教育语文课程标准（2022年版）》第四学段的公开转述，页码待核。首页语文卡片放开到一至九年级，知识图谱和诊断的学段为全部 / 小学 / 初中；诊断会话仍用 `cncDiagnose.session.v2`。没有高中语文。可复跑：`scripts/zhj_build.py`。`zh_build.py` 只清 `cnc_p`。小学语文数据未改。本地提交，未推送、未部署。
