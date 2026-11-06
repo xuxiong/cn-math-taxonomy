@@ -407,6 +407,13 @@
       link.classList.toggle('on', on);
       if (on) link.setAttribute('aria-current', 'true');
       else link.removeAttribute('aria-current');
+      /* 窄屏下学科胶囊在容器内横滑（site.css .subject-switch）：把当前学科滚进可视区，
+         否则 ?subject=physics 这类末位学科的深链下选中项留在胶囊外、看不出在哪个学科。
+         只改胶囊自己的 scrollLeft，不碰页面滚动位置。 */
+      if (on) {
+        const box = link.parentNode, b = box.getBoundingClientRect(), r = link.getBoundingClientRect();
+        box.scrollLeft += r.left - b.left - (b.width - r.width) / 2;
+      }
     });
     if (S.subject === 'english') {
       document.title = '诊断 · 英语';

@@ -15,8 +15,6 @@
   var CN = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
   var subjectParam = new URLSearchParams(location.search).get('subject');
   var subject = subjectParam === 'english' || subjectParam === 'physics' || subjectParam === 'chinese' || subjectParam === 'science' || subjectParam === 'morality' || subjectParam === 'history' || subjectParam === 'geography' || subjectParam === 'biology' || subjectParam === 'chemistry' ? subjectParam : 'math';
-  var PREFIX = { math: 'cnm_', english: 'cne_', physics: 'cnp_', chinese: 'cnc_', science: 'cns_', morality: 'cnd_', history: 'cnh_', geography: 'cng_', biology: 'cnb_', chemistry: 'cnk_' };
-  var STD_PREFIX = { math: 'cms-', english: 'ces-', physics: 'cps-', chinese: 'ccs-', science: 'css-', morality: 'cds-', history: 'chs-', geography: 'cgs-', biology: 'cbs-', chemistry: 'cks-' };
 
   function withSubject(href) {
     if (subject === 'math' || !href || href.indexOf('subject=') >= 0 || href.indexOf('http') === 0) return href;
@@ -37,6 +35,13 @@
     link.classList.toggle('on', on);
     if (on) link.setAttribute('aria-current', 'true');
     else link.removeAttribute('aria-current');
+    /* 窄屏下学科胶囊在容器内横滑（site.css .subject-switch）：把当前学科滚进可视区，
+       否则 ?subject=physics 这类末位学科的深链下选中项留在胶囊外、看不出在哪个学科。
+       只改胶囊自己的 scrollLeft，不碰页面滚动位置（页面滚动由各页自己的逻辑负责）。 */
+    if (on) {
+      var box = link.parentNode, b = box.getBoundingClientRect(), r = link.getBoundingClientRect();
+      box.scrollLeft += r.left - b.left - (b.width - r.width) / 2;
+    }
   });
   document.querySelectorAll('.site-nav a:not(.subject-link), a.brand').forEach(function (link) {
     var href = link.getAttribute('href');
