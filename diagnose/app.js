@@ -89,6 +89,8 @@
   const LS_SESSION_MOR = 'cndDiagnose.session.v1';
   const LS_SESSION_HIS = 'cnhDiagnose.session.v1';
   const LS_SESSION_GEO = 'cngDiagnose.session.v1';
+  const LS_SESSION_BIO = 'cnbDiagnose.session.v1';
+  const LS_SESSION_CHEM = 'cnkDiagnose.session.v1';
   const LS_SETTINGS = 'cnmDiagnose.settings.v2';
   const LS_SEEN = 'cnmDiagnose.seen.v1';
   const LS_PRAC = 'cnmDiagnose.practiced.v1';   // T3 练习记录 {topicId: 最近练习时间戳}
@@ -339,6 +341,8 @@
     if (S.subject === 'morality') return LS_SESSION_MOR;
     if (S.subject === 'history') return LS_SESSION_HIS;
     if (S.subject === 'geography') return LS_SESSION_GEO;
+    if (S.subject === 'biology') return LS_SESSION_BIO;
+    if (S.subject === 'chemistry') return LS_SESSION_CHEM;
     return LS_SESSION;
   }
   function withSubject(href) {
@@ -348,7 +352,7 @@
   function detectSubject() {
     const params = new URLSearchParams(location.search);
     const explicit = params.get('subject');
-    if (explicit === 'english' || explicit === 'math' || explicit === 'physics' || explicit === 'chinese' || explicit === 'science' || explicit === 'morality' || explicit === 'history' || explicit === 'geography') return explicit;
+    if (explicit === 'english' || explicit === 'math' || explicit === 'physics' || explicit === 'chinese' || explicit === 'science' || explicit === 'morality' || explicit === 'history' || explicit === 'geography' || explicit === 'biology' || explicit === 'chemistry') return explicit;
     const target = params.get('target') || '';
     let hashId = (location.hash || '').replace(/^#/, '');
     try { hashId = decodeURIComponent(hashId); } catch (e) { /* 保持原样 */ }
@@ -377,6 +381,16 @@
       history.replaceState(null, '', location.pathname + '?' + params.toString() + location.hash);
       return 'geography';
     }
+    if (/(^|,)\s*cnb_/.test(target) || /^cnb_/.test(hashId)) {
+      params.set('subject', 'biology');
+      history.replaceState(null, '', location.pathname + '?' + params.toString() + location.hash);
+      return 'biology';
+    }
+    if (/(^|,)\s*cnk_/.test(target) || /^cnk_/.test(hashId)) {
+      params.set('subject', 'chemistry');
+      history.replaceState(null, '', location.pathname + '?' + params.toString() + location.hash);
+      return 'chemistry';
+    }
     if (/(^|,)\s*cnh_/.test(target) || /^cnh_/.test(hashId)) {
       params.set('subject', 'history');
       history.replaceState(null, '', location.pathname + '?' + params.toString() + location.hash);
@@ -397,6 +411,8 @@
     document.body.classList.toggle('subject-morality', S.subject === 'morality');
     document.body.classList.toggle('subject-history', S.subject === 'history');
     document.body.classList.toggle('subject-geography', S.subject === 'geography');
+    document.body.classList.toggle('subject-biology', S.subject === 'biology');
+    document.body.classList.toggle('subject-chemistry', S.subject === 'chemistry');
     document.querySelectorAll('.site-nav a:not(.subject-link), a.brand').forEach(function (link) {
       const href = link.getAttribute('href');
       const next = withSubject(href);
@@ -439,9 +455,23 @@
       if ('七八'.indexOf(S.gradeSel) < 0) S.gradeSel = '七';
       if (S.volSel === '全') S.volSel = '';
     }
+    if (S.subject === 'biology') {
+      document.title = '诊断 · 初中生物';
+      if ('七八'.indexOf(S.gradeSel) < 0) S.gradeSel = '七';
+      if (S.volSel === '全') S.volSel = '';
+    }
+    if (S.subject === 'chemistry') {
+      document.title = '诊断 · 初中化学';
+      if (S.gradeSel !== '九') S.gradeSel = '九';
+      if (S.volSel === '全') S.volSel = '';
+    }
     if (S.subject === 'chinese') {
-      document.title = '诊断 · 小学语文';
-      if ('一二三四五六'.indexOf(S.gradeSel) < 0) S.gradeSel = '一';
+      document.title = '诊断 · 语文';
+      if ('一二三四五六七八九'.indexOf(S.gradeSel) < 0) S.gradeSel = '一';
+      /* 全站初始年级是七年级。语文原先从一年级进入，这里仍改回一年级；
+       * 这段只在 init 里跑一次（applySubjectChrome 只被 init 调用），所以点「初中」学段
+       * 再选七年级之后不会被拉回一年级 —— 与上游 else-if 的用户可见行为一致。 */
+      else if (S.gradeSel === '七') S.gradeSel = '一';
       if (S.volSel === '全') S.volSel = '';
     }
   }
@@ -1600,8 +1630,9 @@
       ? function (value, label) { return h('button', { type: 'button', class: 'stage-tab', role: 'tab', 'aria-selected': 'false', disabled: 'disabled' }, label); }
       : stageButton;
     const list = S.subject === 'physics' ? [mk('', '全部'), mk('j', '初中'), mk('h', '高中')]
-      : S.subject === 'history' || S.subject === 'geography' ? [mk('', '全部'), mk('j', '初中')]
-      : S.subject === 'chinese' || S.subject === 'science' || S.subject === 'morality' ? [mk('', '全部'), mk('p', '小学')]
+      : S.subject === 'history' || S.subject === 'geography' || S.subject === 'biology' || S.subject === 'chemistry' ? [mk('', '全部'), mk('j', '初中')]
+      : S.subject === 'chinese' ? [mk('', '全部'), mk('p', '小学'), mk('j', '初中')]
+      : S.subject === 'science' || S.subject === 'morality' ? [mk('', '全部'), mk('p', '小学')]
       : [mk('', '全部'), mk('p', '小学'), mk('j', '初中'), mk('h', '高中')];
     return h('div', { class: 'stage-tabs', role: 'tablist', 'aria-label': '学段' }, list);
   }
@@ -1736,11 +1767,15 @@
         ? '选一个想学会或想检查的历史知识点。' + confirmHelp
         : S.subject === 'geography'
         ? '选一个想学会或想检查的地理知识点。' + confirmHelp
+        : S.subject === 'biology'
+        ? '选一个想学会或想检查的生物知识点。' + confirmHelp
+        : S.subject === 'chemistry'
+        ? '选一个想学会或想检查的化学知识点。' + confirmHelp
         : '选一个想学会或想检查的知识点。' + confirmHelp),
       stageTabs(false),
       h('input', {
         type: 'search', class: 'search-lg', id: 'search',
-        placeholder: S.subject === 'physics' ? '搜索知识点，例如：欧姆定律、浮力、牛顿第二定律、楞次定律' : S.subject === 'english' ? '搜索知识点，例如：现在进行时、虚拟语气、there is' : S.subject === 'chinese' ? '搜索知识点，例如：声母、静夜思、的地得' : S.subject === 'science' ? '搜索知识点，例如：溶解、电路、昼夜交替' : S.subject === 'morality' ? '搜索知识点，例如：升国旗、排队、宪法、节约用水' : S.subject === 'history' ? '搜索知识点，例如：鸦片战争、丝绸之路、五四运动' : S.subject === 'geography' ? '搜索知识点，例如：经纬网、季风气候、长江' : '搜索知识点，例如：配方法、20 以内加法、一次函数',
+        placeholder: S.subject === 'physics' ? '搜索知识点，例如：欧姆定律、浮力、牛顿第二定律、楞次定律' : S.subject === 'english' ? '搜索知识点，例如：现在进行时、虚拟语气、there is' : S.subject === 'chinese' ? '搜索知识点，例如：声母、静夜思、春、岳阳楼记' : S.subject === 'science' ? '搜索知识点，例如：溶解、电路、昼夜交替' : S.subject === 'morality' ? '搜索知识点，例如：升国旗、排队、宪法、节约用水' : S.subject === 'history' ? '搜索知识点，例如：鸦片战争、丝绸之路、五四运动' : S.subject === 'geography' ? '搜索知识点，例如：经纬网、季风气候、长江' : S.subject === 'biology' ? '搜索知识点，例如：细胞、光合作用、基因' : S.subject === 'chemistry' ? '搜索知识点，例如：氧气、质量守恒定律、酸碱盐' : '搜索知识点，例如：配方法、20 以内加法、一次函数',
         value: S.startQuery, autocomplete: 'off', 'aria-label': '搜索知识点',
         oninput: function (e) {
           S.startQuery = e.target.value;
@@ -1815,9 +1850,13 @@
           ])
           : S.subject === 'history'
           ? '七八九'.split('').map(function (x) { return [x, x + '年级']; })
-          : S.subject === 'geography'
+          : S.subject === 'geography' || S.subject === 'biology'
           ? '七八'.split('').map(function (x) { return [x, x + '年级']; })
-          : S.subject === 'chinese' || S.subject === 'science' || S.subject === 'morality'
+          : S.subject === 'chemistry'
+          ? [['九', '九年级']]
+          : S.subject === 'chinese'
+          ? '一二三四五六七八九'.split('').map(function (x) { return [x, x + '年级']; })
+          : S.subject === 'science' || S.subject === 'morality'
           ? '一二三四五六'.split('').map(function (x) { return [x, x + '年级']; })
           : GRADES.map(function (x) { return [x, x + '年级']; }).concat([
             ['高一', '高一'], ['高二', '高二'], ['选必一', '选必一'], ['选必二', '选必二'], ['选必三', '选必三']
@@ -1874,9 +1913,10 @@
       if (!chapters.length) return;
       const count = chapters.reduce(function (n, c) { return n + c.rows.length; }, 0);
       shown += count;
-      const openVol = S.subject === 'physics' ? '八上' : S.subject === 'english' ? '三上' : S.subject === 'history' || S.subject === 'geography' ? '七上' : '一上';
+      const openVol = S.subject === 'physics' ? '八上' : S.subject === 'english' ? '三上' : S.subject === 'chemistry' ? '九上' : S.subject === 'history' || S.subject === 'geography' || S.subject === 'biology' ? '七上' : '一上';
+      const juniorOpen = S.subject === 'chemistry' ? '九上' : '七上';
       const seniorOpen = S.subject === 'english' || S.subject === 'physics' ? '必修一' : '高一';
-      const det = h('details', { class: 'vol', open: !!q || (S.startStage === 'j' ? vv[0] === '七上' : S.startStage === 'h' ? vv[0] === seniorOpen : vv[0] === openVol) },
+      const det = h('details', { class: 'vol', open: !!q || (S.startStage === 'j' ? vv[0] === juniorOpen : S.startStage === 'h' ? vv[0] === seniorOpen : vv[0] === openVol) },
         h('summary', null, vv[1] + '（' + count + ' 个知识点）'));
       chapters.forEach(function (c) {
         const ch = c.ch;
