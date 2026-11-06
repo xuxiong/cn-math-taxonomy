@@ -1216,7 +1216,7 @@ function shareScopeText() {
   }
 
 function buildShareModel(sum, chapters) {
-    var subjectName = S.subject === 'english' ? '英语' : S.subject === 'physics' ? '物理' : S.subject === 'chinese' ? '语文' : S.subject === 'science' ? '科学' : S.subject === 'morality' ? '道德与法治' : S.subject === 'history' ? '历史' : S.subject === 'geography' ? '地理' : '数学';
+    var subjectName = S.subject === 'english' ? '英语' : S.subject === 'physics' ? '物理' : S.subject === 'chinese' ? '语文' : S.subject === 'science' ? '科学' : S.subject === 'morality' ? '道德与法治' : S.subject === 'history' ? '历史' : S.subject === 'geography' ? '地理' : S.subject === 'biology' ? '生物' : S.subject === 'chemistry' ? '化学' : '数学';
     var spots = [];
     var spotKind = 'topic';
     if (chapters && chapters.length) {
@@ -1698,7 +1698,7 @@ function standardsCard(sum) {
         : S.subject === 'english'
         ? '目标与学习路径上的知识点对应的《义务教育英语课程标准（2022年版）》和《普通高中英语课程标准（2017年版2025年修订）》公开转述（一级、二级、三级，以及高中必修、选择性必修）。'
         : S.subject === 'chinese'
-        ? '目标与学习路径上的知识点对应的《义务教育语文课程标准（2022年版）》第一至第三学段的公开转述。'
+        ? '目标与学习路径上的知识点对应的《义务教育语文课程标准（2022年版）》第一至第四学段的公开转述。'
         : S.subject === 'science'
         ? '目标与学习路径上的知识点对应的《义务教育科学课程标准（2022年版）》第一至第三学段学习内容的公开转述。'
         : S.subject === 'morality'
@@ -1707,6 +1707,10 @@ function standardsCard(sum) {
         ? '目标与学习路径上的知识点对应的《义务教育历史课程标准（2022年版）》第四学段内容要求的公开转述。'
         : S.subject === 'geography'
         ? '目标与学习路径上的知识点对应的《义务教育地理课程标准（2022年版）》第四学段内容要求的公开转述。'
+        : S.subject === 'biology'
+        ? '目标与学习路径上的知识点对应的《义务教育生物学课程标准（2022年版）》第四学段内容要求的公开转述。'
+        : S.subject === 'chemistry'
+        ? '目标与学习路径上的知识点对应的《义务教育化学课程标准（2022年版）》五个学习主题内容要求的公开转述。'
         : '目标与学习路径上的知识点对应的《义务教育数学课程标准（2022年版）》内容要求（第一至第四学段）。'),
       !S.fullTopicsLoaded ? h('p', { class: 'muted small', text: S.fullTopicsFailed ? '课标条目载入失败，可刷新重试。' : '正在载入课标条目…' })
         : keys.length ? keys.map(function (k) {
