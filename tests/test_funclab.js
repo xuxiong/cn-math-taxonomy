@@ -2,7 +2,8 @@
 /* 函数实验室（diagnose/funclab.js）纯函数测试：node tests/test_funclab.js
  *
  * 覆盖范围：topicKind / topicSupported / labFor / fromPrompt / formatFormula（含 fmt 行为）。
- * mount() 需要 DOM，不在本文件范围（浏览器手测）。
+ * mount() 需要 DOM —— 第 13/14 节用最小 mock DOM 做 mount 级测试（第 14 节含浏览器
+ * range value 的 clamp+snap 语义复刻，缺陷2 只在该语义下复现）。
  *
  * 约定：本文件所有题面都取自 data/questions.json 的真实 prompt（用 q(id) 取，
  * 取不到直接失败），不臆造题面 —— 保证测试锁的是学生真正会看到的输入。
@@ -1470,6 +1471,491 @@ test('describe：curveWindow 与 mount.view() 的 quadratic 视野同口径（�
   // 绘制路径的裁剪判断必须还在（curveWindow 的存在前提）
   assert.ok(src.indexOf('if (X < 0 || X > w.w) return;') >= 0, '绘制路径应有 X 裁剪判断');
   assert.ok(src.indexOf('X < 0 || X > w.w') >= 0, '绘制路径应有 X 裁剪判断');
+});
+
+/* ================================================================
+ * 13. 图形特点：不变量 / 偏离 / 缺失要素（t_544ec982）
+ *    任务书称「第 10 节」，文件内 10 已被回归节占用，节号顺延为 13。
+ *    invariantsOf：纯函数、无 DOM、不接 LLM；文案铁律（无数字、无强调符、无增减奇偶结论）
+ *    由本节逐条锁死。DOM（不变量块/偏离提示）无法在 Node 测，走源码级守卫。
+ * ================================================================ */
+
+console.log('\n--- 13. 图形特点：不变量 / 偏离 / 缺失要素 ---');
+
+/** two-curves-intersect 的样参（DESC_LABS 不含它，走 NOTE_INTENT 里的标准例） */
+function curvesSample() {
+  return { type: 'curves', curves: [{ type: 'linear', k: 1, b: 1 }, { type: 'linear', k: -1, b: 3 }] };
+}
+
+test('不变量：CAP_TYPE 每个 lab × 首个 canAnswer intent 返回非空字符串数组；未知 lab → []', function () {
+  Object.keys(F.CAP_TYPE).forEach(function (lab) {
+    const it = F.intentKey(F.CAPABILITIES[lab].canAnswer[0]);
+    const params = lab === 'two-curves-intersect' ? curvesSample() : descParams(lab);
+    const arr = F.invariantsOf(lab, it, params);
+    assert.ok(Array.isArray(arr), lab + ' invariantsOf 应返回数组');
+    assert.ok(arr.length >= 1, lab + ' 应至少返回 1 条不变量');
+    arr.forEach(function (t) {
+      assert.strictEqual(typeof t, 'string', lab + ' 不变量应为字符串');
+      assert.ok(t.length > 0, lab + ' 不变量应为非空字符串');
+    });
+  });
+  assert.deepStrictEqual(F.invariantsOf('nope', '最大值', { a: 1 }), [], 'CAP_TYPE 外的 lab 应返回 []');
+  assert.deepStrictEqual(F.invariantsOf(null, null, null), [], '空 lab 应返回 []，不抛错');
+});
+
+test('不变量：文案铁律 —— 无阿拉伯数字、无 **、无增减奇偶结论（结构性 + 拖动全场景）', function () {
+  const iron = function (t, tag) {
+    assert.ok(!/[0-9]/.test(t), tag + ' 不变量不许出现阿拉伯数字：' + t);
+    assert.ok(t.indexOf('**') < 0, tag + ' 不变量不许出现 **：' + t);
+    assert.ok(!/奇函数|偶函数|增函数|减函数|单调递增|单调递减/.test(t), tag + ' 不变量不许出现增/减/奇/偶结论：' + t);
+  };
+  // 结构性（无 prev）
+  Object.keys(F.CAP_TYPE).forEach(function (lab) {
+    const it = F.intentKey(F.CAPABILITIES[lab].canAnswer[0]);
+    const params = lab === 'two-curves-intersect' ? curvesSample() : descParams(lab);
+    F.invariantsOf(lab, it, params).forEach(function (t) { iron(t, lab + '(结构)'); });
+  });
+  // 拖动场景（prev 给出）：逐 type 覆盖 §1.4 的全部固定文案
+  const dragCases = [
+    ['quadratic-vertex', '顶点坐标', { a: 1, h: 0, k: 0 }, { a: 1, h: 0, k: 0 }],
+    ['linear-intercepts', '与 y 轴交点的纵坐标', { k: 1, b: 0 }, { k: 1, b: 0 }],
+    ['inverse-quadrants', '图象所在的象限', { k: 1 }, { k: 3 }],
+    ['inverse-quadrants', '图象所在的象限', { k: 1 }, { k: -2 }],
+    ['trig-extremum', '最大值', { fn: 'sin', A: 1, w: 2, phi: 0, k: 0 }, { fn: 'sin', A: 1, w: 2, phi: 0, k: 0 }],
+    ['exp-curve', '值域', { a: 1, base: 2, w: 1, phi: 0, k: 0 }, { a: 1, base: 2, w: 1, phi: 0, k: 0 }],
+    ['exp-curve', '值域', { a: 1, base: 2, w: 1, phi: 0, k: 0 }, { a: 1, base: 2, w: 1, phi: 0, k: 1 }],
+    ['log-curve', '定义域', { c: 1, base: 2, shift: 0, d: 0 }, { c: 1, base: 2, shift: 0, d: 0 }],
+    ['power-curve', '定义域', { a: 1, root: { b: 1, c: 0 }, k: 0 }, { a: 2, root: { b: 1, c: 0 }, k: 0 }],
+    ['power-curve', '定义域', { a: 1, p: 4, k: 0 }, { a: 2, p: 4, k: 0 }],
+    ['power-curve', '定义域', { a: 1, p: -2, k: 0 }, { a: 2, p: -2, k: 0 }],
+    ['cubic-parity', '奇偶性', { a: 1, b: 0, c: 0, d: 0 }, { a: 1, b: 0, c: 0, d: 0 }],
+    ['two-curves-intersect', '两条曲线的交点坐标',
+      { curves: [{ type: 'linear', k: 1, b: 1 }, { type: 'linear', k: -1, b: 3 }] },
+      { curves: [{ type: 'linear', k: 1, b: 1 }, { type: 'linear', k: -1, b: 3 }] }]
+  ];
+  dragCases.forEach(function (c) {
+    const arr = F.invariantsOf(c[0], c[1], c[3], c[2]);
+    assert.ok(arr.length >= 1, c[0] + ' 拖动后仍应至少 1 条不变量');
+    arr.forEach(function (t) { iron(t, c[0] + '(拖动)'); });
+  });
+});
+
+test('不变量：trig 拖 A 周期不变（计算出来的），「高度差没变」不许出现', function () {
+  const trig = { fn: 'sin', A: 1, w: 2, phi: 0, k: 0 };
+  const txt = F.invariantsOf('trig-extremum', '最大值', Object.assign({}, trig, { A: -3 }), trig);
+  assert.ok(txt.join(' ').indexOf('周期没变') >= 0, '拖 A 后应含「周期没变」：' + txt.join(' | '));
+  assert.ok(txt.join(' ').indexOf('高度差没变') < 0, 'A 变了，「高度差没变」不许出现：' + txt.join(' | '));
+});
+
+test('不变量：trig 拖 ω 波峰标注不变（周期条不许出现），标注文本不随 ω 变', function () {
+  const p2 = { fn: 'sin', A: 1, w: 2, phi: 0, k: 0 };
+  const p3 = { fn: 'sin', A: 1, w: 3, phi: 0, k: 0 };
+  const txt = F.invariantsOf('trig-extremum', '最大值', p3, p2);
+  assert.ok(txt.join(' ').indexOf('波峰与波谷的高度差没变') >= 0, 'A 未变应含「波峰与波谷的高度差没变」：' + txt.join(' | '));
+  assert.ok(txt.join(' ').indexOf('周期没变') < 0, 'ω 变了，「周期没变」不许出现：' + txt.join(' | '));
+  assert.strictEqual(F.trigExtremumText('最大值', p2, false), F.trigExtremumText('最大值', p3, false),
+    '波峰标注文本本身不随 ω 变（w=2 与 w=3 应逐字相同）');
+});
+
+test('不变量：quadratic 拖 a → 对称轴没变；拖 h → 开口宽窄没变（且不说对称轴）', function () {
+  const base = { type: 'quadratic', a: 1, h: 0, k: 0 };
+  const dragA = F.invariantsOf('quadratic-vertex', '顶点坐标', Object.assign({}, base, { a: 2 }), base);
+  assert.ok(dragA.join(' ').indexOf('对称轴的位置没变') >= 0, '拖 a 应含「对称轴的位置没变」：' + dragA.join(' | '));
+  const dragH = F.invariantsOf('quadratic-vertex', '顶点坐标', Object.assign({}, base, { h: 1 }), base);
+  assert.ok(dragH.join(' ').indexOf('开口的宽窄没变') >= 0, '拖 h 应含「开口的宽窄没变」：' + dragH.join(' | '));
+  assert.ok(dragH.join(' ').indexOf('对称轴的位置没变') < 0, 'h 变了，「对称轴的位置没变」不许出现');
+});
+
+test('不变量：linear 拖 k → 与 y 轴的交点没动；拖 b → 倾斜程度没动', function () {
+  const base = { type: 'linear', k: 1, b: 0 };
+  const dragK = F.invariantsOf('linear-intercepts', '与 y 轴交点的纵坐标', Object.assign({}, base, { k: 2 }), base);
+  assert.ok(dragK.join(' ').indexOf('与 y 轴的交点没动') >= 0, '拖 k 应含「与 y 轴的交点没动」：' + dragK.join(' | '));
+  const dragB = F.invariantsOf('linear-intercepts', '与 y 轴交点的纵坐标', Object.assign({}, base, { b: 2 }), base);
+  assert.ok(dragB.join(' ').indexOf('倾斜程度没动') >= 0, '拖 b 应含「倾斜程度没动」：' + dragB.join(' | '));
+});
+
+test('不变量：inverse k 同号变化 → 还是那两支；异号 → 翻到另外两个象限', function () {
+  const same = F.invariantsOf('inverse-quadrants', '图象所在的象限', { k: 3 }, { k: 1 });
+  assert.ok(same.join(' ').indexOf('还是那两支') >= 0, '同号变化应含「还是那两支」：' + same.join(' | '));
+  const flip = F.invariantsOf('inverse-quadrants', '图象所在的象限', { k: -2 }, { k: 1 });
+  assert.ok(flip.join(' ').indexOf('另外两个象限') >= 0, '异号应含「另外两个象限」：' + flip.join(' | '));
+});
+
+test('不变量：cubic 拖 b → 与 y 轴的交点没动；拖 a（同号）→ 两端走向没变', function () {
+  const base = { type: 'cubic', a: 1, b: 0, c: 0, d: 0 };
+  const dragB = F.invariantsOf('cubic-parity', '奇偶性', Object.assign({}, base, { b: 1 }), base);
+  assert.ok(dragB.join(' ').indexOf('与 y 轴的交点没动') >= 0, '拖 b 应含「与 y 轴的交点没动」：' + dragB.join(' | '));
+  const dragA = F.invariantsOf('cubic-extremum', '极值点的横坐标', Object.assign({}, base, { a: 2 }), base);
+  assert.ok(dragA.join(' ').indexOf('两端走向没变') >= 0, '拖 a（同号）应含「两端走向没变」：' + dragA.join(' | '));
+});
+
+test('不变量：exp 拖 k → 追加整条上下平移句，「渐近线没动」不许出现', function () {
+  const base = { type: 'exp', a: 1, base: 2, w: 1, phi: 0, k: 0 };
+  const dragK = F.invariantsOf('exp-curve', '值域', Object.assign({}, base, { k: 1 }), base);
+  assert.ok(dragK.join(' ').indexOf('上下平移') >= 0, '拖 k 应追加上下平移句：' + dragK.join(' | '));
+  assert.ok(dragK.join(' ').indexOf('渐近线没动') < 0, 'k 变了，「渐近线没动」不许出现');
+});
+
+test('不变量：log 拖 c → 渐近线没动；拖 shift → 「渐近线没动」不许出现', function () {
+  const base = { type: 'log', c: 1, base: 2, shift: 0, d: 0 };
+  const dragC = F.invariantsOf('log-curve', '定义域', Object.assign({}, base, { c: 2 }), base);
+  assert.ok(dragC.join(' ').indexOf('渐近线没动') >= 0, '拖 c 应含「渐近线没动」：' + dragC.join(' | '));
+  const dragS = F.invariantsOf('log-curve', '定义域', Object.assign({}, base, { shift: 1 }), base);
+  assert.ok(dragS.join(' ').indexOf('渐近线没动') < 0, 'shift 变了，「渐近线没动」不许出现');
+});
+
+test('describe：每个 lab 的 describe 都带「不变量：」行（quadratic 与 curves 逐字核对）', function () {
+  Object.keys(F.CAP_TYPE).forEach(function (lab) {
+    const it = F.intentKey(F.CAPABILITIES[lab].canAnswer[0]);
+    const params = lab === 'two-curves-intersect' ? curvesSample() : descParams(lab);
+    const d = F.describe(lab, it, params);
+    assert.ok(d, lab + ' describe 应非空');
+    assert.ok(d.indexOf('不变量：') >= 0, lab + ' describe 应含「不变量：」行\n' + d);
+  });
+  const m = F.paintModel('quadratic-vertex', '最大值', { type: 'quadratic', a: 1, h: 0, k: 0 });
+  assert.ok(m.elements.some(function (e) {
+    return e.kind === 'invariant' && e.text.indexOf('不变量：') === 0;
+  }), 'paintModel 应有以「不变量：」开头的 kind=invariant 元素');
+});
+
+test('trig-extremum：波峰与波谷同时标（A 的符号不影响两条都在）', function () {
+  const peaksOf = function (params) {
+    const m = F.paintModel('trig-extremum', '最大值', params);
+    assert.ok(m, 'paintModel 应非空');
+    const texts = m.elements.filter(function (e) { return e.kind === 'extremum-point'; })
+      .map(function (e) { return e.text; });
+    const joined = texts.join('\n');
+    assert.ok(texts.length === 2, '应有两条 extremum-point 元素，实际 ' + texts.length + ' 条：\n' + joined);
+    assert.ok(joined.indexOf('波峰') >= 0, 'extremum-point 应含「波峰」：\n' + joined);
+    assert.ok(joined.indexOf('波谷') >= 0, 'extremum-point 应含「波谷」：\n' + joined);
+    assert.ok(joined.indexOf('最大值 = ?') >= 0 && joined.indexOf('最小值 = ?') >= 0,
+      '两个极值标签都应是「数值留白」形态：\n' + joined);
+  };
+  peaksOf({ type: 'trig', fn: 'sin', A: 1, w: 1, phi: 0, k: 0 });
+  peaksOf({ type: 'trig', fn: 'sin', A: -1, w: 1, phi: 0, k: 0 });
+});
+
+test('exp 定点：过 (0,1) 时说「定点 (0, 1)」；不在 (0,1) 时不许说谎', function () {
+  const d1 = F.describe('exp-curve', '值域', { type: 'exp', a: 1, base: 2, w: 1, phi: 0, k: 0 });
+  assert.ok(d1 && d1.indexOf('定点 (0, 1)') >= 0, 'a=1,base=2,phi=0,k=0 应含「定点 (0, 1)」\n' + d1);
+  const d2 = F.describe('exp-curve', '值域', { type: 'exp', a: 3, base: 2, w: 1, phi: 0, k: 2 });
+  assert.ok(d2, 'describe 应非空');
+  assert.ok(d2.indexOf('定点 (0, 1)') < 0, '定点在 (0,5)，不许说「定点 (0, 1)」\n' + d2);
+});
+
+test('power 对称/单调：p=2 轴对称、p=3 中心对称、根式只在一侧；单调性形状都有', function () {
+  const dEven = F.describe('power-curve', '定义域', { type: 'power', a: 1, p: 2, k: 0 });
+  assert.ok(dEven && dEven.indexOf('关于 y 轴对称') >= 0, 'p=2 应含「关于 y 轴对称」\n' + dEven);
+  const dOdd = F.describe('power-curve', '定义域', { type: 'power', a: 1, p: 3, k: 0 });
+  assert.ok(dOdd && dOdd.indexOf('关于原点对称') >= 0, 'p=3 应含「关于原点对称」\n' + dOdd);
+  const dRoot = F.describe('power-curve', '定义域', { type: 'power', a: 1, root: { b: 1, c: 0 }, k: 0 });
+  assert.ok(dRoot && dRoot.indexOf('只在定义域一侧') >= 0, '根式形应含「只在定义域一侧」\n' + dRoot);
+  assert.ok(dRoot.indexOf('关于原点对称') < 0, '根式形不该说中心对称');
+  assert.ok(dRoot.indexOf('关于 y 轴对称') < 0, '根式形不该说轴对称');
+  [dEven, dOdd, dRoot].forEach(function (d, i) {
+    assert.ok(d.indexOf('单调性形状') >= 0, '第 ' + (i + 1) + ' 种形态应有「单调性形状」行\n' + d);
+  });
+});
+
+test('源码守卫：annotate 画了三处新要素；mount 有不变量块与偏离态（防「说了没画」）', function () {
+  const fs = require('fs');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'funclab.js'), 'utf8');
+  /** 在 startAnchor 起的函数体内截 from→to（先定位函数起点，防同名分支命中 paintModel） */
+  const cut = function (startAnchor, fromAnchor, toAnchor) {
+    const s = src.indexOf(startAnchor);
+    assert.ok(s >= 0, '源码缺锚点 ' + startAnchor);
+    const i = s + src.slice(s).indexOf(fromAnchor);
+    const j = s + src.slice(s).indexOf(toAnchor);
+    assert.ok(i > s && j > i, '锚点顺序不对：' + fromAnchor + ' → ' + toAnchor);
+    return src.slice(i, j);
+  };
+  const powerBranch = cut('function annotate', "} else if (type === 'power') {", "} else if (type === 'cubic') {");
+  assert.ok(powerBranch.indexOf('powerSymText(') >= 0, 'annotate 的 power 分支应调用 powerSymText');
+  const trigBranch = cut('function annotate', "} else if (type === 'trig') {", "} else if (type === 'exp') {");
+  assert.ok(trigBranch.indexOf("trigExtremumText('最大值'") >= 0, 'annotate 的 trig 分支应画最大值标签');
+  assert.ok(trigBranch.indexOf("trigExtremumText('最小值'") >= 0, 'annotate 的 trig 分支应画最小值标签');
+  const expBranch = cut('function annotate', "} else if (type === 'exp') {", "} else if (type === 'log') {");
+  assert.ok(expBranch.indexOf('expFixedText(') >= 0, 'annotate 的 exp 分支应调用 expFixedText');
+  const mountSrc = cut('function mount(opts)', 'const invBox', 'wrap._funclab = inst');
+  assert.ok(mountSrc.indexOf('funclab-invariants') >= 0, 'mount 应有 .funclab-invariants 块');
+  assert.ok(mountSrc.indexOf('funclab-deviated') >= 0, 'mount 应有 .funclab-deviated 块');
+  assert.ok(mountSrc.indexOf('is-deviated') >= 0, '复位按钮应有 is-deviated 态');
+  assert.ok(mountSrc.indexOf('invariantsOf(') >= 0, 'mount 应调用 invariantsOf 渲染不变量');
+});
+
+/* ================================================================
+ * 14. 缺陷修复回归（修缺陷卡：先红后绿）
+ *    缺陷1：trig 族 A<0 时「最大值/最小值」标签按 wantFn 硬编码到固定相位，
+ *           不跟实际极值走（A<0 时 sin=+1 处其实是函数最小值）；A=0 退化常函数还标最值。
+ *    缺陷2：trig-extremum 点「回到题目参数」后 deviated 仍为 true。
+ *    证据等级：本仓库无 jsdom 基座，本节用最小 mock DOM 做 **mount 级** 测试。
+ *    mock 的 range input value setter 复刻真浏览器（Chrome 实测，见 REPORT.md）语义：
+ *    clamp 到 [min,max] 且 snap 到 step 网格（stepBase=min）。缺陷 2 只在带 snap
+ *    语义的环境复现 —— trig 的 φ 滑块 min=-π（无理数）、题面 φ=0 不在 0.05 网格上，
+ *    「写滑块再 dispatch 读回」的复位路径会拿到 0.0084… 而不是 0。
+ * ================================================================ */
+
+console.log('\n--- 14. 缺陷修复回归：trig A<0 最值标签 + 复位偏离态清零 ---');
+
+/** Chrome range input value setter 的实测语义：先 clamp 到 [min,max]，再 snap 到 step 网格（stepBase=min） */
+function browserRangeValue(x, min, max, step) {
+  let v = Number(x);
+  if (!isFinite(v)) v = (Number(min) + Number(max)) / 2;
+  v = Math.max(Number(min), Math.min(Number(max), v));
+  const st = Number(step);
+  if (st > 0) {
+    v = Number(min) + Math.round((v - Number(min)) / st) * st;
+    v = Math.max(Number(min), Math.min(Number(max), v));
+  }
+  return v;
+}
+
+function makeMountDom() {
+  const created = [];
+  function el(tag) {
+    const node = {
+      tagName: String(tag).toUpperCase(), className: '', hidden: false, children: [],
+      listeners: {}, attributes: {}, parent: null, _text: '', style: {},
+      type: '', min: 0, max: 0, step: 1, placeholder: '',
+      appendChild: function (c) { node.children.push(c); c.parent = node; return c; },
+      remove: function () {
+        if (!node.parent) return;
+        const i = node.parent.children.indexOf(node);
+        if (i >= 0) node.parent.children.splice(i, 1);
+        node.parent = null;
+      },
+      setAttribute: function (k, v) { node.attributes[k] = v; },
+      getAttribute: function (k) { return node.attributes[k]; },
+      addEventListener: function (ev, fn) { (node.listeners[ev] = node.listeners[ev] || []).push(fn); },
+      dispatchEvent: function (e) {
+        (node.listeners[e && e.type] || []).forEach(function (fn) { fn(e); });
+        return true;
+      },
+      focus: function () {},
+      _all: function (pred, out) {
+        out = out || [];
+        node.children.forEach(function (c) { if (pred(c)) out.push(c); c._all && c._all(pred, out); });
+        return out;
+      },
+      querySelectorAll: function (sel) {
+        const cls = sel.replace(/^\./, '');
+        return node._all(function (c) { return String(c.className).split(/\s+/).indexOf(cls) >= 0; });
+      },
+      querySelector: function (sel) { return node.querySelectorAll(sel)[0] || null; }
+    };
+    /* value：range 输入复刻浏览器 clamp+snap（缺陷2 复现的关键）；其他输入原样存字符串 */
+    let rawValue = '';
+    Object.defineProperty(node, 'value', {
+      get: function () { return rawValue; },
+      set: function (v) {
+        rawValue = (node.type === 'range' && isFinite(Number(v))
+          && isFinite(Number(node.min)) && isFinite(Number(node.step)))
+          ? String(browserRangeValue(Number(v), node.min, node.max, node.step))
+          : String(v == null ? '' : v);
+      }
+    });
+    Object.defineProperty(node, 'textContent', {
+      get: function () { return node._text; },
+      set: function (v) { node._text = String(v); node.children = []; }
+    });
+    if (node.tagName === 'CANVAS') {
+      node.clientWidth = 560; node.clientHeight = 320; node.width = 0; node.height = 0;
+      node._rec = { strokes: 0, draws: [], texts: [], arcs: [], dash: [], strokeStyle: '', fillStyle: '',
+        lineWidth: 0, font: '', textAlign: 'left' };
+      node.getContext = function () {
+        const noop = function () {};
+        const rec = node._rec;
+        const ctx = {
+          save: noop, restore: noop, beginPath: noop, moveTo: noop, lineTo: noop,
+          arc: function (x, y, r) { rec.arcs.push({ x: x, y: y, r: r }); }, fill: noop,
+          fillRect: noop, clearRect: noop, setTransform: noop,
+          set strokeStyle(v) { rec.strokeStyle = v; }, get strokeStyle() { return rec.strokeStyle; },
+          set fillStyle(v) { rec.fillStyle = v; }, get fillStyle() { return rec.fillStyle; },
+          set lineWidth(v) { rec.lineWidth = v; }, get lineWidth() { return rec.lineWidth; },
+          setLineDash: function (d) { rec.dash = d; },
+          stroke: function () { rec.strokes++; },
+          fillText: function (text, x, y) {
+            const m = /(\d+(?:\.\d+)?)px/.exec(String(rec.font || ''));
+            rec.draws.push({ text: String(text), x: x, y: y, size: m ? Number(m[1]) : 10, align: rec.textAlign });
+            rec.texts.push(String(text));
+          },
+          measureText: function (t) {
+            const m = /(\d+(?:\.\d+)?)px/.exec(String(rec.font || ''));
+            return { width: String(t).length * (m ? Number(m[1]) : 10) * 0.62 };
+          }
+        };
+        Object.defineProperty(ctx, 'font', { get: function () { return rec.font; }, set: function (v) { rec.font = v; } });
+        Object.defineProperty(ctx, 'textAlign', {
+          get: function () { return rec.textAlign; }, set: function (v) { rec.textAlign = v || 'left'; }
+        });
+        return ctx;
+      };
+    }
+    created.push(node);
+    return node;
+  }
+  return {
+    document: { createElement: el, createTextNode: function (t) { return { nodeValue: String(t) }; } },
+    created: created
+  };
+}
+
+/** 在 mock document 存活期间跑一段「mount → 操作 → 断言」的完整流程 */
+function withMountDom(fn) {
+  const dom = makeMountDom();
+  const prevDoc = global.document;
+  const prevDpr = global.devicePixelRatio;
+  const prevRO = global.ResizeObserver;
+  global.document = dom.document;
+  global.devicePixelRatio = 1;
+  global.ResizeObserver = undefined;
+  try { return fn(dom); }
+  finally {
+    global.document = prevDoc;
+    if (prevDpr === undefined) delete global.devicePixelRatio; else global.devicePixelRatio = prevDpr;
+    global.ResizeObserver = prevRO;
+  }
+}
+
+/** mount 一个画板并收集测试把手：滑块（label 前缀→节点）、复位按钮、偏离框、canvas 落笔记录 */
+function mountHarness(dom, cfg) {
+  const inst = F.mount(cfg);
+  assert.ok(inst, '画板应挂上：' + JSON.stringify({ lab: cfg.lab, intent: cfg.intent }));
+  const wrap = inst.el;
+  const sliders = {};
+  dom.created.filter(function (n) { return n.tagName === 'INPUT' && n.type === 'range'; })
+    .forEach(function (s) {
+      const label = s.parent && s.parent.children[0] ? String(s.parent.children[0].nodeValue) : '';
+      sliders[label.split('(')[0]] = s;
+    });
+  const resetBtn = dom.created.filter(function (n) {
+    return n.tagName === 'BUTTON' && /回到题目参数/.test(n._text);
+  })[0];
+  assert.ok(resetBtn, '应有「回到题目参数」按钮');
+  const devBox = wrap.querySelector('.funclab-deviated');
+  assert.ok(devBox, '应有 .funclab-deviated 偏离提示块');
+  const canvas = dom.created.filter(function (n) { return n.tagName === 'CANVAS'; })[0];
+  assert.ok(canvas, '应有 canvas');
+  return { inst: inst, sliders: sliders, resetBtn: resetBtn, devBox: devBox, canvas: canvas };
+}
+
+test('[缺陷1][mount] A<0 时最值标签跟随实际极值：「最大值」标签恒比「最小值」标签高（A>0 防回归）', function () {
+  [['sin', -2], ['sin', -0.5], ['cos', -3], ['sin', 2], ['cos', 1]].forEach(function (c) {
+    withMountDom(function (dom) {
+      const h = mountHarness(dom, { type: 'trig', lab: 'trig-extremum', intent: '最大值',
+        fn: c[0], A: c[1], w: 1, phi: 0, k: 0 });
+      const draws = h.canvas._rec.draws;
+      const maxT = draws.filter(function (d) { return d.text.indexOf('最大值') === 0; });
+      const minT = draws.filter(function (d) { return d.text.indexOf('最小值') === 0; });
+      assert.ok(maxT.length >= 1, c[0] + ' A=' + c[1] + '：应画「最大值」标签');
+      assert.ok(minT.length >= 1, c[0] + ' A=' + c[1] + '：应画「最小值」标签');
+      /* 画布 y 向下：更小 = 更高。「最大值」标签必须整体在「最小值」标签上方 ——
+       * A 的符号只该互换标签挂的相位，不许改变「最大值在最高点」这个事实。 */
+      const maxY = Math.min.apply(null, maxT.map(function (d) { return d.y; }));
+      const minY = Math.min.apply(null, minT.map(function (d) { return d.y; }));
+      assert.ok(maxY < minY - 10, c[0] + ' A=' + c[1] + '：「最大值」标签应比「最小值」标签高'
+        + '（max y=' + maxY.toFixed(1) + '，min y=' + minY.toFixed(1) + '）—— 标签没跟随实际极值');
+    });
+  });
+});
+
+test('[缺陷1][mount] A=0 退化为常函数：不画「最大值/最小值」标签，不画极值红点', function () {
+  withMountDom(function (dom) {
+    const h = mountHarness(dom, { type: 'trig', lab: 'trig-extremum', intent: '最大值',
+      fn: 'sin', A: 0, w: 1, phi: 0, k: 0 });
+    const texts = h.canvas._rec.draws.map(function (d) { return d.text; });
+    const bad = texts.filter(function (t) { return t.indexOf('最大值') === 0 || t.indexOf('最小值') === 0; });
+    assert.deepStrictEqual(bad, [], 'A=0 是常函数，没有波峰波谷，不该标「最大值/最小值」');
+    assert.strictEqual(h.canvas._rec.arcs.length, 0, 'A=0 不该画极值红点');
+  });
+});
+
+test('[缺陷1][describe] paintModel：A=0 不给 extremum-point 行（说了没画即漂移）；A=±1 波峰波谷两条都在', function () {
+  const m0 = F.paintModel('trig-extremum', '最大值', { type: 'trig', fn: 'sin', A: 0, w: 1, phi: 0, k: 0 });
+  assert.ok(m0, 'A=0 画板描述仍应非空（水平线还是曲线）');
+  assert.strictEqual(m0.elements.filter(function (e) { return e.kind === 'extremum-point'; }).length, 0,
+    'A=0 常函数没有波峰波谷，describe 不该说有极值点');
+  [-1, 1].forEach(function (A) {
+    const m = F.paintModel('trig-extremum', '最大值', { type: 'trig', fn: 'sin', A: A, w: 1, phi: 0, k: 0 });
+    assert.strictEqual(m.elements.filter(function (e) { return e.kind === 'extremum-point'; }).length, 2,
+      'A=' + A + ' 波峰波谷两条 extremum-point 都在（A 符号不影响两条都在）');
+  });
+});
+
+test('[缺陷1][数值] trigExtremumText 用 |A| 口径：A<0 时最大值 = k+|A|、最小值 = k-|A|（数值与标签位置一致的前提）', function () {
+  const p = { fn: 'sin', A: -2, w: 1, phi: 0, k: 1 };
+  assert.strictEqual(F.trigExtremumText('最大值', p, true), '最大值 = 3');
+  assert.strictEqual(F.trigExtremumText('最小值', p, true), '最小值 = -1');
+  assert.strictEqual(F.trigExtremumText('最大值', p, false), '最大值 = ?');
+  assert.strictEqual(F.trigExtremumText('最小值', p, false), '最小值 = ?');
+});
+
+test('[缺陷2][mount] 复位后偏离态必须清零（mock 复刻浏览器 range snap：φ=0 不在 0.05 网格上）', function () {
+  withMountDom(function (dom) {
+    /* cnm_h075_q1（y=2sin x）同参：A=2, w=1, φ=0, k=0 —— 真实挂载题的题面参数 */
+    const h = mountHarness(dom, { type: 'trig', lab: 'trig-extremum', intent: '最大值',
+      fn: 'sin', A: 2, w: 1, phi: 0, k: 0 });
+    assert.strictEqual(h.inst.state().deviated, false, '挂载即未偏离');
+    assert.strictEqual(h.devBox.hidden, true, '挂载时偏离提示应隐藏');
+    /* 拖 A 到 3（浏览器 snap 语义下 value 读回 3.0000000000000004 一类网格值） */
+    h.sliders.A.value = 3;
+    h.sliders.A.dispatchEvent(new Event('input'));
+    assert.strictEqual(h.inst.state().deviated, true, '拖动后应处于偏离');
+    assert.strictEqual(h.devBox.hidden, false, '拖动后偏离提示应显示');
+    /* 点「回到题目参数」：复位路径不许把滑块 snap 值读回 p */
+    h.resetBtn.dispatchEvent(new Event('click'));
+    assert.strictEqual(h.inst.state().deviated, false, '复位后 deviated 必须为 false（缺陷2）');
+    assert.strictEqual(h.devBox.hidden, true, '复位后偏离提示必须隐藏');
+    assert.strictEqual(h.inst.state().params.A, 2, '复位后 A 回到题面值');
+    assert.strictEqual(h.inst.state().params.phi, 0,
+      '复位后 φ 必须严格回到题面 0（不许被滑块 snap 污染成 0.0084…）');
+    assert.ok(String(h.resetBtn.className).split(/\s+/).indexOf('is-deviated') < 0,
+      '复位按钮的 is-deviated 类应清除');
+  });
+});
+
+test('[缺陷2][mount] 全部带滑块 lab 复位清零零回归（quadratic/linear/inverse/trig 其余四块/exp/log/power/cubic）', function () {
+  [
+    { type: 'quadratic', lab: 'quadratic-vertex', intent: '顶点坐标', a: 1, h: 0, k: 0, drag: 'a', to: 2 },
+    { type: 'linear', lab: 'linear-intercepts', intent: '与 y 轴交点的纵坐标', k: 2, b: -2, drag: 'k', to: 3 },
+    { type: 'inverse', lab: 'inverse-quadrants', intent: '图象所在的象限', k: 1, drag: 'k', to: 3 },
+    { type: 'trig', lab: 'trig-period', intent: '最小正周期', fn: 'sin', A: 1, w: 2, phi: 0, k: 0, drag: 'A', to: 2 },
+    { type: 'trig', lab: 'trig-parity', intent: '奇偶性', fn: 'cos', A: 1, w: 1, phi: 0, k: 0, drag: 'A', to: 2 },
+    { type: 'trig', lab: 'trig-domain', intent: '定义域', fn: 'sin', A: 1, w: 1, phi: 0, k: 0, drag: 'k', to: 2 },
+    { type: 'trig', lab: 'trig-monotonic', intent: '单调性', fn: 'sin', A: 1, w: 1, phi: 0, k: 0,
+      xMin: -1.57, xMax: 1.57, drag: 'A', to: 2 },
+    { type: 'exp', lab: 'exp-curve', intent: '值域', a: 1, base: 2, w: 1, phi: 0, k: 0, drag: 'a', to: 3 },
+    { type: 'log', lab: 'log-curve', intent: '定义域', c: 1, base: 2, shift: 0, d: 0, drag: 'c', to: 2 },
+    { type: 'power', lab: 'power-curve', intent: '定义域', a: 1, p: 4, k: 0, drag: 'a', to: 2 },
+    { type: 'cubic', lab: 'cubic-parity', intent: '奇偶性', a: 1, b: 0, c: 0, d: 0, drag: 'a', to: 2 }
+  ].forEach(function (c) {
+    withMountDom(function (dom) {
+      const h = mountHarness(dom, c);
+      assert.ok(h.sliders[c.drag], c.lab + ' 应有滑块 ' + c.drag);
+      h.sliders[c.drag].value = c.to;
+      h.sliders[c.drag].dispatchEvent(new Event('input'));
+      assert.strictEqual(h.inst.state().deviated, true, c.lab + ' 拖动后应偏离');
+      assert.strictEqual(h.devBox.hidden, false, c.lab + ' 拖动后偏离提示应显示');
+      h.resetBtn.dispatchEvent(new Event('click'));
+      assert.strictEqual(h.inst.state().deviated, false, c.lab + ' 复位后 deviated 必须为 false');
+      assert.strictEqual(h.devBox.hidden, true, c.lab + ' 复位后偏离提示必须隐藏');
+    });
+  });
+});
+
+test('[缺陷2][源码守卫] 复位路径不读回滑块 value：reset 监听器里无 dispatchEvent、直接 p[k] = start[k]', function () {
+  const fs = require('fs');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'diagnose', 'funclab.js'), 'utf8');
+  const s = src.indexOf("resetBtn.textContent = '回到题目参数'");
+  assert.ok(s >= 0, '源码应有「回到题目参数」按钮');
+  const seg = src.slice(s, s + 2000);
+  const end = seg.indexOf('ctrl.appendChild(resetBtn)');
+  assert.ok(end > 0, '复位按钮锚点应在 appendChild 之前');
+  const resetSrc = seg.slice(0, end);
+  assert.ok(resetSrc.indexOf('p[k] = start[k]') >= 0, '复位应把 start 初值直接写回 p');
+  assert.ok(resetSrc.indexOf('dispatchEvent') < 0,
+    '复位不许 dispatch input 读回滑块 value —— 真浏览器会把不在 step 网格上的题面值'
+    + '（如 trig φ=0，网格基 -π）静默 snap 成 0.0084…，写回 p 后永远与 start 不等（缺陷2 真根因）');
 });
 
 /* ================================================================
