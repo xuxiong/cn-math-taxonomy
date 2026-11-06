@@ -68,7 +68,7 @@ function bodyAfter(src, startToken) {
 /* 与 engine.subjectOf() 同一套规则：数学 topics 没有 subject 字段，按 id 前缀/默认值推。 */
 function subjectOf(t) {
   const s = t && t.subject;
-  if (['english', 'math', 'physics', 'chinese', 'science', 'morality', 'history', 'geography'].indexOf(s) >= 0) return s;
+  if (['english', 'math', 'physics', 'chinese', 'science', 'morality', 'history', 'geography', 'biology', 'chemistry'].indexOf(s) >= 0) return s;
   const id = String((t && t.id) || '');
   if (id.indexOf('cne_') === 0) return 'english';
   if (id.indexOf('cnp_') === 0) return 'physics';
@@ -77,6 +77,8 @@ function subjectOf(t) {
   if (id.indexOf('cnd_') === 0) return 'morality';
   if (id.indexOf('cnh_') === 0) return 'history';
   if (id.indexOf('cng_') === 0) return 'geography';
+  if (id.indexOf('cnb_') === 0) return 'biology';
+  if (id.indexOf('cnk_') === 0) return 'chemistry';
   return 'math';
 }
 function keyOf(t) {
@@ -350,7 +352,7 @@ test('sw.js：预热清单不含 data/questions.json、不含 data/questions/*�
   const items = m[1].match(/'(?:[^'\\]|\\.)*'/g) || [];
   assert.strictEqual(items.indexOf("'data/questions.json'"), -1, 'DATA 里不许再预热 data/questions.json');
   const anyBundle = items.filter(function (s) { return s.indexOf('data/questions/') >= 0; });
-  assert.deepStrictEqual(anyBundle, [], 'DATA 里不许预热 data/questions/ 下的 bundle（894 个，预热毫无意义）');
+  assert.deepStrictEqual(anyBundle, [], 'DATA 里不许预热 data/questions/ 下的 bundle（948 个，预热毫无意义）');
   ['data/topics-lite.json', 'data/id-aliases.json', 'data/questions-index.json']
     .forEach(function (p) { assert.ok(items.indexOf("'" + p + "'") >= 0, 'DATA 里仍应有 ' + p); });
   assert.ok(/var VERSION = 'v9';/.test(SW), 'VERSION 应已是 v9');

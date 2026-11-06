@@ -21,7 +21,7 @@ const zlib = require('zlib');
 const { execFileSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
-const SUBJECTS = ['math', 'english', 'physics', 'chinese', 'science', 'morality', 'history', 'geography'];
+const SUBJECTS = ['math', 'english', 'physics', 'chinese', 'science', 'morality', 'history', 'geography', 'biology', 'chemistry'];
 const LITE_FIELDS = ['id', 'name', 'domain', 'grade', 'semester', 'chapter', 'type'];
 const HEAVY_FIELDS = ['description', 'mastery_criteria', 'diagnostic_question', 'standards', 'root_reason', 'mathLinks'];
 const FORBIDDEN = ['questions.json', 'data/topics.json', 'dependencies.json', 'cn-curriculum-standards'];
@@ -72,6 +72,8 @@ function subjectOfId(id) {
   if (id.indexOf('cnd_') === 0) return 'morality';
   if (id.indexOf('cnh_') === 0) return 'history';
   if (id.indexOf('cng_') === 0) return 'geography';
+  if (id.indexOf('cnb_') === 0) return 'biology';
+  if (id.indexOf('cnk_') === 0) return 'chemistry';
   return 'math';
 }
 
@@ -84,6 +86,8 @@ function subjectOfStd(id) {
   if (id.indexOf('cds-') === 0) return 'morality';
   if (id.indexOf('chs-') === 0) return 'history';
   if (id.indexOf('cgs-') === 0) return 'geography';
+  if (id.indexOf('cbs-') === 0) return 'biology';
+  if (id.indexOf('cks-') === 0) return 'chemistry';
   return 'math';
 }
 
@@ -119,7 +123,7 @@ function recomputeStats() {
 function checkStatsConservation(stats) {
   const rec = recomputeStats();
   assert.strictEqual(Object.keys(stats.subjects).length, SUBJECTS.length, 'subjects 学科数不对');
-  const wantTotal = { topics: 2997, edges: 4456, questions: 12135, standards: 734 };
+  const wantTotal = { topics: 3297, edges: 4868, questions: 13335, standards: 786 };
   Object.keys(wantTotal).forEach((k) => {
     assert.strictEqual(stats.total[k], wantTotal[k], 'total.' + k + ' 应等于 ' + wantTotal[k] + '，实际 ' + stats.total[k]);
   });
@@ -138,7 +142,7 @@ function checkStatsConservation(stats) {
   });
 }
 
-test('stats.json：total 固定 2997/4456/12135/734，各学科与全量重算一致、求和等于 total', function () {
+test('stats.json：total 固定 3297/4868/13335/786，各学科与全量重算一致、求和等于 total', function () {
   const stats = JSON.parse(fs.readFileSync(path.join(DATA, 'stats.json'), 'utf8'));
   checkStatsConservation(stats);
 });
@@ -589,8 +593,8 @@ function checkExploreConservation(liteBySubject, depsBySubject) {
     assert.deepStrictEqual(appDeps, expect, s + ' explore 边（allow 过滤后）应等于全量过滤结果');
     edges += appDeps.length;
   });
-  assert.strictEqual(nodes, 2997, 'explore 各学科 lite 节点和应为 2997，实际 ' + nodes);
-  assert.strictEqual(edges, 4456, 'explore 各学科边和应为 4456，实际 ' + edges);
+  assert.strictEqual(nodes, 3297, 'explore 各学科 lite 节点和应为 3297，实际 ' + nodes);
+  assert.strictEqual(edges, 4868, 'explore 各学科边和应为 4868，实际 ' + edges);
 }
 
 test('explore/index.html：同源首屏脚本恰好是 app/stats-config/stats/pwa/lazyload 五件（无渲染库 vendor）', function () {
@@ -647,7 +651,7 @@ test('explore/app.js：不再首屏 fetch 全量 topics/dependencies/questions�
   });
 });
 
-test('explore 守恒：逐学科 lite 条数=全量过滤，边（allow 过滤后）=全量过滤，总数 2997/4456', function () {
+test('explore 守恒：逐学科 lite 条数=全量过滤，边（allow 过滤后）=全量过滤，总数 3297/4868', function () {
   const lite = {};
   const dep = {};
   SUBJECTS.forEach((s) => {
