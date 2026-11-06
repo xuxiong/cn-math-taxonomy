@@ -63,7 +63,7 @@
   };
 
   var PRESET = PRESETS.dashscope;
-  var DEFAULT_MODEL = 'DeepSeek-V4.1-Flash-1017-Unlimited';
+  var DEFAULT_MODEL = 'default';
 
   var maxTokens = {
     /* O3-6：max_tokens 单一出处。

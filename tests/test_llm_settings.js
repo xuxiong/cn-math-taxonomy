@@ -63,7 +63,7 @@ const PRESET = {
   model: 'qwen3.8-flash',
   altModels: ['qwen3.8-flash', 'qwen3.8-27b']
 };
-const DEFAULT_MODEL = 'DeepSeek-V4.1-Flash-1017-Unlimited';
+const DEFAULT_MODEL = 'default';
 
 /* ================================================================
  * 1. 预设表
