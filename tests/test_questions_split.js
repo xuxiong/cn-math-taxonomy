@@ -355,7 +355,7 @@ test('sw.js：预热清单不含 data/questions.json、不含 data/questions/*�
   assert.deepStrictEqual(anyBundle, [], 'DATA 里不许预热 data/questions/ 下的 bundle（948 个，预热毫无意义）');
   ['data/topics-lite.json', 'data/id-aliases.json', 'data/questions-index.json']
     .forEach(function (p) { assert.ok(items.indexOf("'" + p + "'") >= 0, 'DATA 里仍应有 ' + p); });
-  assert.ok(/var VERSION = 'v9';/.test(SW), 'VERSION 应已是 v9');
+  assert.ok(/var VERSION = 'v10';/.test(SW), 'VERSION 应已是 v10');
   const core = /var CORE = \[([\s\S]*?)\];/.exec(SW);
   assert.strictEqual((core[1].match(/'/g) || []).length, 10, 'CORE 应仍是 5 项');
 });
