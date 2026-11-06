@@ -180,19 +180,33 @@ test('promptInterval 能从 cnm_235_q4 抠出 [2,4]', function () {
 
 console.log('\n--- 1b. trig fn 窄门归一化 ---');
 
-test('正例：fn 写成 "sin x" / "y=sin x" / "sin(x)" 通过；"COS X" 在 cos 题上通过（真实 LLM 回流形态）', function () {
+test('正例：fn 写成 "sin x" / "y=sin x" / "sin(x)" 通过（真实 LLM 回流形态，均为小写）', function () {
   ['sin x', 'y=sin x', 'sin(x)'].forEach(function (fn) {
     const v = L.verifyParams(q('cnm_h066_q4'), {
       match: 'trig-domain', params: { fn: fn, A: 1, w: 1, phi: 0, k: 0 }, intent: '定义域'
     });
     assert.strictEqual(v.ok, true, fn + ' → ' + JSON.stringify(v.why));
   });
-  /* 任务书原写 'COS X' 也在 cnm_h066_q4 上通过，但该题题面是 sin：归一成 cos 后必须被代回校验拒，
-   * 否则 cos≠sin 也放行（与「fn=tan 仍拒」互相矛盾）。这里改用真实 cos 题锁大小写归一。 */
-  const cosv = L.verifyParams(q('cnm_h068_q4'), {
-    match: 'trig-parity', params: { fn: 'COS X', A: 1, w: 1, phi: 0, k: 0 }, intent: '奇偶性'
+});
+
+test('大小写不归一：COS X / SIN / Sin x / COS(X) 一律按原始入参拒（批2 的 fn="SIN" 不变量）', function () {
+  /* 卡 t_bf90bf86：normalizeTrigFn 曾含 toLowerCase()，"SIN" 被归一成 "sin" 放行，
+   * 与 tests/test_funclab_hs_batch2.js 的非法值矩阵（['sec','SIN',1,null] 全拒）冲突。
+   * 板主裁定批2 不变量胜出：只剥 y=/（x）/ x /首尾空白，不碰大小写。
+   * 真模型两轮实测从未吐大写（漂移形态是 "sin x" / "y=sin x"），paramsDoc 也写明小写。 */
+  ['COS X', 'SIN', 'Sin x', 'COS(X)'].forEach(function (fn) {
+    const v = L.verifyParams(q('cnm_h068_q4'), {
+      match: 'trig-parity', params: { fn: fn, A: 1, w: 1, phi: 0, k: 0 }, intent: '奇偶性'
+    });
+    assert.strictEqual(v.ok, false, fn + ' 不该通过');
+    /* 必须是「字面量检查」拒的，而不是碰巧被代回校验拦下 —— why 要打原始入参 */
+    assert.ok(v.why.join(';').indexOf('fn 参数必须是 sin/cos/tan 之一: ' + fn) >= 0,
+      fn + ' 必须按字面量拒（why 打原始入参）：' + v.why.join(';'));
   });
-  assert.strictEqual(cosv.ok, true, 'COS X → ' + JSON.stringify(cosv.why));
+  /* 缓存校验路径同口径：旧的/手改的大写条目不许被 validEntry 认成有效 */
+  assert.strictEqual(L.validEntry({
+    match: 'trig-parity', params: { fn: 'COS X', A: 1, w: 1, phi: 0, k: 0 }, intent: '奇偶性'
+  }), false);
 });
 
 test('反例不放宽：sec x / sine / y=x / 空串仍按原始入参拒绝', function () {
