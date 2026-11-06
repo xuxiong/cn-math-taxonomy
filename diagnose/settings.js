@@ -50,12 +50,16 @@
 
   /** 生成「模型标注块」（TASK-fix403 第 3 项）：
    *  - 第一行：本次测试的模型（表单当前值，currentModel()）
-   *  - 第二行：已保存的模型（CFG.getConfig().model）；拿不到时写「（未保存，讲解会用默认 <defaultModel>）」
+   *  - 第二行：已保存的模型（CFG.getConfig().model）；拿不到时如实写
+   *    「（未保存 —— 保存后才能用 AI 讲解，现在看到的是参考答案和解析原文）」
    *  - 不一致时再追加一行警告（真实讲解用的是已保存的 <Y>）
    *  - 最末尾固定追加尾注「测试只验证能连通，不验证讲解速度。」
    *  型号名只从 CFG 读，不在本文件写死型号字面量（静态扫描禁止型号/百炼地址字面量）。
-   *  默认型号取 CFG.defaultModel（常量，不随保存/清除变化）而非 CFG.model（模块加载时的快照，
-   *  家长点「清除」后不刷新页面时 CFG.model 仍是旧值，会显示错的默认名）。 */
+   *  未保存分支不写任何型号名（t_55a39280）：没配置时讲解链路 fail-closed —— app-flow.js 的
+   *  explainPanel() 判 !llmConfigured() 就直出 directExplainPanel（只有参考答案 + 解析原文），
+   *  根本没有模型参与讲解。以前这里写「讲解会用默认 <CFG.defaultModel>」是对家长的假承诺
+   *  （t_de1f6014 后还会把网关别名 default 直接印出来），所以连兜底的型号名一并去掉，
+   *  不读 CFG.defaultModel / CFG.model。CFG.defaultModel 本身仍是网关别名常量，别动它。 */
   function buildModelAnnotation() {
     var cur = currentModel();
     var saved = null;
@@ -72,8 +76,8 @@
         lines.push('本次测试的模型和已保存的不一致 —— 真实讲解用的是已保存的 ' + saved + '，请保存后再测一次。');
       }
     } else {
-      var defaultName = (CFG && CFG.defaultModel) ? CFG.defaultModel : ((CFG && CFG.model) ? CFG.model : '');
-      lines.push('已保存的模型：（未保存，讲解会用默认 ' + defaultName + '）');
+      /* 未保存 = 讲解链路 fail-closed：不写型号名，也不提「默认」（见函数头注释）。 */
+      lines.push('已保存的模型：（未保存 —— 保存后才能用 AI 讲解，现在看到的是参考答案和解析原文）');
     }
     lines.push('测试只验证能连通，不验证讲解速度。');
     return lines.join('\n');

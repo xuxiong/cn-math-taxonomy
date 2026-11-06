@@ -740,7 +740,7 @@ asyncTest('testConnection 不一致：表单 m-other / 已保存 m-saved → 状
   }
 });
 
-asyncTest('testConnection 未保存：getConfig() 为 null → 状态串含「（未保存，讲解会用默认 」+ 默认型号名（取 CFG.defaultModel）', async () => {
+asyncTest('testConnection 未保存：getConfig() 为 null → 标注块如实说「未保存 —— 保存后才能用 AI 讲解」，不提默认模型', async () => {
   const fetchImpl = makeFetchForTestConnection({ ok2: true, status2: 200 });
   const env = setupSettingsEnv({
     savedConfig: null,
@@ -755,23 +755,27 @@ asyncTest('testConnection 未保存：getConfig() 为 null → 状态串含「�
     env.elements['test-btn'].click();
     await waitForStatus(env.elements, function (t) { return t.indexOf('测试只验证能连通，不验证讲解速度。') >= 0; });
     const s = env.elements.status.textContent;
-    assert.ok(s.indexOf('（未保存，讲解会用默认 ') >= 0, '应含「（未保存，讲解会用默认 」：\n' + s);
-    /* 默认型号名取 CFG.defaultModel（常量，不随保存/清除变化），不用 CFG.model（模块加载快照）。
-     * 此场景下未配置，CFG.model === CFG.defaultModel，两者一致；但口径要对齐实现 —— 断言用 defaultModel。 */
-    const expectedDefault = env.cfg.defaultModel;
-    assert.ok(expectedDefault && s.indexOf(expectedDefault) >= 0,
-      '应含默认型号名 ' + expectedDefault + '（CFG.defaultModel）：\n' + s);
+    assert.ok(s.indexOf('（未保存 —— 保存后才能用 AI 讲解') >= 0,
+      '应如实说「未保存 —— 保存后才能用 AI 讲解」：\n' + s);
+    /* t_55a39280：失实的「讲解会用默认 X」已拆。未保存时讲解链路 fail-closed
+     * （app-flow.js explainPanel() 判 !llmConfigured() → directExplainPanel，只有参考答案 + 解析原文），
+     * 没有任何模型参与讲解 —— 既不许承诺有兜底模型，也不许把 CFG.defaultModel（网关别名）印给家长。 */
+    assert.ok(s.indexOf('讲解会用默认') < 0, '不应出现「讲解会用默认」这种兜底承诺：\n' + s);
+    assert.ok(s.indexOf('默认') < 0, '未保存分支不应提「默认」：\n' + s);
+    assert.ok(s.indexOf(env.cfg.defaultModel) < 0,
+      '不应显示 CFG.defaultModel（' + env.cfg.defaultModel + '）：\n' + s);
     assert.ok(s.indexOf('测试只验证能连通，不验证讲解速度。') >= 0, '应含尾注：\n' + s);
   } finally {
     env.restore();
   }
 });
 
-asyncTest('testConnection 清除后不刷新：CFG.model 是旧快照，默认型号仍显示 CFG.defaultModel 而非旧值', async () => {
+asyncTest('testConnection 清除后不刷新：标注块不显示旧快照型号、也不显示 CFG.defaultModel（两者都没参与讲解）', async () => {
   /* 真机瑕疵复现：先保存一个自定义模型（CFG.model 在模块加载时快照为该自定义值），
    * 再 clearConfig（CFG.model 不变，仍是旧快照），不刷新页面直接 testConnection。
-   * 修复前 buildModelAnnotation 用 CFG.model → 显示旧的自定义型号名（错的）；
-   * 修复后用 CFG.defaultModel → 显示真正的默认型号名。 */
+   * t_55a39280 前：未保存分支印「讲解会用默认 <CFG.defaultModel>」—— 既失实（未保存时讲解
+   * fail-closed，没有模型参与），又把网关别名 default 露给家长。现在该分支不写任何型号名：
+   * 既不显示旧快照 CFG.model（本来就错），也不显示 CFG.defaultModel（同样不参与讲解）。 */
   const customModel = 'm-custom-saved-then-cleared';
   const fetchImpl = makeFetchForTestConnection({ ok2: true, status2: 200 });
   const env = setupSettingsEnv({
@@ -795,15 +799,18 @@ asyncTest('testConnection 清除后不刷新：CFG.model 是旧快照，默认�
     env.elements['test-btn'].click();
     await waitForStatus(env.elements, function (t) { return t.indexOf('测试只验证能连通，不验证讲解速度。') >= 0; });
     const s = env.elements.status.textContent;
-    assert.ok(s.indexOf('（未保存，讲解会用默认 ') >= 0, '清除后未保存，应含「（未保存，讲解会用默认 」：\n' + s);
-    /* 关键断言：默认型号应显示 CFG.defaultModel，而不是旧快照 CFG.model（customModel）。
-     * 只检查「已保存的模型：」那一行 —— customModel 出现在「本次测试的模型：」行是合理的
+    assert.ok(s.indexOf('（未保存 —— 保存后才能用 AI 讲解') >= 0,
+      '清除后未保存，应如实说「未保存 —— 保存后才能用 AI 讲解」：\n' + s);
+    assert.ok(s.indexOf('讲解会用默认') < 0, '清除后也不应出现「讲解会用默认」：\n' + s);
+    /* 关键断言：「已保存的模型」那一行不写任何型号名 —— 既不是旧快照 CFG.model（customModel），
+     * 也不是 CFG.defaultModel（未保存时讲解 fail-closed，谁都没参与）。
+     * 只检查该行 —— customModel 出现在「本次测试的模型：」行是合理的
      * （表单 customModel.value 没清，currentModel() 仍返回它，这是表单状态，不是标注 bug）。 */
     var savedLineMatch = s.match(/已保存的模型：[^\n]*/);
     assert.ok(savedLineMatch, '应存在「已保存的模型：」行：\n' + s);
     var savedLine = savedLineMatch[0];
-    assert.ok(savedLine.indexOf(env.cfg.defaultModel) >= 0,
-      '「已保存的模型」行应含 CFG.defaultModel（' + env.cfg.defaultModel + '）：\n' + savedLine);
+    assert.ok(savedLine.indexOf(env.cfg.defaultModel) < 0,
+      '「已保存的模型」行不应含 CFG.defaultModel（' + env.cfg.defaultModel + '）：\n' + savedLine);
     assert.ok(savedLine.indexOf(customModel) < 0,
       '「已保存的模型」行不应含旧快照型号 ' + customModel + '：\n' + savedLine);
     assert.ok(s.indexOf('测试只验证能连通，不验证讲解速度。') >= 0, '应含尾注：\n' + s);
