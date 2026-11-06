@@ -1108,6 +1108,11 @@
       link.classList.toggle('on', on);
       if (on) link.setAttribute('aria-current', 'true');
       else link.removeAttribute('aria-current');
+      /* 窄屏胶囊横滑：把选中项滚进可视区 */
+      if (on) {
+        var box = link.parentNode, b = box.getBoundingClientRect(), r = link.getBoundingClientRect();
+        box.scrollLeft += r.left - b.left - (b.width - r.width) / 2;
+      }
     });
     if (subject === 'physics') {
       document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
