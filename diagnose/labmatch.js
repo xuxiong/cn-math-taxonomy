@@ -63,10 +63,13 @@
 
   const NO_FUNCLAB = 'Labmatch 需要先加载 funclab.js（能力清单的唯一来源）';
 
-  /** 归一 trig 画板的 fn 参数；剥不出白名单就原样返回 */
+  /** 归一 trig 画板的 fn 参数；剥不出白名单就原样返回。
+   *  **不做大小写归一**：真模型实测漂移形态只有 "sin x" / "y=sin x"（均小写），
+   *  paramsDoc 已写明小写；而 "SIN" 必须被拒是批2 既定不变量（batch2 非法值矩阵），
+   *  大小写归一等于替模型兜一个从没发生过的错，却把契约改宽 —— 不划算。 */
   function normalizeTrigFn(v) {
     if (typeof v !== 'string') return v;
-    const s = v.trim().toLowerCase().replace(/^y\s*=\s*/, '');
+    const s = v.trim().replace(/^y\s*=\s*/, '');
     const m = s.match(/^(sin|cos|tan)\s*(?:\(\s*x\s*\)|x)?$/);
     return m ? m[1] : v;
   }
