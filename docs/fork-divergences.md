@@ -12,6 +12,12 @@
 所以合并上游时**先查这张表**，表里有的一律按表来；表里没有的，才按「上游优先」。
 每条分叉都有对应的断言，回流就会在 `tests/test_fork_guards.js` 里变红。
 
+**最近一次复核：2026-11-07（合入上游 `dc764bd..cf73951` 共 11 个提交之后）。**
+表内 10 条逐条仍成立：`node scripts/fork-guard.mjs` 连跑两遍都是 `0 fixed, 8 clean, 0 warn`
+（上游回流 **0 处** —— 前四张卡按本表解的冲突），`node tests/test_fork_guards.js` 18/18 绿。
+本轮上游没有引入需要新开分叉条目的事项：新引的外链都在 `README.md` 的资料出处段（人教社、dzskb 等），
+页面层（守卫扫描的 `*.html`）没有新增外链，所以表不改行、断言不新增。
+
 ## 分叉表
 
 | # | 我们改了什么 | 为什么 | 对应 commit | 由哪条守卫覆盖 |
@@ -37,6 +43,16 @@
   ```sh
   node scripts/fork-guard.mjs     # 第二遍必须全是 clean:
   node tests/test_fork_guards.js  # 必须 0 failed
+  ```
+
+- **合并完还要跑（数据/度量类，回落了不会在守卫里变红）**：
+
+  ```sh
+  for f in tests/test_*.js; do node --test "$f" >/dev/null 2>&1; echo "$(basename $f) rc=$?"; done  # 39 个文件逐个 rc=0
+  python3 scripts/validate.py                                                                    # VALIDATION PASSED
+  node scripts/measure_funclab_coverage.js                                                       # 与 docs/funclab-coverage.md 的读数对齐
+  node scripts/measure_geomlab_coverage.js                                                       # 与 docs/geomlab-coverage.md 的读数对齐
+  node scripts/measure_highschool_funclab_coverage.js > /tmp/hs.md && diff /tmp/hs.md docs/highschool-funclab-coverage.md
   ```
 
 - 加白名单（确有正当外链）要改 `tests/test_fork_guards.js` 顶部的 `ALLOWED_DOMAINS`

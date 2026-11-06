@@ -7,7 +7,7 @@
  * 让首屏只取自己学科那份。
  *
  * 输出（相对 data/，--out-root 可写到别处）：
- *   stats.json                8 学科的统计汇总（topics/edges/questions/standards）
+ *   stats.json                10 学科的统计汇总（topics/edges/questions/standards）
  *   topics-lite/<subject>.json    每学科轻量知识点（只留选题白名单字段）
  *   dependencies/<subject>.json   每学科先修关系（raw edges，字段原样）
  *   questions-index/<subject>.json 每学科题库索引（key 以 <subject>| 开头的子集）
@@ -16,7 +16,7 @@
  * 约定（与 build-questions-split.mjs / build-topics-lite.mjs 一致，tests 会守）：
  *   - 幂等：同一份输入重复跑，输出字节完全一致（key 排序、字段顺序都不依赖随机/时间）；
  *   - 紧凑 JSON + 末尾换行；中文原样输出，不转 \uXXXX；
- *   - 8 学科固定顺序：math,english,physics,chinese,science,morality,history,geography；
+ *   - 10 学科固定顺序：math,english,physics,chinese,science,morality,history,geography,biology,chemistry；
  *   - 构建前清理每个输出目录里这一轮没产生的文件（残留会让离线缓存和测试都莫名其妙）；
  *   - data/ 下的原始大文件绝不动。
  *
@@ -33,7 +33,7 @@ import { subjectOf, keyOf, slugOf, jsonText } from './build-questions-split.mjs'
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 
-const SUBJECTS = ['math', 'english', 'physics', 'chinese', 'science', 'morality', 'history', 'geography'];
+const SUBJECTS = ['math', 'english', 'physics', 'chinese', 'science', 'morality', 'history', 'geography', 'biology', 'chemistry'];
 
 /* 与 assets/home.js 的 subjectOfStd() 同一套规则：标准条目 id 前缀 → 学科，其余全算 math。 */
 export function subjectOfStd(id) {
@@ -45,6 +45,8 @@ export function subjectOfStd(id) {
   if (s.indexOf('cds-') === 0) return 'morality';
   if (s.indexOf('chs-') === 0) return 'history';
   if (s.indexOf('cgs-') === 0) return 'geography';
+  if (s.indexOf('cbs-') === 0) return 'biology';
+  if (s.indexOf('cks-') === 0) return 'chemistry';
   return 'math';
 }
 
@@ -64,7 +66,7 @@ function isEmpty(v) {
 
 /* ------------------------------------------------------------ 各产物（纯函数，测试可复用） */
 
-/** stats.json：8 学科固定顺序 + total。counts 来自各源文件。 */
+/** stats.json：10 学科固定顺序 + total。counts 来自各源文件。 */
 export function buildStats(topics, deps, questions, topicsById, standards) {
   const per = {};
   SUBJECTS.forEach((s) => { per[s] = { topics: 0, edges: 0, questions: 0, standards: 0 }; });
@@ -200,7 +202,7 @@ function main() {
 
   /* 守卫：四个总数必须精确匹配，否则说明数据源变了，直接停。 */
   const stats = buildStats(topics, deps, questions, topicsById, standards);
-  const want = { topics: 2997, edges: 4456, questions: 12135, standards: 734 };
+  const want = { topics: 3297, edges: 4868, questions: 13335, standards: 786 };
   Object.keys(want).forEach((k) => {
     if (stats.total[k] !== want[k]) {
       console.error(`build-payload-split: total.${k} = ${stats.total[k]}，期望 ${want[k]}，中止`);

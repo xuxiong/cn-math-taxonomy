@@ -240,9 +240,10 @@ test('预热并发常量 ≤ 2，且真的用序号池限流（不是 Promise.al
 });
 
 /* ------------------------------------------------------------- 8. VERSION */
-test('VERSION 已是 v9（旧的 cnm-pwa-v8 缓存靠它清掉）', function () {
-  assert.ok(/var VERSION = 'v9';/.test(SW), 'VERSION 应该是 v9');
+test('VERSION 已是 v10（旧的 cnm-pwa-v8 缓存靠它清掉）', function () {
+  assert.ok(/var VERSION = 'v10';/.test(SW), 'VERSION 应该是 v10');
   assert.strictEqual(SW.indexOf("VERSION = 'v8'"), -1, 'VERSION 不应再是 v8');
+  assert.strictEqual(SW.indexOf("VERSION = 'v9'"), -1, 'VERSION 不应再是 v9');
 });
 
 /* --------------------------------------------------- 9. 首屏数据必须都在 */

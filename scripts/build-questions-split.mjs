@@ -35,7 +35,8 @@ const ROOT = path.resolve(HERE, '..');
 export function subjectOf(topic) {
   const s = topic && topic.subject;
   if (s === 'english' || s === 'math' || s === 'physics' || s === 'chinese'
-    || s === 'science' || s === 'morality' || s === 'history' || s === 'geography') return s;
+    || s === 'science' || s === 'morality' || s === 'history' || s === 'geography'
+    || s === 'biology' || s === 'chemistry') return s;
   const id = String((topic && topic.id) || '');
   if (id.indexOf('cne_') === 0) return 'english';
   if (id.indexOf('cnp_') === 0) return 'physics';
@@ -44,6 +45,8 @@ export function subjectOf(topic) {
   if (id.indexOf('cnd_') === 0) return 'morality';
   if (id.indexOf('cnh_') === 0) return 'history';
   if (id.indexOf('cng_') === 0) return 'geography';
+  if (id.indexOf('cnb_') === 0) return 'biology';
+  if (id.indexOf('cnk_') === 0) return 'chemistry';
   return 'math';
 }
 

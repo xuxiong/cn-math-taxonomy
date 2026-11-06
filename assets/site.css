@@ -139,6 +139,28 @@ body.subject-geography {
   --logo-fold: #ffffff;
 }
 
+body.subject-biology {
+  --brand: #3f6212;
+  --brand-strong: #365314;
+  --brand-soft: #f7fee7;
+  --on-brand: #ffffff;
+  --focus: #4d7c0f;
+  --accent: #4d7c0f;
+  --logo-sheet: #ecfccb;
+  --logo-fold: #ffffff;
+}
+
+body.subject-chemistry {
+  --brand: #de3b16;
+  --brand-strong: #9f2a10;
+  --brand-soft: #fff1ec;
+  --on-brand: #ffffff;
+  --focus: #de3b16;
+  --accent: #de3b16;
+  --logo-sheet: #ffe4dc;
+  --logo-fold: #ffffff;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
@@ -267,6 +289,26 @@ body.subject-geography {
     --logo-sheet: #155e75;
     --logo-fold: #0e7490;
   }
+  body.subject-biology {
+    --brand: #bef264;
+    --brand-strong: #d9f99d;
+    --brand-soft: #1a2e05;
+    --on-brand: #1a2e05;
+    --focus: #d9f99d;
+    --accent: #bef264;
+    --logo-sheet: #365314;
+    --logo-fold: #4d7c0f;
+  }
+  body.subject-chemistry {
+    --brand: #ff8a65;
+    --brand-strong: #ffccbc;
+    --brand-soft: #5d1a0e;
+    --on-brand: #3e0e06;
+    --focus: #ffccbc;
+    --accent: #ff8a65;
+    --logo-sheet: #7a2614;
+    --logo-fold: #de3b16;
+  }
 }
 
 @media print {
@@ -388,7 +430,16 @@ body:not(.page-explore) .site-header {
   padding: 3px;
   border-radius: 999px;
   background: var(--bg-muted);
+  /* 学科条目从 8 项涨到 10 项后本行最小内容宽 ~410px（不换行、不滚动），会顶穿 390px 视口：
+     shrink-to-fit 把 window.innerWidth 撑到 425、整页可横向拖动、CDP/真机点击坐标整体错位。
+     限宽 + 容器内横滑：桌面视觉完全不变，窄屏只在胶囊内部滚，永不撑宽文档。 */
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
 }
+.subject-switch::-webkit-scrollbar { display: none; }
 .page-links {
   display: flex;
   flex-wrap: wrap;
