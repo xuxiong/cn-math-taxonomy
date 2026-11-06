@@ -1085,6 +1085,7 @@
       note: '三角函数 y=A·sin(ωx+φ)+k 的图象：整条波浪线的起伏范围由 A 和 k 决定，'
         + '波峰（图上红色圆点）比波浪中心线高 |A|，波谷比中心线低 |A|。'
         + '最大值、最小值各是多少，从波峰、波谷对着 y 轴刻度读。'
+        + '波峰与波谷都已标出：波峰旁标最大值、波谷旁标最小值，数值都留白。'
     },
     'trig-period': {
       canAnswer: ['最小正周期', '最小正周期除以 π 后的值'],
@@ -1123,6 +1124,7 @@
       note: '指数函数 y=a·base^(w x+phi)+k 的图象：蓝色实线是曲线，灰色水平虚线是渐近线 y=k，'
         + '红色圆点标出 x=0 与 x=1 两处的函数值（只标点、不印数值）。'
         + '曲线整体在渐近线某一侧，上下走向看图；值域与单调性都从图上读。'
+        + '曲线与 y 轴的交点（定点）另用大号红点标出并配文字标签。'
     },
     'log-curve': {
       canAnswer: ['定义域', '单调性', '图象经过的定点'],
@@ -1138,6 +1140,7 @@
         + '多项式形 p<0 时画灰色竖直虚线渐近线与灰色水平虚线渐近线，p>0 时红色圆点标出 (0,0) 与 (1,1)；'
         + '根式形只画在定义域内，红色圆点标出定义域起点，灰色竖直虚线标定义域边界。'
         + '定义域、值域、单调性与定点都从图上读。'
+        + '图上另有对称性（对折或转半圈能否重合）与曲线走向的说明文字。'
     },
     /* ---- 三次函数（批4：t_34817311） ----
      * 拆成两块画板，而不是一块「三次函数」画板：
@@ -2058,6 +2061,148 @@
     return '抛物线（a = ' + fmtQuad(cc.a) + '，' + (cc.a > 0 ? '开口向上' : '开口向下') + '）';
   }
 
+  /* ============================================================ 图形特点：不变量 + 三处缺失要素（t_544ec982）
+   * invariantsOf：拖滑块时「哪些量没变」——学生探索的锚点。纯函数、无 DOM、不接 LLM、无随机；
+   * 文案逐字固定（tests 第 13 节锁死）：不出现任何阿拉伯数字、不出现强调符、不下增/减/奇/偶结论。
+   * prev 不给 → 返回结构性不变量；给了 → 按 type 逐参数对比收集，收集为空时退回结构性。
+   * expFixedText / powerSymText / powerTrendText：describe 与 annotate 共用的纯文案源（防漂移）。 */
+  const INV_STRUCTURAL = {
+    quadratic: '不管怎么拖，它始终是一条抛物线：顶点在对称轴上，对称轴左右两侧升降相反',
+    linear: '不管怎么拖，它始终是一条直线：不会弯，也不会断',
+    inverse: '不管怎么拖，渐近线始终是过原点的那条竖直虚线，两支曲线永远碰不到它',
+    trig: '不管怎么拖，它始终是同一个三角函数的图象：幅度、快慢、位置可以变，函数身份不变',
+    exp: '不管怎么拖，曲线始终在渐近线的同一侧，定义域始终是全体实数',
+    log: '不管怎么拖，曲线只画在渐近线的一侧，渐近线的位置不动',
+    power: '不管怎么拖，幂指数（或根式）没变，定义域和单调的方向都没变',
+    cubic: '不管怎么拖，它始终是一条三次曲线：两端分别朝相反方向延伸',
+    curves: '两条曲线都由题面给定，位置固定：相交与否、交在几处，不因看图方式改变'
+  };
+
+  /** 数值未变判定：|a-b| < 1e-9；缺失/NaN 一律按「没变」处理（不抛错） */
+  function invSame(a, b) {
+    const x = Number(a), y = Number(b);
+    if (!isFinite(x) || !isFinite(y)) return true;
+    return Math.abs(x - y) < 1e-9;
+  }
+  /** 符号未变判定（cubic 的 a：两端走向只由符号决定，同号拖动时走向确实没变） */
+  function invSignSame(a, b) {
+    const x = Number(a), y = Number(b);
+    if (!isFinite(x) || !isFinite(y)) return true;
+    return (x > 0) === (y > 0) && (x < 0) === (y < 0);
+  }
+
+  /**
+   * 某画板在「从 prev 拖到 params」这一下里，哪些量没变。
+   * @param {string} lab    CAPABILITIES 键
+   * @param {string} intent intent（保留参数，不参与措辞）
+   * @param {object} params 当前参数
+   * @param {object} [prev] 拖动前的参数；不给 → 返回该画板的「结构性不变量」
+   * @returns {string[]} 至少 1 条（CAP_TYPE 外的 lab → []）；纯函数、无 DOM、不接 LLM、无随机
+   */
+  function invariantsOf(lab, intent, params, prev) {
+    const type = CAP_TYPE[String(lab || '')];
+    if (!type) return [];
+    const p = params || {};
+    const structural = INV_STRUCTURAL[type];
+    if (type === 'curves') return [structural];       // 无滑块：两条曲线由题面固定，只有结构性
+    if (prev == null) return [structural];
+    const out = [];
+    const same = function (key) { return invSame(prev[key], p[key]); };
+    if (type === 'quadratic') {
+      if (same('h')) out.push('对称轴的位置没变（对称轴只由 h 决定）');
+      if (same('a')) out.push('开口的宽窄没变（开口宽窄只由 a 决定）');
+      if (same('k')) out.push('顶点的上下位置没变（它只由 k 决定）');
+    } else if (type === 'linear') {
+      if (same('b')) out.push('与 y 轴的交点没动（它只由 b 决定）');
+      if (same('k')) out.push('倾斜程度没动（它只由 k 决定）');
+    } else if (type === 'inverse') {
+      /* k 是唯一滑块：同号 → 还是那两支；异号 → 翻象限；没变/不可比 → 结构性 */
+      const pk = Number(prev.k), ck = Number(p.k);
+      if (invSame(prev.k, p.k)) return [structural];
+      if (isFinite(pk) && isFinite(ck) && ((pk > 0 && ck > 0) || (pk < 0 && ck < 0))) {
+        out.push('还是那两支，渐近线也没动，只是离轴的远近变了');
+      } else if (isFinite(pk) && isFinite(ck) && ((pk > 0 && ck < 0) || (pk < 0 && ck > 0))) {
+        out.push('还是那两支、形状没变，只是翻到了另外两个象限');
+      } else {
+        return [structural];
+      }
+    } else if (type === 'trig') {
+      if (same('w')) out.push('周期没变（周期只由 ω 决定）');
+      if (same('A')) out.push('波峰与波谷的高度差没变（它只由 A 决定）');
+      if (same('k')) out.push('波浪中心线的高度没变（它只由 k 决定）');
+      if (same('phi')) out.push('整条波浪没有左右平移（相位 φ 没动）');
+    } else if (type === 'exp') {
+      if (same('k')) out.push('渐近线没动（它的高度只由 k 决定）');
+      if (same('base')) out.push('升降的陡缓没变（它只由底数决定）');
+      if (same('a')) out.push('纵向伸缩的倍数没变（它只由 a 决定）');
+      if (!invSame(prev.k, p.k)) out.push('曲线的形状没变，只是整条上下平移（渐近线跟着一起动）');
+    } else if (type === 'log') {
+      if (same('shift')) out.push('渐近线没动（它的位置只由 shift 决定）');
+      if (same('c')) out.push('纵向伸缩的倍数没变（它只由 c 决定）');
+      if (same('base')) out.push('升降的陡缓没变（它只由底数决定）');
+      if (same('d')) out.push('定点的高度没变（它只由 d 决定）');
+    } else if (type === 'power') {
+      /* a 是唯一滑块：形态（根式 / 幂指数正负）拖 a 不改，前三条按形态三选一，
+       * 再无条件追加「单调的方向没变」。 */
+      if (p.root && isFinite(p.root.b) && p.root.b !== 0 && isFinite(p.root.c)) {
+        out.push('定义域起点没动（它只由根式本身决定，拖 a 不会改）');
+      } else if (isFinite(Number(p.p)) && Number(p.p) > 0) {
+        out.push('曲线始终经过原点（幂指数没变，拖 a 不会改定义域）');
+      } else if (isFinite(Number(p.p)) && Number(p.p) < 0) {
+        out.push('还是那两支，两条渐近线都没动（它们只由幂指数的正负决定）');
+      }
+      out.push('单调的方向没变（它只由幂指数或根式决定）');
+    } else if (type === 'cubic') {
+      if (same('d')) out.push('与 y 轴的交点没动（它只由 d 决定）');
+      if (invSignSame(prev.a, p.a)) out.push('两端走向没变（两端朝上还是朝下只由 a 的符号决定）');
+    }
+    return out.length ? out : [structural];
+  }
+
+  /** 指数曲线与 y 轴的交点（定点）：y(0) = a·base^phi + k（w·0 不影响） */
+  function expFixedPoint(p) { return { x: 0, y: p.a * Math.pow(p.base, p.phi) + p.k }; }
+  /** 定点文案：shown 才印真值；未 shown 时只有恰为 (0,1)（结构事实，非题答）才点名，否则留白 */
+  function expFixedText(p, shown) {
+    const y = expFixedPoint(p).y;
+    if (shown && isFinite(y)) return '定点 (0, ' + fmt(y) + ')';
+    if (isFinite(y) && Math.abs(y - 1) < 1e-9) return '定点 (0, 1)';
+    return '定点（曲线与 y 轴的交点，纵坐标 = ?）';
+  }
+
+  /** p 的形态：'root'（根式）|'neg'（p<0）|'even'（p>0 且为偶整数）|'odd'（p>0 且为奇整数）|'frac'（p>0 非整数） */
+  function powerKind(p) {
+    const pp = p || {};
+    if (pp.root && isFinite(pp.root.b) && pp.root.b !== 0 && isFinite(pp.root.c)) return 'root';
+    const v = Number(pp.p);
+    if (!isFinite(v) || v === 0) return 'root';       // 兜底：参数残缺/退化按根式形（不画对称轴）
+    if (v < 0) return 'neg';
+    if (Number.isInteger(v)) return (v % 2 === 0) ? 'even' : 'odd';
+    return 'frac';
+  }
+  /** 对称性文案（describe 与画布标注同一来源；不下偶/奇函数结论、不含数字） */
+  function powerSymText(p) {
+    const kd = powerKind(p);
+    const v = Number((p || {}).p);
+    if (kd === 'even' || (kd === 'neg' && isFinite(v) && Number.isInteger(v) && v % 2 === 0)) {
+      return '关于 y 轴对称：沿黑色粗实线（y 轴）对折，左右两半能重合';
+    }
+    if (kd === 'odd' || (kd === 'neg' && isFinite(v) && Number.isInteger(v) && v % 2 !== 0)) {
+      return '关于原点对称：绕原点转半圈，曲线还是原来那条';
+    }
+    return '只在定义域一侧有图象，谈不上对称';
+  }
+  /** 单调性文案（只说「走向」，不下增/减结论） */
+  function powerTrendText(p) {
+    return powerKind(p) === 'neg'
+      ? '每一支都一路朝同一个方向走，两支之间不能连起来比较（从左往右是升还是降，自己看）'
+      : '曲线在定义域内一路朝同一个方向走（从左往右是升还是降，自己看）';
+  }
+  /** power 是否画对称元素（y 轴粗线或原点圈）：与 powerSymText 同一判定，供 style 用 */
+  function powerHasSym(p) {
+    const t = powerSymText(p);
+    return t.indexOf('关于 y 轴对称') === 0 || t.indexOf('关于原点对称') === 0;
+  }
+
   /** 多曲线画板的元素清单（paintModel 的 curves 分支）。缺 curves 时给通用措辞、不报错。 */
   function paintCurves(it, p) {
     const raw = Array.isArray(p.curves) ? p.curves : [];
@@ -2087,6 +2232,10 @@
     }
     const note0 = noteText('two-curves-intersect', it, p);
     if (note0) elements.push({ kind: 'note', text: '画板下方的说明文案：' + note0, style: '说明文字' });
+    /* t_544ec982：curves 也要带不变量行（describe 的每条输出都必须有，包括 curves） */
+    invariantsOf('two-curves-intersect', it, p).forEach(function (t) {
+      elements.push({ kind: 'invariant', text: '不变量：' + t, style: '固定样式的标注' });
+    });
     return { type: 'curves', lab: 'two-curves-intersect', intent: it, title: typeTitle('curves'), elements: elements };
   }
 
@@ -2136,12 +2285,25 @@
      * （trigPeriodText / trigExtremumText 两处引用同一 helper，防漂移测试抽查）。 */
     if (type === 'trig') {
       if (it === '最大值' || it === '最小值') {
-        elements.push({
-          kind: 'extremum-point',
-          text: '红色圆点：' + (it === '最大值' ? '波峰（整条波浪线最高的点）' : '波谷（整条波浪线最低的点）')
-            + '的位置，旁边标「' + trigExtremumText(it, p, false) + '」（数值留白）',
-          style: '红色圆点'
-        });
+        /* 修缺陷1：A=0 退化为常函数 —— 没有波峰波谷，annotate 同口径不画点不标标签，
+         * describe 也不给 extremum-point 行（说了没画即漂移）。A≠0 时波峰波谷两条都在。 */
+        if (Number(p.A) !== 0) {
+          elements.push({
+            kind: 'extremum-point',
+            text: '红色圆点：' + (it === '最大值' ? '波峰（整条波浪线最高的点）' : '波谷（整条波浪线最低的点）')
+              + '的位置，旁边标「' + trigExtremumText(it, p, false) + '」（数值留白）',
+            style: '红色圆点'
+          });
+          /* t_544ec982：波峰与波谷同时标 —— intent 对应的那条保留，补上互补的另一条
+           *（annotate 已改成 fn(wx+φ)=±1 各画一遍，描述与绘制同源；标签跟实际极值走，A<0 时互换）。 */
+          const altIt = it === '最大值' ? '最小值' : '最大值';
+          const altName = it === '最大值' ? '波谷（整条波浪线最低的点）' : '波峰（整条波浪线最高的点）';
+          elements.push({
+            kind: 'extremum-point',
+            text: '红色圆点：' + altName + '的位置，旁边标「' + trigExtremumText(altIt, p, false) + '」（数值留白）',
+            style: '红色圆点'
+          });
+        }
       }
       if (it === '最小正周期除以π后的值' || it === '最小正周期') {
         elements.push({
@@ -2194,6 +2356,13 @@
         text: '红色圆点：x=0 与 x=1 两处的函数值（只标点、不印数值）',
         style: '红色圆点'
       });
+      /* t_544ec982：定点 (0, y(0)) —— 与 annotate 同一文案源 expFixedText；
+       * 恰为 (0,1) 是结构事实才点名，否则只说「曲线与 y 轴的交点」不说谎。 */
+      elements.push({
+        kind: 'fixed-point',
+        text: '红色圆点：' + expFixedText(p, false) + '（指数曲线的公共点位置，只标点、不印数值）',
+        style: '红色圆点'
+      });
     } else if (type === 'log') {
       elements.push({
         kind: 'domain-band',
@@ -2235,6 +2404,18 @@
           style: '红色圆点'
         });
       }
+      /* t_544ec982：对称性 / 单调性要素 —— 与 annotate 的画法同一文案源
+       * （powerSymText / powerTrendText），两条无条件都加。 */
+      elements.push({
+        kind: 'symmetry',
+        text: '对称性：' + powerSymText(p),
+        style: powerHasSym(p) ? '黑色粗实线' : '（无对称轴）'
+      });
+      elements.push({
+        kind: 'trend',
+        text: '单调性形状：' + powerTrendText(p),
+        style: '蓝色实线'
+      });
     } else if (type === 'cubic') {
       /* 批4：两块画板各自只描述自己画的那套东西（拆板理由见 CAPABILITIES 三次注释）。
        * 元素用词与 annotate 的绘制逐字同源：蓝色实线 = 曲线、黑色粗实线 = y 轴、红色圆点 = 标点。 */
@@ -2362,6 +2543,17 @@
 
     const note0 = noteText(lab, intent, p);
     if (note0) elements.push({ kind: 'note', text: '画板下方的说明文案：' + note0, style: '说明文字' });
+
+    /* t_544ec982：不变量行（note 之后、返回之前）—— describe 只调 paintModel，因此自动带上。
+     * cubic 的 style 走批4 契约白名单（tests/test_funclab_hs_batch4 锁「元素用词只有
+     * 蓝线/黑粗 y 轴/红点/说明文字」），其余 type 用「固定样式的标注」。 */
+    invariantsOf(lab, it, p).forEach(function (t) {
+      elements.push({
+        kind: 'invariant',
+        text: '不变量：' + t,
+        style: type === 'cubic' ? '说明文字' : '固定样式的标注'
+      });
+    });
 
     return { type: type, lab: lab, intent: it, title: typeTitle(type), elements: elements };
   }
@@ -3360,6 +3552,52 @@
     note.className = 'funclab-note';
     if (note0) note.textContent = note0;      // 二次函数：intent 驱动的文案（见 noteText）
 
+    /* t_544ec982：图形特点 · 不变量块 + 偏离题面提示（独立通道，不进 NOTE_INTENT）。
+     * 文案只走 invariantsOf（纯函数、确定性措辞）；渲染一律 textContent，不用 innerHTML。 */
+    const invBox = document.createElement('div');
+    invBox.className = 'funclab-invariants';
+    invBox.setAttribute('role', 'note');
+    const invTitle = document.createElement('div');
+    invTitle.className = 'funclab-invariants-title';
+    invTitle.textContent = '图形特点 · 不变量';
+    const invList = document.createElement('ul');
+    invList.className = 'funclab-invariants-list';
+    invBox.appendChild(invTitle);
+    invBox.appendChild(invList);
+    const devBox = document.createElement('div');
+    devBox.className = 'funclab-deviated';
+    devBox.hidden = true;
+    devBox.textContent = '当前已偏离题目参数（滑块已不在题面值上）';
+    let prevParams = null;      // 拖动前的参数快照；复位后清空 → 回到结构性不变量
+    function renderInvariants() {
+      while (invList.firstChild) invList.removeChild(invList.firstChild);
+      invariantsOf(noteLab, intent, p, prevParams).forEach(function (t) {
+        const li = document.createElement('li');
+        li.textContent = t;
+        invList.appendChild(li);
+      });
+    }
+    /** 偏离判定：任一滑块 key 与挂载初值不等（|Δ| ≥ 1e-9）；缺失/NaN 经 Math.abs(NaN) 自然判「未偏离」 */
+    function deviated() {
+      return Object.keys(start).some(function (k) {
+        return Math.abs(Number(p[k]) - Number(start[k])) >= 1e-9;
+      });
+    }
+    function syncDeviated() {
+      /* 用 className 字符串而非 classList：真浏览器两者等效（CSS 按词匹配 button.is-deviated），
+       * 而 Node 侧 mock DOM 只保证 className 字符串（tests 的真 mount 用例不开真浏览器）。 */
+      if (deviated()) {
+        devBox.hidden = false;
+        if (String(resetBtn.className).split(/\s+/).indexOf('is-deviated') < 0) {
+          resetBtn.className = (resetBtn.className ? resetBtn.className + ' ' : '') + 'is-deviated';
+        }
+      } else {
+        devBox.hidden = true;
+        resetBtn.className = String(resetBtn.className).split(/\s+/)
+          .filter(function (c) { return c && c !== 'is-deviated'; }).join(' ');
+      }
+    }
+
     const ctrl = document.createElement('div');
     ctrl.className = 'funclab-sliders';
     const sliders = {};
@@ -3417,12 +3655,15 @@
       let v = value;
       const sd = def.sliders.filter(function (s) { return s.key === key; })[0];
       if (sd) v = Math.max(sd.min, Math.min(sd.max, v));
+      prevParams = Object.assign({}, p);   // t_544ec982：写 p 之前快照旧参数（不变量的 prev）
       p[key] = v;
       if (sliders[key]) sliders[key].value = v;   // 填数字 → 滑块跳到该位置
       sliderVals[key].textContent = fmt(p[key]);
       info.textContent = formatFormula(p);
       moved = true;                 // 曲线已不是题面那条：文案要提醒，图上真值不再适用
       note.textContent = noteTextOf();
+      renderInvariants();           // t_544ec982：用 prev 对比重算「哪些量没变」
+      syncDeviated();               // t_544ec982：滑块不在题面值上 → 偏离提示
       syncCheck();                  // 参数变了 → 清掉旧作答，避免拿旧答案判新曲线
       draw();
       return v;
@@ -3433,23 +3674,38 @@
     resetBtn.className = 'small';
     resetBtn.textContent = '回到题目参数';
     resetBtn.addEventListener('click', function () {
+      /* 修缺陷2：复位直接把 start 初值写回 p，**不走**「写滑块 value 再 dispatch input 读回」。
+       * 真根因：真浏览器里 range input 的 value setter 会把值 clamp 到 [min,max] 并 snap 到
+       * step 网格（stepBase=min，Chrome 实测）；trig 的 φ 滑块 min=-π（无理数）、题面 φ=0
+       * 不在 0.05 网格上，读回的是 -π+63×0.05≈0.0084… 而不是 0 —— 写回 p 后 p 与 start
+       * 永不相等，deviated 恒 true、.funclab-deviated 永不隐藏。
+       * 其余 lab「正常」只是因为题面参数恰好都落在整数基的 step 网格上。
+       * 滑块 value 从此只承担视觉复位（handle 位置），不再是 p 的数据来源。 */
       Object.keys(start).forEach(function (k) {
         p[k] = start[k];
-        sliders[k].value = start[k];
-        sliders[k].dispatchEvent(new Event('input'));
+        if (sliders[k]) sliders[k].value = start[k];   // 只复位 handle 位置，不读回
       });
       /* 回到题目参数 → 读数重新变回 ?（又是「题面那条曲线」，值要学生自己算） */
       Object.keys(sliderVals).forEach(function (k) { sliderVals[k].textContent = '?'; });
       Object.keys(nums).forEach(function (k) { nums[k].value = ''; });   // 数字框恢复空 + placeholder
       moved = false;
+      prevParams = null;          // t_544ec982：复位 → 不变量回到结构性文案（无 prev）
+      info.textContent = formulaText();   // moved 已复位 → 公式行与挂载时同口径重算
+      renderInvariants();
+      syncDeviated();             // 复位后必须回到「未偏离」
       note.textContent = noteTextOf();
       syncCheck();
       draw();
     });
     ctrl.appendChild(resetBtn);
+    /* t_544ec982：首次挂载 —— 不变量 = 结构性文案（无 prev），偏离提示隐藏（此时 start 已填齐） */
+    renderInvariants();
+    syncDeviated();
 
     wrap.appendChild(info);
     wrap.appendChild(note);
+    wrap.appendChild(invBox);     // t_544ec982：不变量块（note 之后、画布之前）
+    wrap.appendChild(devBox);     // t_544ec982：偏离提示（不变量块之后）
     wrap.appendChild(canvas);
     wrap.appendChild(ctrl);
 
@@ -3902,25 +4158,34 @@
           drawLabel(w, trigPeriodText(p), { x: XM, y: sy({ y: w.yMax }, w) + 18, size: 12, color: '#34495e',
             occupied: occupied, markers: markers });
         }
-        // 最值：波峰（最大值）/波谷（最小值）红点。A<0 时 sin 的波谷才是函数最大值 —— 统一按 k+|A| 找点。
+        // 最值：波峰与波谷同时标（t_544ec982 三处要素之一）—— fn(wx+φ)=+1 与 -1 各跑一遍，
+        // 两个点各标各的（与 intent 无关，两个都画、各标各的）。
+        // 标签只走共享 helper trigExtremumText（防漂移测试抽查）。
+        // 修缺陷1：标签必须跟**实际极值**走 —— y=A·fn(θ)+k 在 fn=+1 处取值 A+k：
+        //   A>0 时它是最大值（fn=-1 处是最小值）；A<0 时正好互换（fn=+1 处成了最小值）。
+        //   A=0 退化为常函数 y=k，没有波峰波谷，不标「最大值/最小值」（与 tan 同款留白：不画点不标数值）。
         if (intent === '最大值' || intent === '最小值') {
-          const wantFn = (intent === '最大值') === (p.A >= 0) ? 1 : -1;  // fn(wx+φ) 取 ±1 的哪一个
-          if (p.fn !== 'tan') {           // tan 无最值；防御：不画点也不标数值
-            const phase0 = p.fn === 'sin'
-              ? (wantFn === 1 ? Math.PI / 2 : -Math.PI / 2)
-              : (wantFn === 1 ? 0 : Math.PI);
-            const midPhase = p.w * (w.xMin + w.xMax) / 2 + p.phi;
-            const mMid = Math.round((midPhase - phase0) / (2 * Math.PI));
-            for (let m = mMid - 2; m <= mMid + 2; m++) {
-              const x = (phase0 + 2 * Math.PI * m - p.phi) / p.w;
-              const X = sx({ x: x }, w), Y = sy({ y: fAt(null, x) }, w);
-              if (X < 0 || X > w.w || Y < 0 || Y > w.hp) continue;
-              ctx.fillStyle = '#c0392b';
-              ctx.beginPath(); ctx.arc(X, Y, 5, 0, Math.PI * 2); ctx.fill();
-              markers.push(markerRect(X, Y, 5));
-              drawLabel(w, trigExtremumText(intent, p, shown), { x: X, y: Y, size: 11, bold: false, color: '#c0392b',
-                occupied: occupied, markers: markers });
-            }
+          if (p.fn !== 'tan' && Number(p.A) !== 0) {   // tan 无最值；A=0 常函数无极值 —— 都不画
+            [1, -1].forEach(function (wantFn) {
+              const phase0 = p.fn === 'sin'
+                ? (wantFn === 1 ? Math.PI / 2 : -Math.PI / 2)
+                : (wantFn === 1 ? 0 : Math.PI);
+              const midPhase = p.w * (w.xMin + w.xMax) / 2 + p.phi;
+              const mMid = Math.round((midPhase - phase0) / (2 * Math.PI));
+              for (let m = mMid - 2; m <= mMid + 2; m++) {
+                const x = (phase0 + 2 * Math.PI * m - p.phi) / p.w;
+                const X = sx({ x: x }, w), Y = sy({ y: fAt(null, x) }, w);
+                if (X < 0 || X > w.w || Y < 0 || Y > w.hp) continue;
+                ctx.fillStyle = '#c0392b';
+                ctx.beginPath(); ctx.arc(X, Y, 5, 0, Math.PI * 2); ctx.fill();
+                markers.push(markerRect(X, Y, 5));
+                // wantFn 与 A 同号 → 该点 y = k+|A| 是最大值；异号 → y = k-|A| 是最小值
+                const wantMax = (Number(p.A) > 0) === (wantFn > 0);
+                drawLabel(w, wantMax ? trigExtremumText('最大值', p, shown) : trigExtremumText('最小值', p, shown),
+                  { x: X, y: Y, size: 11, bold: false, color: '#c0392b',
+                    occupied: occupied, markers: markers });
+              }
+            });
           }
         }
         // 定义域/渐近线：tan 画渐近线虚线（位置不标数值 —— 从图上读是读数动作）
@@ -3968,6 +4233,20 @@
           ctx.beginPath(); ctx.arc(X, Y, 4.5, 0, Math.PI * 2); ctx.fill();
           markers.push(markerRect(X, Y, 4.5));
         });
+        // t_544ec982：定点 (0, y(0)) 更大的红点 + 标签（文案与 paintModel 同一来源 expFixedText）
+        {
+          const fx = expFixedPoint(p);
+          if (isFinite(fx.y)) {
+            const FX = sx({ x: fx.x }, w), FY = sy({ y: fx.y }, w);
+            if (FX >= 0 && FX <= w.w && FY >= 0 && FY <= w.hp) {
+              ctx.fillStyle = '#c0392b';
+              ctx.beginPath(); ctx.arc(FX, FY, 5.5, 0, Math.PI * 2); ctx.fill();
+              markers.push(markerRect(FX, FY, 5.5));
+              drawLabel(w, expFixedText(p, shown), { x: FX, y: FY, size: 11, bold: false, color: '#c0392b',
+                occupied: occupied, markers: markers });
+            }
+          }
+        }
       } else if (type === 'log') {
         const start = -p.shift;
         const XS = sx({ x: start }, w);
@@ -4040,6 +4319,38 @@
             ctx.beginPath(); ctx.arc(X, Y, 4.5, 0, Math.PI * 2); ctx.fill();
             markers.push(markerRect(X, Y, 4.5));
           });
+        }
+        // t_544ec982：对称性（文案与 paintModel 同一来源 powerSymText）——
+        // even（含 p<0 偶整数）画黑色粗实线 y 轴；odd（含 p<0 奇整数）画原点空心黑圈；
+        // root/frac（及 neg 非整数）只在画布左上角放一句文案，不画轴线。
+        {
+          const symText = powerSymText(p);
+          const kd = powerKind(p);
+          const negInt = kd === 'neg' && isFinite(Number(p.p)) && Number.isInteger(Number(p.p));
+          if (kd === 'even' || (negInt && Number(p.p) % 2 === 0)) {
+            ctx.save();
+            ctx.strokeStyle = '#111';
+            ctx.lineWidth = 2.2;
+            ctx.setLineDash([]);
+            ctx.beginPath();
+            const XS0 = sx({ x: 0 }, w);
+            if (XS0 >= 0 && XS0 <= w.w) { ctx.moveTo(XS0, 0); ctx.lineTo(XS0, w.hp); }
+            ctx.stroke();
+            ctx.restore();
+            drawLabel(w, symText, { x: 8, y: 18, size: 11, color: '#111', occupied: occupied, markers: markers });
+          } else if (kd === 'odd' || negInt) {
+            const XS0 = sx({ x: 0 }, w), YS0 = sy({ y: 0 }, w);
+            if (XS0 >= 0 && XS0 <= w.w && YS0 >= 0 && YS0 <= w.hp) {
+              ctx.save();
+              ctx.strokeStyle = '#111';
+              ctx.lineWidth = 2;
+              ctx.beginPath(); ctx.arc(XS0, YS0, 6, 0, Math.PI * 2); ctx.stroke();
+              ctx.restore();
+            }
+            drawLabel(w, symText, { x: 8, y: 18, size: 11, color: '#111', occupied: occupied, markers: markers });
+          } else {
+            drawLabel(w, symText, { x: 8, y: 18, size: 11, color: '#111', occupied: occupied, markers: markers });
+          }
         }
       } else if (type === 'cubic') {
         /* 批4：两块画板共用同一底座 —— 黑色粗实线 y 轴（照 quadratic 奇偶性分支的画法），
@@ -4282,6 +4593,9 @@
           shown: shown,
           base: base ? Object.assign({}, base) : null,
           curves: base ? 2 : 1,
+          /* t_544ec982：图形特点（纯数据，不含派生答案）——当前不变量文案与偏离题面状态 */
+          invariants: invariantsOf(noteLab, intent, p, prevParams),
+          deviated: deviated(),
           shift: type === 'quadratic' ? (base ? { dx: p.h - base.h, dy: p.k - base.k } : null)
             : type === 'linear' ? (base ? { dx: 0, dy: p.b - base.b } : null)
               : null,
@@ -4331,6 +4645,10 @@
     numPi: numPi, fmtPi: fmtPi, fmtPiNum: fmtPiNum,
     /* t_85395e07：画板描述（AI 讲解看到画板）。paintModel 是绘制与 describe 的唯一事实来源 */
     paintModel: paintModel, describe: describe,
+    /* t_544ec982：图形特点 —— 不变量纯函数 + 三处要素的共享文案源（describe 与 annotate 同源防漂移） */
+    invariantsOf: invariantsOf, trigExtremumText: trigExtremumText,
+    expFixedPoint: expFixedPoint, expFixedText: expFixedText,
+    powerKind: powerKind, powerSymText: powerSymText, powerTrendText: powerTrendText,
     /* t_1d3fe77a：多曲线画板（two-curves-intersect）的纯函数，供测试与审计脚本复用 */
     curvesOf: curvesOf, intersectionsOf: intersectionsOf, intersectText: intersectText,
     fAtCurve: fAtCurve, curvesFromPrompt: curvesFromPrompt,

@@ -483,3 +483,13 @@ table.log select { min-height: 44px; }
   /* 3) 「已掌握」长列表折叠后露出的展开按钮 */
   .list-more { width: 100%; margin: 8px 0 2px; }
 }
+
+/* ============================================================ 图形特点：不变量块 + 偏离题面状态（t_544ec982）
+ * 只追加：不变量块挂在 note 与画布之间（role=note），偏离提示默认 hidden，
+ * 复位按钮在偏离时加 .is-deviated 高亮。文案由 invariantsOf 纯函数生成，渲染层只管样式。 */
+.funclab-invariants { margin: 6px 0 8px; padding: 8px 10px; border-left: 3px solid var(--brand, #2a7de1); background: rgba(42,125,225,.07); border-radius: 6px; font-size: 0.86rem; line-height: 1.55; color: #1f2933; }
+.funclab-invariants-title { font-weight: 700; color: var(--brand, #2a7de1); margin-bottom: 2px; }
+.funclab-invariants-list { margin: 0; padding-left: 1.1em; }
+.funclab-deviated { margin: 6px 0; padding: 4px 8px; border-radius: 6px; background: rgba(192,57,43,.12); color: #a93226; font-size: 0.85rem; font-weight: 700; }
+.funclab-deviated[hidden] { display: none; }
+button.is-deviated { box-shadow: 0 0 0 2px rgba(192,57,43,.55); background: #fdecea; color: #a93226; }
