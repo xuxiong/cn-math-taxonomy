@@ -3030,10 +3030,28 @@
     const note = document.createElement('div');
     note.className = 'funclab-note';
     note.textContent = note0;
+    /* t_544ec982 补块：与 mount() 同款的不变量块（同一套 CSS class 与 DOM 结构，样式文件零改动）。
+     * curves 无滑块 → invariantsOf 恒返回结构性文案，逐字使用（不加数字、不接 LLM）。 */
+    const invBox = document.createElement('div');
+    invBox.className = 'funclab-invariants';
+    invBox.setAttribute('role', 'note');
+    const invTitle = document.createElement('div');
+    invTitle.className = 'funclab-invariants-title';
+    invTitle.textContent = '图形特点 · 不变量';
+    const invList = document.createElement('ul');
+    invList.className = 'funclab-invariants-list';
+    invariantsOf(noteLab, intent, { curves: cs }).forEach(function (t) {
+      const li = document.createElement('li');
+      li.textContent = t;
+      invList.appendChild(li);
+    });
+    invBox.appendChild(invTitle);
+    invBox.appendChild(invList);
     const canvas = document.createElement('canvas');
     canvas.className = 'funclab-canvas';
     wrap.appendChild(info);
     wrap.appendChild(note);
+    wrap.appendChild(invBox);     // 与 mount() 一致：note 之后、canvas 之前
     wrap.appendChild(canvas);
 
     const dpr = (typeof devicePixelRatio !== 'undefined' ? devicePixelRatio : 1) || 1;
@@ -3310,6 +3328,10 @@
           /* 交点个数按解析解算（与绘制/describe 同源）；坐标真值仍然只在 shown 后才外露 */
           intersectionsCount: pts.length,
           shown: shown,
+          /* t_544ec982 补块：图形特点（纯数据，不含派生答案）——
+           * curves 无滑块：不变量恒等于结构性文案，不存在偏离题面。 */
+          invariants: invariantsOf(noteLab, intent, { curves: cs }),
+          deviated: false,
           base: null,
           shift: null,
           focus: {
