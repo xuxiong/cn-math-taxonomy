@@ -1683,6 +1683,94 @@ test('源码守卫：annotate 画了三处新要素；mount 有不变量块与�
   assert.ok(mountSrc.indexOf('invariantsOf(') >= 0, 'mount 应调用 invariantsOf 渲染不变量');
 });
 
+/* ---- 补块（t_544ec982）：curves 画板的学生可见不变量块（先红后绿） ----
+ *    23 个 lab 里 22 个在 mount() 里渲染不变量块，唯独 mountCurves 没有 ——
+ *    本组测试锁「补齐后的学生可见口径」，与 mount() 同款 DOM / 同源文案。
+ *    curves 没有滑块 → 不变量恒为结构性文案、deviated 恒 false，
+ *    且**不许**出现偏离提示与「回到题目参数」按钮（假交互）。 */
+
+/** 在 mock DOM 里挂一个 curves 画板（两条直线 / 直线+双曲线两套样例都验） */
+function mountCurvesHarness(dom, cs) {
+  const inst = F.mount({
+    type: 'curves', lab: 'two-curves-intersect',
+    intent: '两条曲线的交点坐标', curves: cs
+  });
+  assert.ok(inst, 'curves 画板应挂上');
+  return inst;
+}
+
+test('[curves][mount] mountCurves 渲染 .funclab-invariants 块（与 mount 同款 DOM，li ≥ 1，note 之后、canvas 之前）', function () {
+  withMountDom(function (dom) {
+    const inst = mountCurvesHarness(dom, [{ type: 'linear', k: 1, b: 1 }, { type: 'linear', k: -1, b: 3 }]);
+    const wrap = inst.el;
+    const box = wrap.querySelector('.funclab-invariants');
+    assert.ok(box, 'mountCurves 产物应有 .funclab-invariants 块');
+    const title = box.querySelector('.funclab-invariants-title');
+    assert.ok(title, '不变量块应有 .funclab-invariants-title');
+    assert.strictEqual(title.textContent, '图形特点 · 不变量', '标题应为「图形特点 · 不变量」');
+    const list = box.querySelector('.funclab-invariants-list');
+    assert.ok(list, '不变量块应有 ul.funclab-invariants-list');
+    const lis = list.children.filter(function (c) { return c.tagName === 'LI'; });
+    assert.ok(lis.length >= 1, '不变量列表至少 1 条，实际 ' + lis.length);
+    /* 插入位置与 mount() 一致：note 之后、canvas 之前 */
+    const kids = wrap.children;
+    const byClass = function (cls) {
+      return kids.filter(function (c) { return String(c.className).split(/\s+/).indexOf(cls) >= 0; })[0];
+    };
+    const note = byClass('funclab-note');
+    const canvas = kids.filter(function (c) { return c.tagName === 'CANVAS'; })[0];
+    assert.ok(note && canvas, '结构里应有 .funclab-note 与 canvas');
+    const boxIdx = kids.indexOf(box);
+    assert.ok(boxIdx > kids.indexOf(note) && boxIdx < kids.indexOf(canvas),
+      '不变量块应在 note 之后、canvas 之前，实际下标 ' + boxIdx
+      + '（note ' + kids.indexOf(note) + ' / canvas ' + kids.indexOf(canvas) + '）');
+  });
+});
+
+test('[curves][mount] 每条 li 与 invariantsOf 逐字相同（两套曲线样例，同源防漂移）', function () {
+  withMountDom(function (dom) {
+    const samples = [
+      [{ type: 'linear', k: 1, b: 1 }, { type: 'linear', k: -1, b: 3 }],
+      [{ type: 'linear', k: 1, b: -1 }, { type: 'inverse', k: 2 }]
+    ];
+    samples.forEach(function (cs) {
+      const inst = mountCurvesHarness(dom, cs);
+      const want = F.invariantsOf('two-curves-intersect', '两条曲线的交点坐标', { curves: cs });
+      assert.ok(want.length >= 1, 'curves 的 invariantsOf 应至少 1 条');
+      const lis = inst.el.querySelector('.funclab-invariants-list').children
+        .filter(function (c) { return c.tagName === 'LI'; });
+      assert.strictEqual(lis.length, want.length, 'li 条数应与 invariantsOf 数组一致');
+      lis.forEach(function (li, i) {
+        assert.strictEqual(li.textContent, want[i],
+          '第 ' + (i + 1) + ' 条文案必须与 invariantsOf 逐字相同（同源，防漂移）');
+      });
+    });
+  });
+});
+
+test('[curves][state] state().invariants 与 invariantsOf deepStrictEqual；deviated 恒 false', function () {
+  withMountDom(function (dom) {
+    const cs = [{ type: 'linear', k: 1, b: 1 }, { type: 'linear', k: -1, b: 3 }];
+    const inst = mountCurvesHarness(dom, cs);
+    const want = F.invariantsOf('two-curves-intersect', '两条曲线的交点坐标', { curves: cs });
+    assert.deepStrictEqual(inst.state().invariants, want,
+      'state().invariants 应与 invariantsOf 数组 deepStrictEqual');
+    assert.strictEqual(inst.state().deviated, false, 'curves 没有滑块，deviated 恒为 false');
+  });
+});
+
+test('[curves][反证] 产物不含 .funclab-deviated、不含「回到题目参数」按钮（无滑块不加假交互）', function () {
+  withMountDom(function (dom) {
+    const inst = mountCurvesHarness(dom, [{ type: 'linear', k: 1, b: 1 }, { type: 'linear', k: -1, b: 3 }]);
+    assert.strictEqual(inst.el.querySelector('.funclab-deviated'), null,
+      'curves 产物不许有 .funclab-deviated 偏离提示节点');
+    const resets = dom.created.filter(function (n) {
+      return n.tagName === 'BUTTON' && String(n._text).indexOf('回到题目参数') >= 0;
+    });
+    assert.deepStrictEqual(resets, [], 'curves 产物不许有「回到题目参数」复位按钮');
+  });
+});
+
 /* ================================================================
  * 14. 缺陷修复回归（修缺陷卡：先红后绿）
  *    缺陷1：trig 族 A<0 时「最大值/最小值」标签按 wantFn 硬编码到固定相位，
