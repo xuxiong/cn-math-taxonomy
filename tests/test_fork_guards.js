@@ -359,10 +359,15 @@ test('(f) ' + SHARE_JS + ' 的 SHARE_URL 指向 ' + SITE_HOST_TEXT, function () 
  * ------------------------------------------------------------------ */
 
 /** 全站约定型号：只允许写在 diagnose/llm-config.js 里。 */
-const SITE_MODEL = 'DeepSeek-V4.1-Flash-1017-Unlimited';
+const SITE_MODEL = 'default';
 
-/** 只允许出现在 diagnose/llm-config.js 的字面量（网关地址 + 型号）。 */
-const LLM_SOURCE_LITERALS = ['127.0.0.1:3000', SITE_MODEL];
+/** 只允许出现在 diagnose/llm-config.js 的字面量（网关地址）。 */
+const LLM_SOURCE_LITERALS = ['127.0.0.1:3000'];
+
+/** 型号字面量只在这种上下文里算「写死了型号」：`model: 'default'` / `model = 'default'`。
+ *  别名是普通词（switch 的 default:、`seed: 'default'` 回退串），裸子串扫会误伤无关代码。 */
+const MODEL_LITERAL_RE = new RegExp(
+  'model\\s*[:=]\\s*[\'"]' + SITE_MODEL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\'"]');
 
 /**
  * 扫描某个目录顶层的 *.js（可排除一个文件名），找出仍写死 LLM 字面量的行。
@@ -384,6 +389,11 @@ function llmLiteralOffenders(dirRel, allowName) {
         const line = text.slice(0, idx).split('\n').length;
         out.push(rel + ':' + line + ' 仍写死了「' + lit + '」');
         idx = text.indexOf(lit, idx + lit.length);
+      }
+    }
+    for (const row of lines(rel)) {
+      if (MODEL_LITERAL_RE.test(row.text)) {
+        out.push(rel + ':' + row.line + ' 仍写死了「model: \'' + SITE_MODEL + '\'」');
       }
     }
   }
