@@ -337,9 +337,9 @@ test('sw.js：被移出的懒加载脚本一律不进预热清单，也绝不进
     assert.strictEqual(rest.indexOf("'" + key + "'"), -1, key + ' 不许再进预热清单（预热预算 ≤150KB，见 test_sw_preheat.js）');
   });
   /* A+B 那张卡要求「不改 VERSION」；C1（首屏数据瘦身）与 t_c84bc026（预热预算）都把清单
-   * 改了，按 sw.js 的约定必须升版本让老缓存失效，所以这里的字面量跟着 v6 → v7 → v8 → v9
+   * 改了，按 sw.js 的约定必须升版本让老缓存失效，所以这里的字面量跟着 v6 → v7 → v8 → v9 → v10
    * （仍是一条有效断言，而不是删掉/skip）。当前版本由 test_sw_preheat.js 再守一遍。 */
-  assert.ok(/var VERSION = 'v9';/.test(SW), 'VERSION 应已是 v9（预热清单变了，老缓存必须失效）');
+  assert.ok(/var VERSION = 'v10';/.test(SW), 'VERSION 应已是 v10（预热清单变了，老缓存必须失效）');
 });
 
 /* ---------------------------------------------------------------- 7. 自检：测试真的会红 */
