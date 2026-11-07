@@ -61,7 +61,7 @@
    * 下面这些模块不在 index.html 的 <script> 链上（首屏脚本 403KB → ≈85KB），
    * 用到时才由 Lazy.load 按依赖顺序注入。依赖顺序只写在这里，调用点不要自己拼列表。
    * 每个使用点都先 Lazy.load 再调用；Lazy 内部按 src 去重，重复调用零成本。 */
-  const LAZY_EXPLAIN = ['explain.js'];                                       // LLM 讲解（llm-config.js 由 explainPanel 按需先补载）
+  const LAZY_EXPLAIN = ['textfmt.js', 'explain.js'];                         // 文本规范化 + LLM 讲解（llm-config.js 由 explainPanel 按需先补载）
   const LAZY_LAB = ['funclab.js', 'geomlab.js', 'labmatch.js', 'chatgraph.js'];  // 画板 + 追问图校验（labmatch/chatgraph 依赖 funclab）
   const LAZY_SHARE = ['../assets/vendor/qrcode.js', 'share.js'];             // 分享图（share 依赖 qrcode）
   const LAZY_PATH = [                                                        // 先修路径图（dagre 依赖 cytoscape）
