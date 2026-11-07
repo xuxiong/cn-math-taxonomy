@@ -124,7 +124,7 @@ test('与 tmp/gap-plan.json 三方一致：topicId / strategy / verifier 逐点�
  * ------------------------------------------------------------------ */
 
 const CONSTRUCT_TOPIC = 'cnm_039';   // 方程与方程的解（construct）
-const VERIFY_TOPIC = 'cnm_p013';     // 10以内加减混合（verify / numeric-compare，descendants=0）
+const VERIFY_TOPIC = 'cnm_p047';     // 除法的基本应用（verify / numeric-compare，descendants=0；卡1 把原 cnm_p013 迁到了 construct）
 const HUMAN_TOPIC = 'cnm_p014';      // 认识立体图形（human-only，plan 里缺席）
 
 /* 每个用例一个独立管线（pipelineKey），避免缓存池跨用例串味。 */
@@ -333,9 +333,18 @@ test('app.js：LAZY_VARIANTS 里 llm-config → textfmt → … → recipes → 
     at = i;
   });
   assert.ok(/const LAZY_GENROUTE = \['gen-route\.js'\]/.test(src));
-  /* construct.js 的浏览器分支要 window.DiagLLMEval：llm-eval.js 必须排它前面，否则构造路线一加载就炸。 */
-  assert.ok(/const LAZY_CONSTRUCT = \['llm-eval\.js', 'construct\.js'\]/.test(src),
-    'LAZY_CONSTRUCT 必须把 llm-eval.js 排在 construct.js 前（construct.js 的浏览器分支取 root.DiagLLMEval）');
+  /* construct.js 的浏览器分支要 window.DiagLLMEval 与 window.DiagConstructNum：两个依赖都必须在
+   * 同一个数组里、且都排在它前面，否则构造路线一加载就炸（算术族连题都拼不出来）。 */
+  const lc = /const LAZY_CONSTRUCT = \[([^\]]*)\]/.exec(src);
+  assert.ok(lc, 'app.js 里找不到 LAZY_CONSTRUCT 数组声明');
+  const lcFiles = lc[1].split(',').map(function (s) { return s.trim().replace(/^['"]|['"]$/g, ''); }).filter(Boolean);
+  const lcAt = function (f) { return lcFiles.indexOf(f); };
+  assert.ok(lcAt('llm-eval.js') >= 0 && lcAt('llm-eval.js') < lcAt('construct.js'),
+    'LAZY_CONSTRUCT 必须把 llm-eval.js 排在 construct.js 前（construct.js 的浏览器分支取 root.DiagLLMEval），实际 ' + lc[1]);
+  assert.ok(lcAt('construct-num.js') >= 0 && lcAt('construct-num.js') < lcAt('construct.js'),
+    'LAZY_CONSTRUCT 必须把 construct-num.js 排在 construct.js 前（算术族取 root.DiagConstructNum），实际 ' + lc[1]);
+  assert.ok(lcAt('construct.js') >= 0 && lcAt('llm-eval.js') >= 0 && lcAt('construct-num.js') >= 0,
+    'llm-eval.js / construct-num.js / construct.js 必须都在这同一个数组里，实际 ' + lc[1]);
 });
 
 test('sw.js 一个字节不用改：.json 已走 staleWhileRevalidate，gen-plan 不必进 SHELL/DATA', function () {

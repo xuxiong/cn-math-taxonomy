@@ -157,9 +157,10 @@ async function main() {
     const s = PLAN.summary;
     assert.strictEqual(s.strategy.construct + s.strategy.verify + s.strategy['human-only'], PLAN.total, 'strategy 三桶求和 != total');
     assert.strictEqual(
-      s.verifier.equation + s.verifier.completeSquare + s.verifier.formParam + s.verifier['numeric-compare'] + s.verifier.none,
+      s.verifier.equation + s.verifier.completeSquare + s.verifier.formParam + s.verifier.arithmetic
+        + s.verifier['numeric-compare'] + s.verifier.none,
       PLAN.total,
-      'verifier 五桶求和 != total'
+      'verifier 六桶求和 != total'
     );
     for (const g of GAP_ORDER) {
       const real = ENTRIES.filter((e) => e.gaps.indexOf(g) >= 0).length;
@@ -243,7 +244,7 @@ async function main() {
   test('strategy 三值互斥且穷尽；verifier 与 strategy 搭配合法', () => {
     const ALLOWED = {
       'human-only': [null],
-      construct: ['equation', 'completeSquare', 'formParam'],
+      construct: ['equation', 'completeSquare', 'formParam', 'arithmetic'],
       verify: ['numeric-compare', null],
     };
     for (const e of ENTRIES) {
@@ -252,10 +253,10 @@ async function main() {
     }
   });
 
-  test('construct 的知识点必须带 verify 的 numeric 题（闭式关系在现库里有实证）', () => {
+  test('construct 的方程族知识点必须带 verify 的 numeric 题（闭式关系在现库里有实证；算术族按卡1 放宽口径不看这条）', () => {
     const bad = [];
     for (const e of ENTRIES) {
-      if (e.strategy !== 'construct') continue;
+      if (e.strategy !== 'construct' || e.verifier === 'arithmetic') continue;
       const qs = BY_TOPIC.get(e.topicId) || [];
       if (!qs.some((q) => q.type === 'numeric' && typeof q.verify === 'string' && q.verify.trim() !== '')) bad.push(e.topicId);
     }
@@ -267,7 +268,7 @@ async function main() {
     const bad = [];
     let checked = 0;
     for (const e of ENTRIES) {
-      if (e.strategy !== 'construct') continue;
+      if (e.strategy !== 'construct' || e.verifier === 'arithmetic') continue;
       const qs = (BY_TOPIC.get(e.topicId) || []).filter((q) => q.type === 'numeric');
       /* 期望值独立推：方程族就是 equation；配方法族看库里哪一族验证器真的能过，
        * 都对不上才落到默认的 completeSquare（构造器最容易做 100% 可测的那一族）。 */
@@ -301,6 +302,34 @@ async function main() {
       missed.push(e.topicId + '(' + t.name + ') 判成了 ' + e.strategy);
     }
     assert.deepStrictEqual(missed.slice(0, 5), [], '该判 construct 的闭式族被漏掉');
+  });
+
+  test('卡1 回归：原 19 个 construct 点集合完全不变，算术族只增不减', () => {
+    /* 卡 A（wt/gap-plan 8ab7b47）tmp/gap-plan.json 里 strategy=construct 的 19 个点，写死当基线。
+       卡1 只许在旁边「增加」算术族点，这 19 个点的集合一个都不许变。 */
+    const BASELINE_19 = [
+      'cnm_039', 'cnm_042', 'cnm_043', 'cnm_044', 'cnm_087', 'cnm_088', 'cnm_093',
+      'cnm_165', 'cnm_206', 'cnm_208', 'cnm_219', 'cnm_220', 'cnm_221', 'cnm_222',
+      'cnm_224', 'cnm_225', 'cnm_226', 'cnm_234', 'cnm_h023',
+    ];
+    const eqConstruct = ENTRIES.filter((e) => e.strategy === 'construct' && e.verifier !== 'arithmetic')
+      .map((e) => e.topicId).sort();
+    assert.deepStrictEqual(eqConstruct, BASELINE_19.slice().sort(), '方程族 construct 点集合被改动了');
+
+    /* 算术族：plan 里的点集合必须与 diagnose/construct.js 的配方表逐点相等（配方存在即准入）。 */
+    const C = require(path.join(ROOT, 'diagnose', 'construct.js'));
+    const recipeTopics = Array.from(new Set(C.RECIPES.filter((r) => r.family === 'arithmetic').map((r) => r.topic))).sort();
+    const planTopics = ENTRIES.filter((e) => e.verifier === 'arithmetic').map((e) => e.topicId).sort();
+    assert.deepStrictEqual(planTopics, recipeTopics, '算术族 plan 点集合与构造器配方表不一致');
+    assert.deepStrictEqual(Object.keys(mod.FAMILY_RECIPES).sort(), recipeTopics, 'FAMILY_RECIPES 与构造器配方表不一致');
+    for (const id of recipeTopics) {
+      const e = ENTRY_BY_ID.get(id);
+      assert.strictEqual(e.strategy, 'construct', id + ' 有配方却不是 construct');
+      assert.strictEqual(e.family, 'arithmetic', id + ' 的 family 不是 arithmetic');
+      assert.ok(C.supports(id), id + ' 构造器不支持');
+    }
+    assert.strictEqual(PLAN.summary.strategy.construct, BASELINE_19.length + recipeTopics.length,
+      'construct 总数应为 方程族 19 + 算术族配方点数');
   });
 
   test('existing 与 questions.json 的分组完全一致（不重不漏、顺序一致）', () => {

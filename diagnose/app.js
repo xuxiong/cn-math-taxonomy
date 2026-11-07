@@ -95,8 +95,10 @@
   const LAZY_GENROUTE = ['gen-route.js'];
   /* 卡 B 的确定性构造器：只有 construct 路线的点才会加载（零 LLM、零网络）。
    * construct.js 的浏览器分支要 window.DiagLLMEval（拿 evaluateExpression 复算根），
-   * 所以 llm-eval.js 必须排在它前面 —— Node 侧 construct.js 自己 require，浏览器侧只认全局。 */
-  const LAZY_CONSTRUCT = ['llm-eval.js', 'construct.js'];
+   * 所以 llm-eval.js 必须排在它前面 —— Node 侧 construct.js 自己 require，浏览器侧只认全局。
+   * 卡1 的算术族同理还要 window.DiagConstructNum（数值基础层 construct-num.js），
+   * 缺了它 34 个算术点连题都拼不出来，因此 construct-num.js 也必须先到货。 */
+  const LAZY_CONSTRUCT = ['llm-eval.js', 'construct-num.js', 'construct.js'];
   /* 懒加载永远失败一次就够：同一次页面访问不反复重试，用户下次操作/刷新再试。
    * 失败只会让对应功能走已有的降级分支，绝不把错误抛给首屏。 */
   function lazyFail(name) {
