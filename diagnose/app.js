@@ -66,8 +66,10 @@
    * ensureAskSession，它在「作答」屏幕（还没人加载配置）就会 Lazy.load 这一组，
    * 于是 explain.js 先到货、拿到 CFG=null，点「不会」后 generate 直接抛
    * 「LLMConfig 未加载」并被 failInfo 归成 network（学生看到「网络没通」，一次请求都没发）。
-   * 依赖顺序只写在 LAZY_* 组里：把配置放进来，任何调用点都不会再踩这个顺序。 */
-  const LAZY_EXPLAIN = ['llm-config.js', 'explain.js'];                      // LLM 讲解（explain 依赖 llm-config）
+   * 依赖顺序只写在 LAZY_* 组里：把配置放进来，任何调用点都不会再踩这个顺序。
+   * 卡 t_42e5978b：textfmt.js（文本规范化唯一实现）也并进来 —— 讲解三步与追问气泡都要过
+   * normalize()，排在 explain.js 之前加载，避免首个气泡落到「未加载 → 原样上屏」的降级支。 */
+  const LAZY_EXPLAIN = ['llm-config.js', 'textfmt.js', 'explain.js'];        // LLM 讲解（explain 依赖 llm-config + textfmt）
   const LAZY_LAB = ['funclab.js', 'geomlab.js', 'labmatch.js', 'chatgraph.js'];  // 画板 + 追问图校验（labmatch/chatgraph 依赖 funclab）
   const LAZY_SHARE = ['../assets/vendor/qrcode.js', 'share.js'];             // 分享图（share 依赖 qrcode）
   const LAZY_PATH = [                                                        // 先修路径图（dagre 依赖 cytoscape）

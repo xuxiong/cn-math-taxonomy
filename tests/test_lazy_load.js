@@ -26,12 +26,14 @@ const LAZY_SRC = fs.readFileSync(path.join(ROOT, 'diagnose', 'lazyload.js'), 'ut
 const APP_RAW = fs.readFileSync(path.join(ROOT, 'diagnose', 'app.js'), 'utf8') + '\n' + fs.readFileSync(path.join(ROOT, 'diagnose', 'app-flow.js'), 'utf8');
 const SW = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
 
-/* 14 个被移出首屏链的脚本（路径按 index.html 里的写法） */
+/* 15 个被移出首屏链的脚本（路径按 index.html 里的写法） */
 const MOVED = [
   '../assets/vendor/cytoscape.min.js',
   '../assets/vendor/dagre.min.js',
   '../assets/vendor/cytoscape-dagre.js',
   'explain.js',
+  /* 卡 t_42e5978b：文本规范化唯一实现，随讲解一起懒加载（explain.js 依赖它） */
+  'textfmt.js',
   'funclab.js',
   'chatgraph.js',
   'labmatch.js',
@@ -291,7 +293,7 @@ test('app.js：每个 window.Funclab/Explain/ChatGraph/ShareCard/cytoscape 调�
 
 test('app.js：懒加载依赖顺序写在一处，且覆盖全部被移出的模块', function () {
   const groups = {
-    LAZY_EXPLAIN: ['llm-config.js', 'explain.js'],
+    LAZY_EXPLAIN: ['llm-config.js', 'textfmt.js', 'explain.js'],
     LAZY_LAB: ['funclab.js', 'geomlab.js', 'labmatch.js', 'chatgraph.js'],
     LAZY_SHARE: ['../assets/vendor/qrcode.js', 'share.js'],
     LAZY_PATH: ['../assets/vendor/cytoscape.min.js', '../assets/vendor/dagre.min.js', '../assets/vendor/cytoscape-dagre.js'],
