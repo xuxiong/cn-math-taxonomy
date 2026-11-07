@@ -55,6 +55,23 @@
     offline: '画图功能暂时用不了'
   };
 
+  /* ---------------- 卡 t_dc7163ea：AI 文本上屏走「受控微型标记」真排版 ----------------
+   * 只给 AI 产物用（三步讲解 / 追问气泡 / chip 文本 / AI 题的题面与解析）。题库原题
+   * 继续走纯文本：13335 条既有题面里 \frac 0 条，改它们的呈现只是白白多一份回归面。
+   * 渲染器没到货（懒加载没完成）时退回纯文本 —— 与今天一字不差，不是第二套显示逻辑。 */
+  function richText(el, text) {
+    const T = global.CnmTextFmt;
+    const s = String(text == null ? '' : text);
+    if (el && T && typeof T.render === 'function') { T.render(el, s); return el; }
+    if (el) el.appendChild((el.ownerDocument || document).createTextNode(s));
+    return el;
+  }
+  /* 「AI 生成题」的唯一判据（卡 D 的 aibadge 也用它，免得两处各写一份谓词）。 */
+  function isAiQuestion(q) { return !!(q && q.variant && q.variantSource === 'llm'); }
+  /* 三步讲解的展示正文：rich 是模型原文（保住 \frac 供渲染），text 是 normalize 结果
+   * （门禁 / 提示词 / 缓存 / 既有测试都读 text，一个字节没变）。 */
+  function stepRich(step) { return (step && (step.rich || step.text)) || ''; }
+
   /* 统一的会话开入口（按钮 goFlow / 深链 init 都走这）：
    * 目标与存档一致就续练（restoreFromSave），否则新开（startSession）。
    * 数据门（先修 + 题源）由 app.js 的 withStage2 / init 的 ensureFlowReady 在调用前过好。 */
@@ -749,10 +766,17 @@ function answerText(q) {
   }
 
 function feedbackBlock(q) {
+    /* 卡 t_dc7163ea：AI 题的解析走受控微型标记渲染（分式真上下堆叠）；
+     * 题库原题的解析仍是纯文本，呈现方式与今天一致。 */
+    const exEl = q.explanation
+      ? (isAiQuestion(q)
+        ? richText(h('div', { class: 'explain', id: 'explain' }, h('b', null, '解析：')), q.explanation)
+        : h('div', { class: 'explain', id: 'explain' }, h('b', null, '解析：'), q.explanation))
+      : null;
     return h('div', { class: 'feedback' },
       h('div', { class: 'refans' }, h('b', null, '参考答案：'), answerText(q)),
-      q.explanation ? h('div', { class: 'explain', id: 'explain' }, h('b', null, '解析：'), q.explanation) : null);
-  }
+      exEl);
+}
 
 function answerKeys(q) {
     const raw = q && q.answer;
@@ -861,7 +885,10 @@ function renderQuestion(item) {
       /* 卡 D：换题提示只显示一次 —— ensureAskSession 置位，renderQuestion 末尾清掉。 */
       S.ui.newQuestionNotice ? h('div', { class: 'newq-notice', id: 'newq-notice' }, '这是新题：题面变了，之前的问答不会带过来。') : null,
       h('div', { class: 'reason', text: pr ? '针对性练习（不进诊断结果）。做完自动判定对错，答错可以点「为什么错了」看讲解。' : reasonFor(item) }),
-      h('div', { class: 'q-text', id: 'q-text', text: q.prompt })]);
+      /* 卡 t_dc7163ea：只有 AI 题的题面走受控微型标记渲染；题库原题仍是一行纯文本。 */
+      isAiQuestion(q)
+        ? richText(h('div', { class: 'q-text', id: 'q-text' }), q.prompt)
+        : h('div', { class: 'q-text', id: 'q-text', text: q.prompt })]);
     const stemFig = figureEl(q.figure);
     if (stemFig) {
       const qt = card.querySelector('#q-text');
@@ -1079,7 +1106,7 @@ function explainPanel(item) {
           : show === 1 ? '第 2 步 · 提示（还差一点点）'
             : '第 3 步 · 完整解析'));
     if (show === 0) {
-      box.append(h('div', { class: 'q-text' }, steps[0].text));
+      box.append(richText(h('div', { class: 'q-text' }), stepRich(steps[0])));
       box.append(h('div', { class: 'row' },
         h('button', { class: 'good', id: 'btn-soc-got', onclick: function () {
           S.ui.phase = 'ask'; S.ui.answer = ''; S.ui.explainStep = 0; renderQuestion(item);
@@ -1087,7 +1114,7 @@ function explainPanel(item) {
         h('button', { id: 'btn-soc-hint', onclick: function () { S.ui.explainStep = 1; renderQuestion(item); } }, '还是卡住，给我一点提示'),
         h('button', { class: 'small muted', onclick: function () { S.ui.explainStep = 2; renderQuestion(item); } }, '直接看答案')));
     } else if (show === 1) {
-      box.append(h('div', { class: 'explain' }, steps[1].text));
+      box.append(richText(h('div', { class: 'explain' }), stepRich(steps[1])));
       box.append(h('div', { class: 'row' },
         h('button', { id: 'btn-soc-reveal', onclick: function () { S.ui.explainStep = 2; renderQuestion(item); } }, '还是不会，看完整解析'),
         h('button', { class: 'good', onclick: function () {
@@ -1096,7 +1123,7 @@ function explainPanel(item) {
     } else {
       box.append(h('details', { class: 'explain-fold' },
         h('summary', null, '看完整解析（自己想清楚再打开）'),
-        h('div', { class: 'explain' }, steps[2].text)));
+        richText(h('div', { class: 'explain' }), stepRich(steps[2]))));
       /* 函数实验室：配方法/二次函数类题，reveal 时挂可拖拽画板，直观理解几何意义。
        * M 卡：能不能挂、挂哪个画板、讲哪一句话，都由 LLM 语义匹配决定（diagnose/labmatch.js）；
        * 匹配失败/被拒绝/参数校验不过 → 不挂图（无正则保底，见卡面决策 2）。
@@ -1268,7 +1295,9 @@ function askBox(item, steps) {
       } else if (entry.action) {
         answerEl = chipAnswerEl(entry);   // chip 轮：结构化 payload，按 chip 类型渲染（不带「老师：」前缀）
       } else {
-        answerEl = h('div', { class: 'ask-a' }, '老师：' + entry.a);
+        /* 卡 t_dc7163ea：气泡正文整串交给 richText —— 「老师：」前缀是本地文案，entry.a 是模型
+         * 文本，两者拼成一条消息后一起渲染（模型文字仍然只出现在这一个地方）。 */
+        answerEl = richText(h('div', { class: 'ask-a' }), '老师：' + entry.a);
       }
       const rowEl = h('div', { class: 'ask-item' },
         h('div', { class: 'ask-q' }, '你：' + entry.q),
@@ -1305,17 +1334,19 @@ function askBox(item, steps) {
     function chipAnswerEl(entry) {
       const a = entry.a;
       const box = h('div', { class: 'ask-a chip-answer' });
+      /* 卡 t_dc7163ea：chip 里凡是模型写的正文（第一处错 / 讲解 / 分级提示）都走受控微型
+       * 标记渲染；verdict 行是本地模板文案（含徽标 span），保持纯文本。 */
       if (entry.action === 'judge_mine' && a && typeof a === 'object') {
         box.append(h('div', { class: a.verdict ? a.verdict.cls : 'ask-verdict unverified' },
           a.verdict ? a.verdict.text : '未验证：没看到明确的最终答案，不能替你判断对错。',
           a.verdict ? h('span', { class: 'ask-verdict-badge', text: '（' + a.verdict.badge + '）' }) : null));
-        if (a.firstError) box.append(h('div', { class: 'chip-first-error' }, '第一处错在：' + a.firstError));
-        box.append(h('div', { class: 'chip-explain' }, a.text || ''));
+        if (a.firstError) box.append(richText(h('div', { class: 'chip-first-error' }, '第一处错在：'), a.firstError));
+        box.append(richText(h('div', { class: 'chip-explain' }), a.text || ''));
       } else if (entry.action === 'hint_leveled' && a && typeof a === 'object') {
         box.append(h('div', { class: 'ask-level', text: ({ 1: 'L1 方向', 2: 'L2 第一步', 3: 'L3 完整答案' })[a.level] || 'L1 方向' }));
-        box.append(h('div', { class: 'chip-hint' }, a.text || ''));
+        box.append(richText(h('div', { class: 'chip-hint' }), a.text || ''));
       } else {
-        box.append(h('div', {}, typeof a === 'string' ? a : (a && a.text) || ''));
+        box.append(richText(h('div', {}), typeof a === 'string' ? a : (a && a.text) || ''));
       }
       return box;
     }

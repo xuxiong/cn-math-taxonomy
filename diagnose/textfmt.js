@@ -133,6 +133,389 @@
       .trim();
   }
 
+  /* ============================================================================
+   * 卡 t_dc7163ea：受控微型标记 → 真排版（分式上下堆叠 / 根号上划线 / 真上标）
+   *
+   * 只认 normalize() 今天已经认的那几种写法，一个不多：\frac{a}{b}、\sqrt{x}、\sqrt[n]{x}、
+   * ^n / ^{n}、**粗体**、行首 "- "、Unicode 上标 ²³。prompt 已禁模型写 LaTeX，多认一种语法
+   * 就是多一种失败面；认不出来的一律当普通字符走（不抛异常、不吞后文）。标题 / 表格 /
+   * 链接 / $$ 块 / \sum 之类一概不做（卡面裁定 1）。
+   *
+   * 安全：render() 只用 createElement / createTextNode / textContent 造树，全流程没有
+   * HTML 解析环节 —— 没有解析就没有 XSS 面，因此不需要任何 sanitizer（卡面裁定 2）。
+   *
+   * 无损：每个片段都存它吃掉的原文 src，所以 rawText(segments(x)) 逐字还原 x（首尾空白除外），
+   * flatten(segments(x)) 因此恒等于 normalize(x)。normalize() 本身一个字节没动。
+   * ============================================================================ */
+
+  /* Unicode 上标 → ASCII：x² 上屏成 <sup>2</sup>（上标字形由标签给，不再靠字符堆） */
+  var SUP_ASCII = {
+    '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4',
+    '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', 'ⁿ': 'n', 'ⁱ': 'i'
+  };
+  /* 幂底数字符类：与 powers() 里 ([A-Za-z0-9.)\]\u4e00-\u9fa5]) 完全一致（判「^ 前面有没有底数」） */
+  var POWER_BASE = /[A-Za-z0-9.)\]\u4e00-\u9fa5]/;
+  /* 嵌套上限：讲题文本不会有几十层嵌套；超了就当纯文本，避免畸形输入把调用栈打爆 */
+  var MAX_DEPTH = 24;
+
+  function asText(text) { return (text === null || text === undefined) ? '' : String(text); }
+
+  function isWs(c) { return c !== '' && /\s/.test(c); }
+
+  /**
+   * 读一个配平的 {…}（允许前导空白，对应 cleanLatex 里的 \s*\{）。
+   * @returns {{inner: string, end: number}|null} end 指向 '}' 之后；不配平返回 null
+   */
+  function readGroup(s, i) {
+    var j = i;
+    while (j < s.length && isWs(s.charAt(j))) j++;
+    if (s.charAt(j) !== '{') return null;
+    var depth = 0;
+    for (var k = j; k < s.length; k++) {
+      var ch = s.charAt(k);
+      if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) return { inner: s.slice(j + 1, k), end: k + 1 };
+    }
+    return null;
+  }
+
+  /* 文本片段上屏用的清洗：规则与 normalize() 逐条相同，只差两点 ——
+   *   (a) 不 trim 首尾（片段中间的空白是词边界，吞掉会把字粘在一起）；
+   *   (b) 片段若不在真行首，首行不许剥行首标记（那不是行首，剥了就是改了原文）。
+   * ⚠ 改 normalize() 的规则时这里必须同步（tests/test_textfmt_markup.js 有「纯文本渲染结果
+   *   必须等于 normalize」的漂移断言，漏改会红）。 */
+  function cleanRun(raw, atLineStart) {
+    var s = cleanLatex(raw)
+      .replace(/\*\*([^*]*)\*\*/g, '$1')
+      .replace(/\*([^*]*)\*/g, '$1')
+      .replace(/`([^`]*)`/g, '$1');
+    if (atLineStart) return s.replace(/^[#>]+\s*/gm, '').replace(/^[-*+]\s+/gm, '');
+    var nl = s.indexOf('\n');
+    if (nl < 0) return s;
+    return s.slice(0, nl) + s.slice(nl).replace(/^[#>]+\s*/gm, '').replace(/^[-*+]\s+/gm, '');
+  }
+
+  /** 上标片段在 normalize() 视角下的字符（判「下一个 ^ 还有没有底数」用） */
+  function supUni(v) {
+    var out = '';
+    for (var i = 0; i < v.length; i++) out += (SUP_DIGIT[v.charAt(i)] || SUP_LETTER[v.charAt(i)] || v.charAt(i));
+    return out;
+  }
+
+  /** 片段上屏正文（只用于取「上一个可见字符」） */
+  function runText(seg) {
+    return seg.d != null ? seg.d : cleanRun(seg.src, seg.ls);
+  }
+
+  function tailOf(seg) {
+    var v;
+    if (seg.t === 'text') v = runText(seg);
+    else if (seg.t === 'sup') v = supUni(seg.v);          // normalize 输出的是 Unicode 上标
+    else if (seg.t === 'frac') v = '()/()';               // normalize 视角：\frac{a}{b} -> (a)/(b)
+    else if (seg.t === 'sqrt') v = '√' + tailOfSeq(seg.rad);
+    else v = tailOfSeq(seg.c);                            // b / li
+    return v ? v.charAt(v.length - 1) : '';
+  }
+
+  function tailOfSeq(segs) {
+    for (var i = segs.length - 1; i >= 0; i--) {
+      var t = tailOf(segs[i]);
+      if (t) return t;
+    }
+    return '';
+  }
+
+  /**
+   * 读一处 **粗体**：内容里不许再出现 *（与 normalize 的 \*\*([^*]*)\*\* 一致）。
+   * @returns {{seg: object, end: number}|null}
+   */
+  function readBold(s, i, depth) {
+    if (s.charAt(i + 1) !== '*') return null;
+    var close = s.indexOf('**', i + 2);
+    if (close < 0) return null;
+    var inner = s.slice(i + 2, close);
+    if (inner.indexOf('*') >= 0) return null;
+    return { end: close + 2, seg: { t: 'b', src: s.slice(i, close + 2), c: parse(inner, depth + 1) } };
+  }
+
+  /** 行首列表项 "- xxx"（对应 normalize 的 ^[-*+]\s+）：吃到行尾，换行一并吃掉 ——
+   *  换行留在片段外会把它切成两个 ul，列表就断了。 */
+  function readItem(s, i, depth) {
+    var m = /^([-*+])(\s+)/.exec(s.slice(i));
+    if (!m) return null;
+    var bodyStart = i + m[0].length;
+    var nl = s.indexOf('\n', bodyStart);
+    var bodyEnd = nl < 0 ? s.length : nl;
+    return {
+      end: nl < 0 ? s.length : nl + 1,
+      seg: { t: 'li', src: s.slice(i, nl < 0 ? s.length : nl + 1), c: parse(s.slice(bodyStart, bodyEnd), depth + 1) }
+    };
+  }
+
+  /** \frac{a}{b}：分子分母都非空才认（\frac{}{} 按普通字符走）；允许嵌套（\frac{\frac{1}{2}}{3}） */
+  function readFrac(s, i, depth) {
+    if (s.substr(i, 5) !== '\\frac') return null;
+    var a = readGroup(s, i + 5);
+    if (!a) return null;
+    var b = readGroup(s, a.end);
+    if (!b) return null;
+    if (!a.inner || !b.inner) return null;
+    return {
+      end: b.end,
+      seg: {
+        t: 'frac', src: s.slice(i, b.end),
+        num: parse(a.inner, depth + 1), den: parse(b.inner, depth + 1)
+      }
+    };
+  }
+
+  /** \sqrt{x} / \sqrt[n]{x}：根号内必须非空，否则按普通字符走 */
+  function readSqrt(s, i, depth) {
+    if (s.substr(i, 5) !== '\\sqrt') return null;
+    var j = i + 5;
+    while (j < s.length && isWs(s.charAt(j))) j++;
+    var idx = null;
+    if (s.charAt(j) === '[') {
+      var rb = s.indexOf(']', j + 1);
+      if (rb < 0) return null;
+      idx = s.slice(j + 1, rb);
+      if (!idx) return null;                 // \sqrt[]{x}：空根指数按普通字符走
+      j = rb + 1;
+    }
+    var g = readGroup(s, j);
+    if (!g || !g.inner) return null;
+    return {
+      end: g.end,
+      seg: {
+        t: 'sqrt', src: s.slice(i, g.end),
+        idx: idx ? parse(idx, depth + 1) : null, rad: parse(g.inner, depth + 1)
+      }
+    };
+  }
+
+  /**
+   * 读一处 ^ 幂，判定顺序与 powers() 的三条规则一一对应。
+   * 不该当幂处理（没底数 / 数值底数多位指数 / ^{n+1} 之类）返回 null，由调用方当普通字符走。
+   * @returns {{seg: object, end: number}|null}
+   */
+  function readPower(s, i, prev) {
+    /* 规则 3a：x^(n+1) -> x 的 n+1 次方（括号形式，无底数要求，与 powers 一致）。
+     * 括号里的幂还要再收口一遍：normalize 是「括号换掉后再让 powers 扫全文」，
+     * 所以 x^(m^2-3) 会得到「 的 m²-3 次方」，这里必须同款（花括号已先被 normalise 剥掉）。 */
+    var m = /^\^\(([^()]*)\)/.exec(s.slice(i));
+    if (m) {
+      var exp = m[1].replace(/[{}]/g, '').trim();
+      return {
+        end: i + m[0].length,
+        seg: { t: 'text', src: m[0], ls: false, d: powers(' 的 ' + exp + ' 次方') }
+      };
+    }
+    var body, end;
+    var g = readGroup(s, i + 1);
+    if (g) {
+      body = g.inner;
+      end = g.end;
+    } else {
+      var m2 = /^\^([0-9]+|[A-Za-z])/.exec(s.slice(i));
+      if (!m2) return null;
+      body = m2[1];
+      end = i + m2[0].length;
+    }
+    /* 花括号剥掉后紧跟的字符：字母指数的 (?![A-Za-z0-9]) 要看它 */
+    var next = s.charAt(end);
+    if (/^[0-9]+$/.test(body)) {
+      if (!prev || !POWER_BASE.test(prev)) return null;              // 没有底数：保留 ^ 原样
+      if (body.length > 1 && /[0-9.]/.test(prev)) return null;       // 数值底数 + 多位指数：科学记数法，保留原样
+      return { end: end, seg: { t: 'sup', src: s.slice(i, end), v: body } };
+    }
+    if (/^[A-Za-z]$/.test(body) && !/[A-Za-z0-9]/.test(next)) {
+      if (SUP_LETTER[body]) return { end: end, seg: { t: 'sup', src: s.slice(i, end), v: body } };
+      return { end: end, seg: { t: 'text', src: s.slice(i, end), ls: false, d: ' 的 ' + body + ' 次方' } };
+    }
+    return null;   // ^{n+1} 之类：不认，按普通字符走（花括号由 cleanRun 剥掉，与 normalize 同款）
+  }
+
+  /** 连续的 Unicode 上标并成一个 sup 片段（x²³ -> x + sup 23） */
+  function readUniSup(s, i) {
+    var u = '';
+    while (i + u.length < s.length && SUP_ASCII[s.charAt(i + u.length)]) u += s.charAt(i + u.length);
+    var v = '';
+    for (var k = 0; k < u.length; k++) v += SUP_ASCII[u.charAt(k)];
+    return { end: i + u.length, seg: { t: 'sup', src: u, v: v } };
+  }
+
+  /**
+   * 行内解析：把原文切成受控片段树（纯数据，零 DOM）。
+   * 每个片段 src = 它吃掉的原文切片，所以「无损」是结构性保证，不靠事后拼凑。
+   * @param {string} s
+   * @param {number} depth
+   * @returns {Array}
+   */
+  function parse(s, depth) {
+    var out = [];
+    var buf = '';
+    var bufStart = 0;
+    var prev = '';            // normalize() 视角下上一个可见字符（判幂的底数用）
+    var i = 0;
+
+    function lineStartAt(pos) { return pos === 0 || s.charAt(pos - 1) === '\n'; }
+
+    function flush() {
+      if (!buf) return;
+      out.push({ t: 'text', src: buf, ls: lineStartAt(bufStart) });
+      prev = tailOf(out[out.length - 1]) || prev;
+      buf = '';
+    }
+
+    while (i < s.length) {
+      var c = s.charAt(i);
+      var got = null;
+      if (depth < MAX_DEPTH) {
+        if (c === '*') {
+          got = readBold(s, i, depth);
+          if (!got && lineStartAt(i) && isWs(s.charAt(i + 1))) got = readItem(s, i, depth);
+        } else if (c === '\\') {
+          got = readFrac(s, i, depth) || readSqrt(s, i, depth);
+        } else if (c === '^') {
+          /* 底数可能还在缓冲区里，先冲出去再问「上一个可见字符」 */
+          flush();
+          got = readPower(s, i, prev);
+        } else if (SUP_ASCII[c]) {
+          got = readUniSup(s, i);
+        } else if (lineStartAt(i) && /[-+]/.test(c) && isWs(s.charAt(i + 1))) {
+          got = readItem(s, i, depth);
+        }
+      }
+      if (got) {
+        flush();
+        out.push(got.seg);
+        prev = tailOf(got.seg) || prev;
+        i = got.end;
+        continue;
+      }
+      if (!buf) bufStart = i;
+      buf += c;
+      i++;
+    }
+    flush();
+    return out;
+  }
+
+  /**
+   * 文本 → 受控片段树（纯数据，零 DOM）。
+   * 首尾空白先去掉（normalize 最后一步是 trim，这里同一口径）。
+   * @param {string} text
+   * @returns {Array}
+   */
+  function segments(text) {
+    var s = asText(text).replace(/^\s+/, '').replace(/\s+$/, '');
+    return s ? parse(s, 0) : [];
+  }
+
+  /** 片段树 → 原文（每个片段都带着自己吃掉的原文切片） */
+  function rawText(segs) {
+    var out = '';
+    for (var i = 0; i < (segs || []).length; i++) out += segs[i].src;
+    return out;
+  }
+
+  /** 无损探针：片段树还原成原文再走 normalize，必须恒等于 normalize(原文) */
+  function flatten(segs) {
+    return normalize(rawText(segs));
+  }
+
+  /* ---------------------------- 渲染：只造节点，不拼 HTML ---------------------------- */
+
+  function make(doc, tag, cls) {
+    var node = doc.createElement(tag);
+    if (cls) node.className = cls;
+    return node;
+  }
+
+  function addAll(parent, nodes) {
+    for (var i = 0; i < nodes.length; i++) parent.appendChild(nodes[i]);
+    return parent;
+  }
+
+  /** 片段树 → 节点数组（先造完再挂，中途出错不会留下半截 DOM） */
+  function build(doc, segs) {
+    var out = [];
+    var i = 0;
+    while (i < segs.length) {
+      var seg = segs[i];
+      if (seg.t === 'li') {
+        /* 连续的列表项并进一个 ul.tf-list（列表语义只在这里出现） */
+        var ul = make(doc, 'ul', 'tf-list');
+        while (i < segs.length && segs[i].t === 'li') {
+          var li = make(doc, 'li');
+          addAll(li, build(doc, segs[i].c));
+          ul.appendChild(li);
+          i++;
+        }
+        out.push(ul);
+        continue;
+      }
+      if (seg.t === 'text') {
+        out.push(doc.createTextNode(runText(seg)));
+      } else if (seg.t === 'sup') {
+        var sup = make(doc, 'sup');
+        sup.textContent = seg.v;
+        out.push(sup);
+      } else if (seg.t === 'b') {
+        var b = make(doc, 'b', 'tf-b');
+        addAll(b, build(doc, seg.c));
+        out.push(b);
+      } else if (seg.t === 'frac') {
+        var frac = make(doc, 'span', 'tf-frac');
+        var num = make(doc, 'span', 'tf-num');
+        var den = make(doc, 'span', 'tf-den');
+        addAll(num, build(doc, seg.num));
+        addAll(den, build(doc, seg.den));
+        frac.appendChild(num);
+        frac.appendChild(den);
+        out.push(frac);
+      } else if (seg.t === 'sqrt') {
+        var sqrt = make(doc, 'span', 'tf-sqrt');
+        if (seg.idx) {
+          var ridx = make(doc, 'span', 'tf-root-index');
+          addAll(ridx, build(doc, seg.idx));
+          sqrt.appendChild(ridx);
+        }
+        var rad = make(doc, 'span', 'tf-radicand');
+        addAll(rad, build(doc, seg.rad));
+        sqrt.appendChild(rad);
+        out.push(sqrt);
+      }
+      /* 不可达：segments() 只产出上面几种；真出现就跳过（fail-closed，不抛错） */
+      i++;
+    }
+    return out;
+  }
+
+  /**
+   * 上屏出口：把受控微型标记渲染进 el（追加，不清 el 既有子节点）。
+   * 只造节点不拼 HTML；任何异常都降级成一段纯文本 —— 上屏不许因为标记古怪而整块空掉。
+   * @param {Element} el
+   * @param {string} text
+   * @returns {Element}
+   */
+  function render(el, text) {
+    if (!el || typeof el.appendChild !== 'function') return el;
+    var doc = el.ownerDocument;
+    if (!doc || typeof doc.createElement !== 'function' || typeof doc.createTextNode !== 'function') {
+      /* 没有 document（非 DOM 环境）：直接给纯文本 */
+      if (typeof el.textContent === 'string') el.textContent += normalize(text);
+      return el;
+    }
+    var nodes;
+    try {
+      nodes = build(doc, segments(text));
+    } catch (e) {
+      nodes = [doc.createTextNode(normalize(text))];
+    }
+    return addAll(el, nodes);
+  }
+
   /* 兼容旧名：explain.js 历史上调用的是 cleanMarkdown，两者必须是同一个函数对象
    * （tests/test_textfmt.js 断言 CnmTextFmt.cleanMarkdown === CnmTextFmt.normalize）。 */
   var cleanMarkdown = normalize;
@@ -143,6 +526,10 @@
     cleanLatex: cleanLatex,
     powers: powers,
     supDigits: supDigits,
+    /* 卡 t_dc7163ea：上屏专用的第二个出口（normalize 的字节输出不受影响） */
+    segments: segments,
+    render: render,
+    flatten: flatten,
     SUP_DIGIT: SUP_DIGIT
   };
 });

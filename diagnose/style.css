@@ -531,3 +531,23 @@ table.log select { min-height: 44px; }
 .funclab-deviated { margin: 6px 0; padding: 4px 8px; border-radius: 6px; background: rgba(192,57,43,.12); color: #a93226; font-size: 0.85rem; font-weight: 700; }
 .funclab-deviated[hidden] { display: none; }
 button.is-deviated { box-shadow: 0 0 0 2px rgba(192,57,43,.55); background: #fdecea; color: #a93226; }
+
+/* ---------------- 卡 t_dc7163ea：受控微型标记排版（分式堆叠 / 根号上划线 / 真上标） ----------------
+ * 只追加 .tf-* 规则，不动任何现有选择器。窄屏（390px）下分式内部允许换行，
+ * 外层 .q-text 仍是 white-space: pre-wrap，答题卡不许被撑宽。 */
+.tf-frac { display: inline-flex; flex-direction: column; vertical-align: middle; max-width: 100%; margin: 0 2px; text-align: center; line-height: 1.25; }
+.tf-num, .tf-den { display: block; max-width: 100%; overflow-wrap: anywhere; }
+.tf-num { border-bottom: 1px solid currentColor; padding: 0 4px 1px; }
+.tf-den { padding: 1px 4px 0; }
+.tf-sqrt { display: inline-block; white-space: nowrap; max-width: 100%; }
+.tf-sqrt::before { content: "\221A"; margin-right: 1px; }
+.tf-radicand { display: inline-block; border-top: 1px solid currentColor; padding: 0 3px; }
+.tf-root-index { font-size: 0.72em; vertical-align: super; margin-right: 1px; }
+.tf-b { font-weight: 700; }
+.tf-list { margin: 0.2em 0 0.2em 1.1em; padding: 0; }
+.tf-list > li { margin: 0.1em 0; }
+@media (max-width: 430px) {
+  .tf-frac { max-width: 100%; }
+  .tf-num, .tf-den { overflow-wrap: anywhere; word-break: break-word; }
+  .tf-sqrt { white-space: normal; }
+}
