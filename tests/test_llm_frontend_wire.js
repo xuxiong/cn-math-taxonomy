@@ -124,7 +124,7 @@ test('与 tmp/gap-plan.json 三方一致：topicId / strategy / verifier 逐点�
  * ------------------------------------------------------------------ */
 
 const CONSTRUCT_TOPIC = 'cnm_039';   // 方程与方程的解（construct）
-const VERIFY_TOPIC = 'cnm_p013';     // 10以内加减混合（verify / numeric-compare，descendants=0）
+const VERIFY_TOPIC = 'cnm_p047';     // 除法的基本应用（verify / numeric-compare，descendants=0；卡1 把原 cnm_p013 迁到了 construct）
 const HUMAN_TOPIC = 'cnm_p014';      // 认识立体图形（human-only，plan 里缺席）
 
 /* 每个用例一个独立管线（pipelineKey），避免缓存池跨用例串味。 */

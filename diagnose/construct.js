@@ -21,12 +21,16 @@
  *   5 泄露       解析不含答案（且解析全篇不含任何数字，最严口径）；
  *                题干不得以「x=…」「根为…」等断言形式给出答案
  *
- * 浏览器：window.DiagConstruct（需先加载 llm-eval.js）；Node：require() 直接用。
+ * 浏览器：window.DiagConstruct（需先加载 llm-eval.js 与 construct-num.js）；
+ * Node：require() 直接用。
+ *
+ * 卡1（算术运算族 S1–S4）：数值层在 construct-num.js（BigInt/分数/定点/根式/幂），
+ * 本文件只做「抽数 → 拼算式 AST → 由 AST 算答案」，见文件下半部分 ARITH_RECIPES。
  */
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./llm-eval.js'));
-  else root.DiagConstruct = factory(root.DiagLLMEval);
-})(typeof self !== 'undefined' ? self : this, function (__evaldn) {
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./llm-eval.js'), require('./construct-num.js'));
+  else root.DiagConstruct = factory(root.DiagLLMEval, root.DiagConstructNum);
+})(typeof self !== 'undefined' ? self : this, function (__evaldn, __constructNum) {
   'use strict';
 
   var Eval = __evaldn;
@@ -787,8 +791,1017 @@
   }
 
   /* ================================================================
-   * recipe 表：19 个知识点 → 23 个模板
+   * 卡1：算术运算族（S1–S4）—— 数值基础层之上的一层「配方配置」
+   *
+   * 三层分工：
+   *   construct-num.js  精确算术（BigInt / 分数 / 定点小数 / 根式 / 幂 + AST 双路求值）
+   *   本段             出题：抽数 → 拼算式 AST → 渲染题面 → **由 AST 算出答案**
+   *   门禁             回代 / 形状 / 骨架 + 难度档判据（arithFacts）
+   *
+   * 每个配方只做两件事：抽数、选题面模板。答案一律由 Num.evalAst 算出来 ——
+   * 构造器里没有任何一处手写结果。构造参数（范围、位数、下标）用 Number，
+   * 参与答案计算的数一律走 Num（BigInt/分数），两者不混。
+   *
+   * 难度档判据（写死常量，测试侧独立重算同一口径）：
+   *   basic    单步；叶子 ≤ 2 位且 ≤ 20；不进位/不退位；无括号；结果为正且 ≤ 100
+   *   standard 至多两步；叶子 ≤ 3 位；至多一层括号；且必须比 basic 难一点
+   *            （两步 / 一层括号 / 有进位或退位 / 叶子三位）
+   *   advanced 至多四步；至多两层括号；并且（≥3 步 / ≥2 层括号 / 叶子 ≥4 位 /
+   *            叶子三位且有进位退位 / 两步且叶子三位）
    * ================================================================ */
+
+  var Num = (__constructNum && __constructNum.available !== false) ? __constructNum : null;
+
+  /* 算术族的数字规模（与方程族的 INVARIANT 分开：这里卡的是「叶子」与「答案」） */
+  var ARITH_INVARIANT = {
+    basic: { maxLeaf: 99, maxAnswer: 100 },
+    standard: { maxLeaf: 999, maxAnswer: 9999 },
+    advanced: { maxLeaf: 9999, maxAnswer: 999999 }
+  };
+
+  function arithReady() { return !!Num; }
+
+  /* ---------------------------------------------------------------- 小工具 */
+
+  /** 算式上屏用全角加减号（中文排印习惯），求值侧两套都认 */
+  function pad(text) { return String(text).replace(/\+/g, '＋').replace(/-/g, '－'); }
+  function L(n) { return { n: n }; }
+  function op(o, l, r) { return { op: o, l: l, r: r }; }
+  function isIntNode(a) { return !!a && typeof a.n !== 'undefined'; }
+  function tpl(s, v) {
+    return String(s).replace(/\{(\w+)\}/g, function (_, k) { return v[k] === undefined || v[k] === null ? '' : String(v[k]); });
+  }
+  function ncmp(a, k) { return Num.cmp(Num.int(a), Num.int(k)); }
+
+  /* ---------------------------------------------------------------- 难度档判据 */
+
+  function hasCarryAdd(a, b) {
+    var TEN = Num.int(10);
+    a = Num.abs(a); b = Num.abs(b);
+    while (Num.cmp(a, 0) > 0 || Num.cmp(b, 0) > 0) {
+      var da = Num.rem(a, TEN), db = Num.rem(b, TEN);
+      if (num(da) + num(db) >= 10) return true;
+      a = Num.quot(a, TEN); b = Num.quot(b, TEN);
+    }
+    return false;
+  }
+
+  function hasBorrowSub(a, b) {
+    var TEN = Num.int(10);
+    a = Num.abs(a); b = Num.abs(b);
+    while (Num.cmp(a, 0) > 0 || Num.cmp(b, 0) > 0) {
+      if (Num.cmp(Num.rem(a, TEN), Num.rem(b, TEN)) < 0) return true;
+      a = Num.quot(a, TEN); b = Num.quot(b, TEN);
+    }
+    return false;
+  }
+
+  /* 个位数比较专用：这里只比 0..9 的「位」，转 Number 只用于比较大小，不参与答案计算 */
+  function num(x) { return Number(x.toString()); }
+
+  function arithFacts(ast) {
+    var st = Num.statTree(ast);
+    var leaves = Num.leaves(ast);
+    var maxDigits = 0, i, text = Num.render(ast), depth = 0, cur = 0, carry = false, borrow = false;
+    for (i = 0; i < leaves.length; i++) maxDigits = Math.max(maxDigits, Num.digitsOf(leaves[i]));
+    for (i = 0; i < text.length; i++) {
+      if (text.charAt(i) === '(') { cur++; if (cur > depth) depth = cur; }
+      else if (text.charAt(i) === ')') cur--;
+    }
+    /* 每一步都按「实际参与运算的两个数」判进位/退位：
+       复合子式（如 (26＋74)）的和同样可能进位，只看叶子对会漏判。 */
+    (function walk(node) {
+      if (isIntNode(node)) return;
+      walk(node.l); walk(node.r);
+      var lv = Num.evalAst(node.l), rv = Num.evalAst(node.r);
+      if (!Num.fIsInt(lv) || !Num.fIsInt(rv)) return;
+      var a = lv.n, b = rv.n;
+      if (node.op === '+') { if (hasCarryAdd(a, b)) carry = true; }
+      else if (node.op === '-') { if (hasBorrowSub(a, b)) borrow = true; }
+      else if (node.op === '×') { if (Num.cmp(Num.mul(a, b), Num.int(10)) >= 0) carry = true; }
+      else if (node.op === '÷') {
+        if (Num.cmp(Num.quot(a, b), Num.int(10)) >= 0 || Num.cmp(b, Num.int(10)) >= 0) carry = true;
+      }
+    })(ast);
+    return { steps: st.steps, brackets: depth, maxDigits: maxDigits, carry: carry, borrow: borrow };
+  }
+
+  function arithTierOk(difficulty, f, ans) {
+    var a = Num.int(ans);
+    if (Num.sign(a) <= 0) return false;
+    if (difficulty === 'basic') {
+      return f.steps === 1 && f.brackets === 0 && f.maxDigits <= 2 && !f.carry && !f.borrow &&
+        Num.cmp(a, Num.int(100)) <= 0;
+    }
+    if (difficulty === 'standard') {
+      if (!(f.steps <= 2 && f.brackets <= 1 && f.maxDigits <= 3)) return false;
+      return f.steps === 2 || f.brackets === 1 || f.carry || f.borrow || f.maxDigits === 3;
+    }
+    if (!(f.steps <= 4 && f.brackets <= 2)) return false;
+    return f.steps >= 3 || f.brackets >= 2 || f.maxDigits >= 4 ||
+      (f.maxDigits >= 3 && (f.carry || f.borrow)) || (f.steps === 2 && f.maxDigits >= 3);
+  }
+
+  function arithInvReason(q) {
+    var inv = ARITH_INVARIANT[q.difficulty];
+    if (!inv) return 'inv-difficulty';
+    var nums = numbersIn(q.prompt), i;
+    for (i = 0; i < nums.length; i++) {
+      if (nums[i] > inv.maxLeaf) return 'inv-number-range';
+    }
+    var parts = q.numberParts || [];
+    for (i = 0; i < parts.length; i++) {
+      if (parts[i].q !== 1) return 'inv-arith-int';          // S1–S4 只出整数答案
+      if (Math.abs(parts[i].p) > inv.maxAnswer) return 'inv-answer-range';
+    }
+    return null;
+  }
+
+  /* ---------------------------------------------------------------- 收口 */
+
+  function finishArith(meta, difficulty, o) {
+    if (!Num) return null;
+    var ast = o.ast, text, val, i;
+    try { text = pad(Num.render(ast)); } catch (e0) { return null; }
+    /* 双路求值：AST 直算 == 题面那串式子（调度场 + 栈）直算，不一致就不出这道题 */
+    try { val = Num.evalBoth(ast, text); } catch (e1) { return null; }
+    if (!val || !Num.fIsInt(val)) return null;
+    var ans = Num.fText(val);
+    var facts = arithFacts(ast);
+    if (!arithTierOk(difficulty, facts, ans)) return null;
+    var leaves = Num.leaves(ast);
+    for (i = 0; i < leaves.length; i++) {
+      if (Num.sign(leaves[i]) <= 0) return null;
+      if (String(o.prompt).indexOf(leaves[i].toString()) < 0) return null;   // 题面必须真的用到每个数
+    }
+    var eqs = (o.equiv || []).slice(), vals = [], ev;
+    for (i = 0; i < eqs.length; i++) {
+      try { ev = Num.evalInfix(eqs[i]); } catch (e2) { return null; }
+      if (!Num.fEq(ev, val)) return null;            // 展开式 == 直接式
+      vals.push(eqs[i]);
+    }
+    var spec = {
+      kind: 'num', form: 'int', primary: text, equiv: vals,
+      extra: o.extra || [], verbatim: String(o.prompt).indexOf(text) >= 0,
+      facts: {
+        steps: facts.steps, brackets: facts.brackets, maxDigits: facts.maxDigits,
+        carry: facts.carry, borrow: facts.borrow, answer: ans
+      }
+    };
+    return {
+      topicId: meta.topic, difficulty: difficulty, type: 'numeric',
+      prompt: o.prompt, answer: ans, explanation: RULES[meta.id],
+      variant: true, constructFamily: meta.family, constructRecipe: meta.id,
+      constructSpec: spec,
+      numberParts: [{ p: Number(ans), q: 1 }],
+      verify: function () {
+        var v2, k;
+        try { v2 = Num.evalBoth(ast, text); } catch (e3) { return false; }
+        if (!v2 || !Num.fIsInt(v2) || Num.fText(v2) !== ans) return false;
+        for (k = 0; k < vals.length; k++) {
+          try { if (!Num.fEq(Num.evalInfix(vals[k]), v2)) return false; } catch (e4) { return false; }
+        }
+        /* 回代：加减用减法回验、乘除用「商×除数(+余数)」回验、混合运算走双路 */
+        if (typeof o.inverse === 'function' && o.inverse(Num.int(ans)) !== true) return false;
+        return true;
+      }
+    };
+  }
+
+  /** 有余数除法：answer 形如「商，余数」，题干里必须有 a÷b 这串 */
+  function finishDiv(meta, difficulty, o) {
+    if (!Num) return null;
+    var a = Num.int(o.a), b = Num.int(o.b);
+    var dm = Num.divmod(a, b);
+    if (Num.sign(dm.r) <= 0 || Num.sign(dm.q) <= 0) return null;   // 真有余数、商为正
+    if (Num.cmp(dm.r, b) >= 0) return null;                        // 余数必须比除数小
+    var qs = dm.q.toString(), rs = dm.r.toString();
+    var text = pad(a.toString() + '÷' + b.toString());
+    var facts = {
+      steps: 1, brackets: 0, maxDigits: Math.max(Num.digitsOf(a), Num.digitsOf(b)),
+      carry: Num.cmp(dm.q, Num.int(10)) >= 0 || Num.cmp(b, Num.int(10)) >= 0, borrow: false
+    };
+    if (!arithTierOk(difficulty, facts, qs)) return null;
+    if (String(o.prompt).indexOf(a.toString()) < 0 || String(o.prompt).indexOf(b.toString()) < 0) return null;
+    var spec = {
+      kind: 'num', form: 'qr', primary: text, equiv: [], extra: o.extra || [],
+      verbatim: String(o.prompt).indexOf(text) >= 0,
+      facts: {
+        steps: 1, brackets: 0, maxDigits: facts.maxDigits, carry: facts.carry, borrow: false,
+        answer: qs, remainder: rs
+      }
+    };
+    return {
+      topicId: meta.topic, difficulty: difficulty, type: 'numeric',
+      prompt: o.prompt, answer: qs + '，' + rs, explanation: RULES[meta.id],
+      variant: true, constructFamily: meta.family, constructRecipe: meta.id,
+      constructSpec: spec,
+      numberParts: [{ p: Number(qs), q: 1 }, { p: Number(rs), q: 1 }],
+      verify: function () {
+        /* 回代：商×除数+余数 == 被除数，且余数 < 除数 */
+        return Num.cmp(Num.add(Num.mul(dm.q, b), dm.r), a) === 0 && Num.cmp(dm.r, b) < 0;
+      }
+    };
+  }
+
+  /* ---------------------------------------------------------------- 配方表（S1–S4） */
+
+  var ARITH_RECIPES = [
+
+    /* ================= S1 整数加减 ================= */
+
+    /* cnm_p006 5 以内的加法：a+b ≤ 5，不进位（无括号、单步、结果为正） */
+    {
+      id: 'int-add-5', topic: 'cnm_p006', family: 'arithmetic', difficulties: ['basic'],
+      rule: '把两个数合起来数一数，得到的数就是它们的和。',
+      builder: function (rng, difficulty, meta) {
+        var a = rint(rng, 1, 4), b = rint(rng, 1, 5 - a);
+        if (b < 1) return null;
+        var ast = op('+', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '直接写出得数：{e}。',
+            '盘子里有 {a} 个苹果，又放进 {b} 个。一共有多少个？',
+            '{a} 和 {b} 合起来是多少？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.sub(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p010 10 以内的加法：basic 和不超过十；standard 正好凑十（个位满十要进位） */
+    {
+      id: 'int-add-10', topic: 'cnm_p010', family: 'arithmetic', difficulties: ['basic', 'standard'],
+      rule: '把两个数合起来，满十的数要记住向十位进一。',
+      builder: function (rng, difficulty, meta) {
+        var a, b;
+        if (difficulty === 'basic') { a = rint(rng, 1, 8); b = rint(rng, 1, 9 - a); if (b < 1) return null; }
+        else { a = rint(rng, 1, 9); b = 10 - a; if (b < 1 || b > 9) return null; }
+        var ast = op('+', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '直接写出得数：{e}。',
+            '{a} 个红气球和 {b} 个蓝气球，一共有多少个？',
+            '左手拿 {a} 支笔，右手拿 {b} 支笔，两只手一共几支？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.sub(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p011 10 以内的减法：basic 不退位；standard 从十位退一（10 减几） */
+    {
+      id: 'int-sub-10', topic: 'cnm_p011', family: 'arithmetic', difficulties: ['basic', 'standard'],
+      rule: '从总数里去掉一部分，剩下的就是差；个位不够减就向十位借一当十。',
+      builder: function (rng, difficulty, meta) {
+        var a, b;
+        if (difficulty === 'basic') { a = rint(rng, 2, 9); b = rint(rng, 1, a - 1); }
+        else { a = 10; b = rint(rng, 1, 9); }
+        var ast = op('-', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '直接写出得数：{e}。',
+            '有 {a} 块糖，吃掉 {b} 块。还剩几块？',
+            '{a} 只小鸟飞走 {b} 只，树上还剩几只？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.add(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p013 10 以内加减混合：两步同级运算，从左往右算 */
+    {
+      id: 'mix-add-sub-10', topic: 'cnm_p013', family: 'arithmetic', difficulties: ['standard'],
+      rule: '只有加减法的算式，从左往右依次计算，每一步都得到新的数。',
+      builder: function (rng, difficulty, meta) {
+        var ast, a, b, c, t;
+        if (rng() < 0.5) {                       // a + b − c
+          a = rint(rng, 1, 6); b = rint(rng, 1, 10 - a); t = a + b;
+          c = rint(rng, 1, t - 1);
+          ast = op('-', op('+', L(a), L(b)), L(c));
+          return finishArith(meta, difficulty, {
+            prompt: tpl(pick(rng, [
+              '直接写出得数：{e}。',
+              '停车场有 {a} 辆车，又开来 {b} 辆，开走 {c} 辆。现在有几辆？'
+            ]), { e: pad(Num.render(ast)), a: a, b: b, c: c }),
+            ast: ast,
+            inverse: function (v) { return ncmp(Num.add(v, c), a + b) === 0; }
+          });
+        }
+        a = rint(rng, 4, 10); b = rint(rng, 1, a - 1); c = rint(rng, 1, 10 - (a - b));
+        ast = op('+', op('-', L(a), L(b)), L(c));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '直接写出得数：{e}。',
+            '树上有 {a} 只小鸟，飞走 {b} 只，又飞来 {c} 只。现在有几只？'
+          ]), { e: pad(Num.render(ast)), a: a, b: b, c: c }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.sub(v, c), a - b) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p018 20 以内不进位加法：两位数加一位数，个位不进位 */
+    {
+      id: 'int-add-20-nocarry', topic: 'cnm_p018', family: 'arithmetic', difficulties: ['basic'],
+      rule: '个位上的数相加不满十，十位上的数不变，把个位的结果写在个位上。',
+      builder: function (rng, difficulty, meta) {
+        var a = rint(rng, 10, 19);
+        var b = rint(rng, 1, 9 - (a % 10));
+        if (b < 1) return null;
+        var ast = op('+', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '直接写出得数：{e}。',
+            '一年级有 {a} 人，又来了 {b} 人。一共多少人？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.sub(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p031 口算加法（100 以内）：basic 不进位；standard 个位满十要进位 */
+    {
+      id: 'int-add-oral', topic: 'cnm_p031', family: 'arithmetic', difficulties: ['basic', 'standard'],
+      rule: '相同数位对齐，从个位加起，个位满十就向十位进一。',
+      builder: function (rng, difficulty, meta) {
+        var a = rint(rng, 11, 89), b;
+        var ua = a % 10;
+        if (difficulty === 'basic') {
+          b = rint(rng, 1, 9 - ua);
+          if (b < 1) return null;
+        } else {
+          b = rint(rng, 10 - ua, 9);                 // 个位一定满十
+        }
+        var ast = op('+', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '口算 {e}，得数是多少？',
+            '一个数是 {a}，另一个数比它多 {b}。另一个数是多少？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.sub(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p032 口算减法（100 以内）：basic 不退位；standard 个位不够减要退位 */
+    {
+      id: 'int-sub-oral', topic: 'cnm_p032', family: 'arithmetic', difficulties: ['basic', 'standard'],
+      rule: '相同数位对齐，从个位减起，个位不够减就从十位退一当十再减。',
+      builder: function (rng, difficulty, meta) {
+        var a = rint(rng, 21, 98), b;
+        var ua = a % 10;
+        if (difficulty === 'basic') {
+          b = rint(rng, 1, Math.max(1, ua));
+          if (b > ua) return null;
+        } else {
+          b = rint(rng, ua + 1, 9);                  // 个位一定不够减
+          if (Num.cmp(Num.int(a), Num.int(b)) <= 0) return null;
+        }
+        var ast = op('-', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '口算 {e}，得数是多少？',
+            '车上原来有 {a} 人，到站下去 {b} 人。车上还有多少人？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.add(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p033 笔算加法（100 以内 / 三位数）：standard 两位数进位；advanced 三位数进位 */
+    {
+      id: 'int-add-written', topic: 'cnm_p033', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '相同数位对齐，从个位加起，哪一位满十就向前一位进一。',
+      builder: function (rng, difficulty, meta) {
+        var a, b;
+        if (difficulty === 'standard') { a = rint(rng, 13, 89); b = rint(rng, 10, 89); }
+        else { a = rint(rng, 113, 889); b = rint(rng, 110, 889); }
+        var ast = op('+', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '用竖式计算：{e}。',
+            '批发市场上午运进 {a} 千克蔬菜，下午又运进 {b} 千克。一天共运进多少千克？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.sub(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p034 笔算减法：standard 两位数退位；advanced 三位数退位（含中间是零） */
+    {
+      id: 'int-sub-written', topic: 'cnm_p034', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '相同数位对齐，从个位减起，哪一位不够减就从前一位退一当十。',
+      builder: function (rng, difficulty, meta) {
+        var a, b;
+        if (difficulty === 'standard') { a = rint(rng, 42, 98); b = rint(rng, 11, a - 1); }
+        else {
+          a = rint(rng, 203, 909); b = rint(rng, 108, a - 101);
+          if (rng() < 0.5) a = 100 * rint(rng, 3, 9) + rint(rng, 1, 9);   // 中间是零的三位数
+          if (Num.cmp(Num.int(b), Num.int(a)) >= 0) return null;
+        }
+        var ast = op('-', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '用竖式计算：{e}。',
+            '仓库里有 {a} 袋米，运走 {b} 袋。还剩多少袋？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.add(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p064 几百几十的口算加法：standard 整百相加；advanced 十位满十进百 */
+    {
+      id: 'int-add-hundreds', topic: 'cnm_p064', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '把几百几十看成几个百和几个十，先算百位上的数，再算十位上的数。',
+      builder: function (rng, difficulty, meta) {
+        var a, b;
+        if (difficulty === 'standard') { a = 100 * rint(rng, 2, 8); b = 100 * rint(rng, 1, 9); }
+        else { a = 10 * rint(rng, 21, 49); b = 10 * rint(rng, 21, 49); }
+        var ast = op('+', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '口算 {e}，得数是多少？',
+            '学校原有 {a} 本书，又买来 {b} 本。现在有多少本？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.sub(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p065 几百几十的口算减法：standard 整百相减；advanced 十位不够减要退百 */
+    {
+      id: 'int-sub-hundreds', topic: 'cnm_p065', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '把几百几十看成几个百和几个十，十位不够减就从百位退一到十位。',
+      builder: function (rng, difficulty, meta) {
+        var a, b;
+        if (difficulty === 'standard') {
+          a = 100 * rint(rng, 4, 9); b = 100 * rint(rng, 1, 3);
+        } else {
+          a = 10 * rint(rng, 41, 99); b = 10 * rint(rng, 21, 49);
+          if (Num.cmp(Num.int(b), Num.int(a)) >= 0) return null;
+        }
+        var ast = op('-', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '口算 {e}，得数是多少？',
+            '粮店有 {a} 千克大米，卖出 {b} 千克。还剩多少千克？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.add(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p253 用加减法解决问题：一句话情境 + 数值槽位（情境句是模板常量，不交给 LLM） */
+    {
+      id: 'int-word-add-sub', topic: 'cnm_p253', family: 'arithmetic', difficulties: ['basic', 'standard'],
+      rule: '读懂题意：把几个部分合起来用加法，从总数里去掉一部分用减法。',
+      builder: function (rng, difficulty, meta) {
+        if (rng() < 0.5) {                              // 加法情境
+          var a = (difficulty === 'basic') ? rint(rng, 1, 4) : rint(rng, 12, 68);
+          var bmax = (difficulty === 'basic') ? 10 - a : 30;
+          var b = rint(rng, 1, bmax);
+          var ast = op('+', L(a), L(b));
+          return finishArith(meta, difficulty, {
+            prompt: tpl(pick(rng, [
+              '小猴摘了 {a} 个桃子，小兔又送给它 {b} 个。小猴现在有几个桃子？',
+              '花坛里有 {a} 朵红花，还有 {b} 朵黄花。花坛里一共有多少朵花？'
+            ]), { a: a, b: b }),
+            ast: ast,
+            inverse: function (v) { return ncmp(Num.sub(v, b), a) === 0; }
+          });
+        }
+        var t = (difficulty === 'basic') ? rint(rng, 3, 10) : rint(rng, 21, 96);
+        var c = rint(rng, 1, t - 1);
+        var ast2 = op('-', L(t), L(c));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '小明有 {t} 张画片，送给同学 {c} 张。小明还剩多少张画片？',
+            '书架上有 {t} 本书，被借走 {c} 本。书架上还剩多少本？'
+          ]), { t: t, c: c }),
+          ast: ast2,
+          inverse: function (v) { return ncmp(Num.add(v, c), t) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p252 逆向用加法解决问题：已知「又得到/又下车」后的结果，求原来的数 */
+    {
+      id: 'int-word-inverse', topic: 'cnm_p252', family: 'arithmetic', difficulties: ['basic', 'standard'],
+      rule: '求原来的数要倒着想：又添上几个就用结果减去它，又去掉几个就用结果加上它。',
+      builder: function (rng, difficulty, meta) {
+        var b = (difficulty === 'basic') ? rint(rng, 1, 5) : rint(rng, 6, 40);
+        var x = (difficulty === 'basic') ? rint(rng, 1, 5) : rint(rng, 20, 88);
+        var t = Num.add(x, b).toString();
+        var ast = op('-', L(t), L(b));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '小明原来有一些卡片，又得到 {b} 张，现在有 {t} 张。小明原来有多少张卡片？',
+            '盒子里原来有一些糖，又放进 {b} 块，现在有 {t} 块。盒子里原来有多少块糖？'
+          ]), { b: b, t: t }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.add(v, b), t) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p220 加减法各部分间的关系：和 − 一个加数 = 另一个加数；被减数 − 差 = 减数 */
+    {
+      id: 'int-part-relation', topic: 'cnm_p220', family: 'arithmetic', difficulties: ['basic', 'standard'],
+      rule: '一个加数等于和减去另一个加数；减数等于被减数减去差；被减数等于差加减数。',
+      builder: function (rng, difficulty, meta) {
+        var mode = rint(rng, 0, 2);
+        var hi = (difficulty === 'basic') ? 9 : 98;
+        if (mode === 0) {                               // 和 − 加数
+          var a = rint(rng, 1, Math.max(1, Math.floor(hi / 2)));
+          var b = rint(rng, 1, Math.max(1, Math.floor(hi / 2)));
+          var s = Num.add(a, b).toString(), ast = op('-', L(s), L(a));
+          return finishArith(meta, difficulty, {
+            prompt: tpl('两个数的和是 {s}，其中一个加数是 {a}。另一个加数是多少？', { s: s, a: a }),
+            ast: ast,
+            inverse: function (v) { return ncmp(Num.add(v, a), s) === 0; }
+          });
+        }
+        if (mode === 1) {                               // 被减数 − 差
+          var m = rint(rng, 3, hi), d = rint(rng, 1, m - 1);
+          var ast2 = op('-', L(m), L(d));
+          return finishArith(meta, difficulty, {
+            prompt: tpl('被减数是 {m}，差是 {d}。减数是多少？', { m: m, d: d }),
+            ast: ast2,
+            inverse: function (v) { return ncmp(Num.add(v, d), m) === 0; }
+          });
+        }
+        var b2 = rint(rng, 1, Math.max(1, Math.floor(hi / 2))), d2 = rint(rng, 1, Math.max(1, Math.floor(hi / 2)));
+        var ast3 = op('+', L(b2), L(d2));
+        return finishArith(meta, difficulty, {
+          prompt: tpl('减数是 {b2}，差是 {d2}。被减数是多少？', { b2: b2, d2: d2 }),
+          ast: ast3,
+          inverse: function (v) { return ncmp(Num.sub(v, b2), d2) === 0; }
+        });
+      }
+    },
+
+    /* ================= S2 整数乘除 ================= */
+
+    /* cnm_p039 2～6 的乘法口诀：basic 积不满十；standard 积满十（要进位） */
+    {
+      id: 'int-mul-table-26', topic: 'cnm_p039', family: 'arithmetic', difficulties: ['basic', 'standard'],
+      rule: '乘法是相同加数连加的简便算法，用乘法口诀直接求出积。',
+      builder: function (rng, difficulty, meta) {
+        var a = rint(rng, 2, 6), b = rint(rng, 2, 6);
+        var p = Num.mul(a, b);
+        if (difficulty === 'basic' && ncmp(p, 9) > 0) return null;
+        if (difficulty === 'standard' && ncmp(p, 9) <= 0) return null;
+        var ast = op('×', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '直接写出得数：{e}。',
+            '每盘有 {a} 个苹果，{b} 盘一共有多少个？',
+            '{b} 个 {a} 相加是多少？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast
+        });
+      }
+    },
+
+    /* cnm_p042 7～9 的乘法口诀：积都满十（个位要进位） → standard */
+    {
+      id: 'int-mul-table-79', topic: 'cnm_p042', family: 'arithmetic', difficulties: ['standard'],
+      rule: '乘法是相同加数连加的简便算法，用乘法口诀直接求出积。',
+      builder: function (rng, difficulty, meta) {
+        var a = rint(rng, 7, 9), b = rint(rng, 7, 9);
+        var ast = op('×', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '直接写出得数：{e}。',
+            '每行站 {a} 人，站了 {b} 行。一共有多少人？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast
+        });
+      }
+    },
+
+    /* cnm_p046 用 2～6 的口诀求商：被除数 = 两个口诀内的数的积，整除 */
+    {
+      id: 'int-div-table-26', topic: 'cnm_p046', family: 'arithmetic', difficulties: ['basic'],
+      rule: '除法是乘法的逆运算，想「几乘几等于被除数」就能求出商。',
+      builder: function (rng, difficulty, meta) {
+        var b = rint(rng, 2, 6), q = rint(rng, 2, 6);
+        var a = Num.mul(b, q);
+        var ast = op('÷', L(a.toString()), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '直接写出得数：{e}。',
+            '把 {a} 个苹果平均放进 {b} 个盘子，每盘放几个？'
+          ]), { e: e, a: a.toString(), b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.mul(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p044 用 7～9 的口诀求商 */
+    {
+      id: 'int-div-table-79', topic: 'cnm_p044', family: 'arithmetic', difficulties: ['basic'],
+      rule: '除法是乘法的逆运算，想「几乘几等于被除数」就能求出商。',
+      builder: function (rng, difficulty, meta) {
+        var b = rint(rng, 7, 9), q = rint(rng, 7, 9);
+        var a = Num.mul(b, q);
+        var ast = op('÷', L(a.toString()), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '直接写出得数：{e}。',
+            '{a} 名同学平均分成 {b} 组，每组多少人？'
+          ]), { e: e, a: a.toString(), b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.mul(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p050 有余数的除法：basic 两位数除一位数；standard 商两位数；advanced 除数两位数 */
+    {
+      id: 'int-div-remainder', topic: 'cnm_p050', family: 'arithmetic', difficulties: ['basic', 'standard', 'advanced'],
+      rule: '平均分后剩下、不够再分一份的数就是余数，余数必须比除数小。',
+      builder: function (rng, difficulty, meta) {
+        var b, q;
+        if (difficulty === 'basic') { b = rint(rng, 2, 9); q = rint(rng, 2, 9); }
+        else if (difficulty === 'standard') { b = rint(rng, 2, 9); q = rint(rng, 10, 40); }
+        else { b = rint(rng, 11, 29); q = rint(rng, 3, 9); }
+        var r = rint(rng, 1, b - 1);
+        var a = Num.add(Num.mul(q, b), r).toString();
+        return finishDiv(meta, difficulty, {
+          a: a, b: b,
+          prompt: tpl(pick(rng, [
+            '计算 {a}÷{b}，商和余数各是多少？',
+            '{a} 个苹果，每 {b} 个装一袋，可以装几袋？还剩几个？'
+          ]), { a: a, b: b })
+        });
+      }
+    },
+
+    /* cnm_p219 数量间的乘除关系：每份数 × 份数 / 总数 ÷ 每份数 */
+    {
+      id: 'int-mul-div-relation', topic: 'cnm_p219', family: 'arithmetic', difficulties: ['basic', 'standard'],
+      rule: '每份数乘份数得到总数；总数除以每份数得到份数，总数除以份数得到每份数。',
+      builder: function (rng, difficulty, meta) {
+        var a = (difficulty === 'basic') ? rint(rng, 2, 5) : rint(rng, 3, 9);
+        var b = (difficulty === 'basic') ? rint(rng, 2, 5) : rint(rng, 3, 12);
+        if (rng() < 0.5) {                              // 乘法：每盒 a 个 × b 盒
+          var ast = op('×', L(a), L(b));
+          return finishArith(meta, difficulty, {
+            prompt: tpl('每盒有 {a} 个鸡蛋，买 {b} 盒。一共有多少个鸡蛋？', { a: a, b: b }),
+            ast: ast
+          });
+        }
+        var t = Num.mul(a, b).toString();               // 除法：总数 ÷ 每盒数 = 盒数
+        var ast2 = op('÷', L(t), L(a));
+        return finishArith(meta, difficulty, {
+          prompt: tpl('一共有 {t} 个鸡蛋，每盒装 {a} 个。可以装几盒？', { t: t, a: a }),
+          ast: ast2,
+          inverse: function (v) { return ncmp(Num.mul(v, a), t) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p275 口算乘法：整十/整百数乘一位数 */
+    {
+      id: 'int-mul-oral', topic: 'cnm_p275', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '先把整十、整百数看成几个十、几个百，用口诀算出结果再添上零。',
+      builder: function (rng, difficulty, meta) {
+        var a, b = rint(rng, 2, 9);
+        if (difficulty === 'standard') a = 10 * rint(rng, 2, 9);
+        else a = 100 * rint(rng, 2, 9);
+        var ast = op('×', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '口算 {e}，积是多少？',
+            '每箱有 {a} 瓶牛奶，{b} 箱一共有多少瓶？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast
+        });
+      }
+    },
+
+    /* cnm_p074 笔算乘法：standard 两位数乘一位数；advanced 三位数乘一位数 */
+    {
+      id: 'int-mul-written', topic: 'cnm_p074', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '用一位数依次去乘多位数的每一位，哪一位上的积满几十就向前一位进几。',
+      builder: function (rng, difficulty, meta) {
+        var b = rint(rng, 3, 9);
+        var a = (difficulty === 'standard') ? rint(rng, 13, 98) : rint(rng, 113, 898);
+        var ast = op('×', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '用竖式计算：{e}。',
+            '每套桌椅 {a} 元，买 {b} 套一共要多少元？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast
+        });
+      }
+    },
+
+    /* cnm_p075 因数中间或末尾有零的乘法 */
+    {
+      id: 'int-mul-zero', topic: 'cnm_p075', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '因数末尾的零先不看，算完前面的积再在末尾添上同样多的零；中间有零也要一位一位乘。',
+      builder: function (rng, difficulty, meta) {
+        var b = rint(rng, 2, 9), a;
+        if (difficulty === 'standard') a = 10 * rint(rng, 2, 9);
+        else a = 100 * rint(rng, 1, 8) + rint(rng, 1, 9);      // 中间有零的三位数
+        var ast = op('×', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '用竖式计算：{e}。',
+            '学校买了 {b} 箱图书，每箱 {a} 本。一共买了多少本？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast
+        });
+      }
+    },
+
+    /* cnm_p282 口算除法：整十/整百数除以一位数，整除 */
+    {
+      id: 'int-div-oral', topic: 'cnm_p282', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '把整十、整百数看成几个十、几个百，用口诀求出商。',
+      builder: function (rng, difficulty, meta) {
+        var q = rint(rng, 2, 9), b = rint(rng, 2, 9);
+        var mult = (difficulty === 'standard') ? 10 : 100;
+        if (difficulty !== 'standard' && q * b > 9) return null;   // 整百 ÷ 一位数：别超过三位数
+        /* 被除数 = mult × 商 × 除数：整除，商 = mult × q */
+        var a = Num.mul(Num.mul(mult, q), b).toString();
+        var ast = op('÷', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '口算 {e}，商是多少？',
+            '有 {a} 支铅笔，平均分给 {b} 个班，每班分到多少支？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.mul(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p083 笔算除法：除数是一位数，被除数两三位，整除 */
+    {
+      id: 'int-div-written', topic: 'cnm_p083', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '从被除数的最高位除起，除到哪一位商就写在哪一位上面；每次除得的余数要比除数小。',
+      builder: function (rng, difficulty, meta) {
+        var b = rint(rng, 2, 9), q;
+        if (difficulty === 'standard') q = rint(rng, 11, 49);
+        else q = rint(rng, 101, 249);
+        var a = Num.mul(q, b).toString();
+        var ast = op('÷', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '用竖式计算：{e}。',
+            '{a} 本练习本平均分给 {b} 个班，每班分到多少本？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.mul(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* cnm_p106 除数是两位数的除法 */
+    {
+      id: 'int-div-two-digit', topic: 'cnm_p106', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '用两位数除时，先看被除数的前两位，不够除再看前三位；试商后要把商和除数的积写在下面相减。',
+      builder: function (rng, difficulty, meta) {
+        var b = rint(rng, 11, 39), q;
+        q = (difficulty === 'standard') ? rint(rng, 2, 9) : rint(rng, 11, 39);
+        var a = Num.mul(q, b).toString();
+        var ast = op('÷', L(a), L(b)), e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '计算 {e}，商是多少？',
+            '{a} 名同学去参观，每 {b} 人一组，可以分成多少组？'
+          ]), { e: e, a: a, b: b }),
+          ast: ast,
+          inverse: function (v) { return ncmp(Num.mul(v, b), a) === 0; }
+        });
+      }
+    },
+
+    /* ================= S3 混合运算与顺序 ================= */
+
+    /* cnm_p223 同级运算与两级运算：standard 先乘除后加减；advanced 三步 */
+    {
+      id: 'mix-two-level', topic: 'cnm_p223', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '算式中既有加减又有乘除，要先算乘除、再算加减；只有同级运算就从左往右算。',
+      builder: function (rng, difficulty, meta) {
+        var b = rint(rng, 2, 9), c = rint(rng, 2, 9), ast;
+        var prod = Num.mul(b, c);
+        if (difficulty === 'standard') {
+          var a = rint(rng, 2, 40);
+          if (rng() < 0.5) {
+            ast = op('+', L(a), op('×', L(b), L(c)));                  // a ＋ b×c
+          } else {
+            var s = Num.add(prod, rint(rng, 2, 60)).toString();
+            ast = op('-', L(s), op('×', L(b), L(c)));                  // 和 － b×c
+          }
+        } else {
+          var a1 = rint(rng, 20, 120), d = rint(rng, 2, 40);
+          ast = op('-', op('+', L(a1), op('×', L(b), L(c))), L(d));     // a ＋ b×c － d
+        }
+        var e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '计算 {e}，结果是（　）。',
+            '先想清算式里先算什么，再写出 {e} 的得数。'
+          ]), { e: e }),
+          ast: ast
+        });
+      }
+    },
+
+    /* cnm_p058 含有小括号的两级运算：有一层括号就先算括号里的 */
+    {
+      id: 'mix-bracket', topic: 'cnm_p058', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '有小括号的算式要先算括号里面的，再算括号外面的乘除，最后算加减。',
+      builder: function (rng, difficulty, meta) {
+        var ast;
+        if (difficulty === 'standard') {
+          var a = rint(rng, 2, 9), b = rint(rng, 2, 9), c = rint(rng, 2, 9);
+          ast = rng() < 0.5
+            ? op('×', op('+', L(a), L(b)), L(c))                       // (a＋b)×c
+            : op('×', op('-', L(Num.add(a, b).toString()), L(b)), L(c)); // (和－b)×c
+        } else {
+          var a1 = rint(rng, 11, 60), b1 = rint(rng, 11, 60), c1 = rint(rng, 2, 9), d1 = rint(rng, 5, 60);
+          ast = op('+', op('×', op('+', L(a1), L(b1)), L(c1)), L(d1)); // (a＋b)×c ＋ d
+        }
+        var e = pad(Num.render(ast));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '计算 {e}，结果是（　）。',
+            '先算小括号里的，再算括号外面的：{e} 的得数是多少？'
+          ]), { e: e }),
+          ast: ast
+        });
+      }
+    },
+
+    /* cnm_p112 整数四则混合运算：两层括号 / 三四步 */
+    {
+      id: 'mix-nested', topic: 'cnm_p112', family: 'arithmetic', difficulties: ['advanced'],
+      rule: '先算小括号里面的，再算中括号里面的，然后算乘除，最后算加减。',
+      builder: function (rng, difficulty, meta) {
+        var a = rint(rng, 5, 30), b = rint(rng, 5, 30), c = rint(rng, 3, 9), d = rint(rng, 1, c - 1);
+        var ast;
+        if (rng() < 0.5) {
+          ast = op('×', op('+', L(a), L(b)), op('-', L(c), L(d)));        // (a＋b)×(c－d)
+        } else {
+          var e1 = rint(rng, 2, 9);
+          if (Num.sign(Num.rem(Num.mul(Num.add(a, b), c), e1)) !== 0) return null;
+          ast = op('÷', op('×', op('+', L(a), L(b)), L(c)), L(e1));       // (a＋b)×c ÷ e
+        }
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '计算 {e}，结果是（　）。',
+            '按四则运算的顺序算一算：{e} 的得数是多少？'
+          ]), { e: pad(Num.render(ast)) }),
+          ast: ast
+        });
+      }
+    },
+
+    /* cnm_p059 用混合运算解决问题：情境里的两步/三步 */
+    {
+      id: 'mix-word', topic: 'cnm_p059', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '先把情境里的数量关系写成一道混合算式，再按先乘除后加减的顺序算。',
+      builder: function (rng, difficulty, meta) {
+        var a = rint(rng, 3, 12), b = rint(rng, 2, 9), c = rint(rng, 1, a * b - 1);
+        if (difficulty === 'standard') {
+          var ast = op('-', op('×', L(a), L(b)), L(c));
+          return finishArith(meta, difficulty, {
+            prompt: tpl('每盒有 {a} 支笔，买了 {b} 盒，送给同学 {c} 支。还剩多少支笔？', { a: a, b: b, c: c }),
+            ast: ast
+          });
+        }
+        var d = rint(rng, 2, 9), left = a * b - c;
+        if (left % d !== 0) return null;
+        var ast2 = op('÷', op('-', op('×', L(a), L(b)), L(c)), L(d));
+        return finishArith(meta, difficulty, {
+          prompt: tpl('每盒有 {a} 支笔，买了 {b} 盒，送给同学 {c} 支，剩下的平均分给 {d} 个小组。每个小组分到多少支？', { a: a, b: b, c: c, d: d }),
+          ast: ast2
+        });
+      }
+    },
+
+    /* ================= S4 运算律与简便计算 ================= */
+
+    /* cnm_p114 加法交换律和结合律：后两个数凑成整百 */
+    {
+      id: 'law-add-assoc', topic: 'cnm_p114', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '三个数相加，可以把凑成整十、整百的两个数先加起来，和不变。',
+      builder: function (rng, difficulty, meta) {
+        var b, c, a;
+        if (difficulty === 'standard') {
+          b = rint(rng, 21, 79); c = 100 - b; a = rint(rng, 12, 89);
+        } else {
+          b = rint(rng, 121, 479); c = 500 - b; a = rint(rng, 112, 889);
+        }
+        var direct = pad(a + '+' + b + '+' + c);
+        var ast = op('+', L(a), op('+', L(b), L(c)));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '计算 {d}，先把后两个数相加更简便。得数是多少？',
+            '{d}，后两个数能凑成整百，先算它们更简便。得数是多少？'
+          ]), { d: direct }),
+          ast: ast,
+          equiv: [pad(a + '+' + b + '+' + c)]
+        });
+      }
+    },
+
+    /* cnm_p115 乘法交换律和结合律：25×4、125×8 凑整 */
+    {
+      id: 'law-mul-assoc', topic: 'cnm_p115', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '三个数相乘，可以先把相乘得整十、整百的两个数结合起来，积不变。',
+      builder: function (rng, difficulty, meta) {
+        var a, b, c;
+        if (difficulty === 'standard') { a = 25; b = 4; c = rint(rng, 3, 9); }
+        else { a = 125; b = 8; c = rint(rng, 2, 9); }
+        var direct = pad(a + '×' + c + '×' + b);
+        var ast = op('×', op('×', L(a), L(b)), L(c));
+        return finishArith(meta, difficulty, {
+          prompt: tpl(pick(rng, [
+            '计算 {d}，先算 {a}×{b} 更简便。积是多少？',
+            '{d}，把 {a} 和 {b} 先乘起来更简便。积是多少？'
+          ]), { d: direct, a: a, b: b }),
+          ast: ast,
+          equiv: [pad(a + '×' + c + '×' + b)]
+        });
+      }
+    },
+
+    /* cnm_p116 乘法分配律：99×5 = (100−1)×5；102×7 = (100+2)×7 */
+    {
+      id: 'law-distribute', topic: 'cnm_p116', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '两个数的和或差与一个数相乘，可以把这个数分别与两个数相乘，再把积相加或相减。',
+      builder: function (rng, difficulty, meta) {
+        var k = rint(rng, 3, 9), big, delta, ast;
+        if (difficulty === 'standard') {
+          big = 100; delta = rint(rng, 1, 9);
+          ast = op('×', op('-', L(big), L(delta)), L(k));
+          var direct = pad((big - delta) + '×' + k);
+          return finishArith(meta, difficulty, {
+            prompt: tpl('{d} 可以看成 {e}，得数是多少？', { d: direct, e: pad(Num.render(ast)) }),
+            ast: ast,
+            equiv: [direct],
+            extra: [String(big - delta)]
+          });
+        }
+        big = 100; delta = rint(rng, 1, 9);
+        ast = op('×', op('+', L(big), L(delta)), L(k));
+        var direct2 = pad((big + delta) + '×' + k);
+        return finishArith(meta, difficulty, {
+          prompt: tpl('{d} 可以看成 {e}，得数是多少？', { d: direct2, e: pad(Num.render(ast)) }),
+          ast: ast,
+          equiv: [direct2],
+          extra: [String(big + delta)]
+        });
+      }
+    },
+
+    /* cnm_p117 用运算律简便计算：把接近整十整百的数先改写成整十整百数 */
+    {
+      id: 'law-near-round', topic: 'cnm_p117', family: 'arithmetic', difficulties: ['standard', 'advanced'],
+      rule: '把接近整十、整百的数先看成整十、整百数，再减去或加上多算的部分，算起来更简便。',
+      builder: function (rng, difficulty, meta) {
+        var big = 100 * rint(rng, 3, 9), delta = rint(rng, 1, 9);
+        var near = big - delta, other = rint(rng, 105, 899);
+        var ast = op('+', op('-', L(big), L(delta)), L(other));
+        var direct = pad(near + '+' + other);
+        return finishArith(meta, difficulty, {
+          prompt: tpl('计算 {d}，把 {n} 看成 {e} 更简便。得数是多少？', { d: direct, n: near, e: pad(Num.render(op('-', L(big), L(delta)))) }),
+          ast: ast,
+          equiv: [direct],
+          extra: [String(near)]
+        });
+      }
+    }
+  ];
+
+  /* 把配方挂进 BUILDERS / RULES（沿用现有注册结构，不绕开） */
+  ARITH_RECIPES.forEach(function (r) {
+    BUILDERS[r.id] = r.builder;
+    RULES[r.id] = r.rule;
+    delete r.builder;
+    delete r.rule;
+  });
+
 
   var RECIPES = [
     { id: 'param-linear-solution', topic: 'cnm_039', family: 'equation', difficulties: ['basic', 'standard'] },
@@ -814,7 +1827,7 @@
     { id: 'parabola-intercepts', topic: 'cnm_234', family: 'equation', difficulties: ['basic', 'standard'] },
     { id: 'parabola-distance', topic: 'cnm_234', family: 'equation', difficulties: ['standard', 'advanced'] },
     { id: 'quad-select-root', topic: 'cnm_h023', family: 'equation', difficulties: ['basic', 'standard', 'advanced'] }
-  ];
+  ].concat(ARITH_RECIPES);
 
   var TOPICS = [];
   var BY_TOPIC = {};
@@ -921,7 +1934,9 @@
   function gate(q, opts) {
     if (!q.prompt || !q.answer || !q.numberParts || !q.numberParts.length) return 'empty';
     if (typeof q.verify !== 'function' || q.verify() !== true) return 'selfcheck';
-    var inv = invReason(q);
+    /* 算术族与方程族的不变量口径不同：按 constructSpec.kind 分派，不混用 */
+    var kind = (q.constructSpec && q.constructSpec.kind) || 'roots';
+    var inv = (kind === 'num') ? arithInvReason(q) : invReason(q);
     if (inv) return inv;
     if (/\d/.test(q.explanation)) return 'explanation-digits';
     if (!checkLeak(q.explanation, q.answer)) return 'leak-clause';
@@ -1013,6 +2028,9 @@
     checkLeak: checkLeak,
     gate: gate,
     numbersIn: numbersIn,
-    isSupportedTopic: supports
+    isSupportedTopic: supports,
+    /* 算术族（卡1）：数值层是否可用 / 难度档口径（测试侧独立重算，不读这两个） */
+    numReady: arithReady,
+    ARITH_INVARIANT: ARITH_INVARIANT
   };
 });

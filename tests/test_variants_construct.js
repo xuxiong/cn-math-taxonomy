@@ -197,6 +197,177 @@ function loadLibrary() {
 }
 
 /* ================================================================
+ * 二·五、算术族（卡1）独立复算：不 require construct-num.js，用 BigInt 分数自己算
+ *
+ * 这是测试侧的第二套实现：递归下降解析题面里的算式 → BigInt 有理数求值 →
+ * 自己从表达式树重算「步数/括号层数/最大位数/进位退位」，再按卡面写死的档位判据
+ * 判 difficulty。构造器内部那套（AST + 调度场）算错、或者档位判错，这里都会红。
+ * ================================================================ */
+
+function ratGcd(a, b) { a = a < 0n ? -a : a; b = b < 0n ? -b : b; while (b) { const t = a % b; a = b; b = t; } return a; }
+function rat(n, d) {
+  n = typeof n === 'bigint' ? n : BigInt(n);
+  d = (d === undefined) ? 1n : (typeof d === 'bigint' ? d : BigInt(d));
+  if (d === 0n) throw new Error('零分母');
+  if (d < 0n) { n = -n; d = -d; }
+  const g = ratGcd(n, d) || 1n;
+  return { n: n / g, d: d / g };
+}
+const R_ADD = function (a, b) { return rat(a.n * b.d + b.n * a.d, a.d * b.d); };
+const R_SUB = function (a, b) { return rat(a.n * b.d - b.n * a.d, a.d * b.d); };
+const R_MUL = function (a, b) { return rat(a.n * b.n, a.d * b.d); };
+const R_DIV = function (a, b) { if (b.n === 0n) throw new Error('除以零'); return rat(a.n * b.d, a.d * b.n); };
+
+/** 全角数字转半角（题面排印全角时要和半角同口径） */
+function halfDigits(s) {
+  return String(s).replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); });
+}
+
+function lexArith(text) {
+  const s = halfDigits(text).replace(/[＋]/g, '+').replace(/[－−‐]/g, '-').replace(/[×·]/g, '*').replace(/[÷]/g, '/')
+    .replace(/[（]/g, '(').replace(/[）]/g, ')');
+  const out = [];
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (/\s/.test(ch)) { i++; continue; }
+    if (/[0-9]/.test(ch)) {
+      let j = i, buf = '';
+      while (j < s.length && /[0-9]/.test(s[j])) { buf += s[j]; j++; }
+      out.push({ t: 'num', v: BigInt(buf) });
+      i = j;
+      continue;
+    }
+    if ('+-*/'.indexOf(ch) >= 0) { out.push({ t: 'op', v: ch }); i++; continue; }
+    if (ch === '(' || ch === ')') { out.push({ t: ch }); i++; continue; }
+    throw new Error('lex: 不认识的字符 ' + ch + '（' + text + '）');
+  }
+  return out;
+}
+
+/** 递归下降：加减左结合、乘除左结合；返回表达式树与最大括号层数 */
+function parseArith(text) {
+  const toks = lexArith(text);
+  let i = 0, depth = 0, maxDepth = 0;
+  function expr() {
+    let node = term();
+    while (toks[i] && toks[i].t === 'op' && (toks[i].v === '+' || toks[i].v === '-')) {
+      const op = toks[i++].v;
+      node = { k: 'op', op: op, l: node, r: term() };
+    }
+    return node;
+  }
+  function term() {
+    let node = factor();
+    while (toks[i] && toks[i].t === 'op' && (toks[i].v === '*' || toks[i].v === '/')) {
+      const op = toks[i++].v;
+      node = { k: 'op', op: op, l: node, r: factor() };
+    }
+    return node;
+  }
+  function factor() {
+    const t = toks[i];
+    if (!t) throw new Error('算式不完整：' + text);
+    if (t.t === 'num') { i++; return { k: 'num', v: t.v }; }
+    if (t.t === '(') {
+      i++;
+      depth++;
+      if (depth > maxDepth) maxDepth = depth;
+      const node = expr();
+      if (!toks[i] || toks[i].t !== ')') throw new Error('括号不配对：' + text);
+      i++;
+      depth--;
+      return node;
+    }
+    throw new Error('意外的记号：' + JSON.stringify(t) + '（' + text + '）');
+  }
+  const root = expr();
+  if (i !== toks.length) throw new Error('算式尾部有多余记号：' + text);
+  return { root: root, brackets: maxDepth };
+}
+
+function evalArithTree(node) {
+  if (node.k === 'num') return rat(node.v, 1n);
+  const l = evalArithTree(node.l), r = evalArithTree(node.r);
+  if (node.op === '+') return R_ADD(l, r);
+  if (node.op === '-') return R_SUB(l, r);
+  if (node.op === '*') return R_MUL(l, r);
+  return R_DIV(l, r);
+}
+
+/** 进位/退位按十进制列逐位看（与自己实现的树结构一起算，不读构造器的 facts） */
+function digitCarryAdd(a, b) {
+  a = a < 0n ? -a : a; b = b < 0n ? -b : b;
+  while (a > 0n || b > 0n) {
+    if ((a % 10n) + (b % 10n) >= 10n) return true;
+    a /= 10n; b /= 10n;
+  }
+  return false;
+}
+function digitBorrowSub(a, b) {
+  a = a < 0n ? -a : a; b = b < 0n ? -b : b;
+  while (a > 0n || b > 0n) {
+    if ((a % 10n) < (b % 10n)) return true;
+    a /= 10n; b /= 10n;
+  }
+  return false;
+}
+
+function arithTreeFacts(t) {
+  let steps = 0, maxDigits = 0, carry = false, borrow = false;
+  /* 每一步按「实际参与运算的两个数」判进位/退位：复合子式也可能进位 */
+  function val(node) {
+    if (node.k === 'num') return node.v;
+    const l = val(node.l), r = val(node.r);
+    if (l === null || r === null) return null;
+    if (node.op === '+') return l + r;
+    if (node.op === '-') return l - r;
+    if (node.op === '*') return l * r;
+    if (r === 0n || l % r !== 0n) return null;
+    return l / r;
+  }
+  (function walk(node) {
+    if (node.k === 'num') {
+      const d = node.v.toString().replace('-', '').length;
+      if (d > maxDigits) maxDigits = d;
+      return;
+    }
+    steps++;
+    walk(node.l); walk(node.r);
+    const a = val(node.l), b = val(node.r);
+    if (a === null || b === null) return;
+    if (node.op === '+') { if (digitCarryAdd(a, b)) carry = true; }
+    else if (node.op === '-') { if (digitBorrowSub(a, b)) borrow = true; }
+    else if (node.op === '*') { if (a * b >= 10n) carry = true; }
+    else if (node.op === '/') { if (a / b >= 10n || b >= 10n) carry = true; }
+  })(t.root);
+  return { steps: steps, brackets: t.brackets, maxDigits: maxDigits, carry: carry, borrow: borrow };
+}
+
+/** 卡面 1.5 的档位判据（测试侧照抄卡面，不读构造器常量） */
+function arithTierOk(difficulty, f, ans) {
+  if (ans.n <= 0n) return false;
+  if (difficulty === 'basic') {
+    return f.steps === 1 && f.brackets === 0 && f.maxDigits <= 2 && !f.carry && !f.borrow && ans.n <= 100n * ans.d;
+  }
+  if (difficulty === 'standard') {
+    if (!(f.steps <= 2 && f.brackets <= 1 && f.maxDigits <= 3)) return false;
+    return f.steps === 2 || f.brackets === 1 || f.carry || f.borrow || f.maxDigits === 3;
+  }
+  if (!(f.steps <= 4 && f.brackets <= 2)) return false;
+  return f.steps >= 3 || f.brackets >= 2 || f.maxDigits >= 4 ||
+    (f.maxDigits >= 3 && (f.carry || f.borrow)) || (f.steps === 2 && f.maxDigits >= 3);
+}
+
+/* 卡面档位对应的数字规模（题面里的数 / 答案），测试侧自己定，不读构造器 ARITH_INVARIANT */
+const ARITH_INV = {
+  basic: { maxLeaf: 99, maxAnswer: 100 },
+  standard: { maxLeaf: 999, maxAnswer: 9999 },
+  advanced: { maxLeaf: 9999, maxAnswer: 999999 }
+};
+
+
+/* ================================================================
  * 三、单题门禁（全部从题面独立复算）
  * ================================================================ */
 
@@ -231,6 +402,69 @@ function gates(q, lib, opts) {
   /* 门 4：与全库撞题（题干规范化 + 骨架） */
   if (lib && lib.prompts.has(canon(q.prompt))) bad.push('collision-library');
   if (lib && lib.skeletons.has(skeleton(q.prompt))) bad.push('skeleton-library');
+
+  /* 算术族（kind==='num'）：门 1/2/3 全套独立复算，不套用方程族的不变量口径 */
+  if (kind === 'num') {
+    const ain = ARITH_INV[q.difficulty];
+    const form = spec.form || (/[，,]/.test(String(q.answer)) ? 'qr' : 'int');
+    if (form === 'int') {
+      if (!/^\d+$/.test(String(q.answer))) bad.push('shape-int');
+      if (answers.length !== 1 || !isFinite(answers[0])) bad.push('answer-format');
+      else if (answers[0] > ain.maxAnswer) bad.push('inv-answer-range');
+    } else if (form === 'qr') {
+      if (!/^(\d+)[，,](\d+)$/.test(String(q.answer))) bad.push('shape-qr');
+    } else bad.push('num-form');
+    if (typeof spec.primary !== 'string' || !spec.primary) bad.push('primary-missing');
+    let tree = null;
+    if (typeof spec.primary === 'string' && spec.primary) {
+      try { tree = parseArith(spec.primary); } catch (e) { bad.push('arith-parse'); }
+    }
+    if (tree) {
+      const leaves = new Set();
+      (function walk(n) { if (n.k === 'num') leaves.add(n.v.toString()); else { walk(n.l); walk(n.r); } })(tree.root);
+      let leafMax = 0n;
+      leaves.forEach(function (v) { const b = BigInt(v); if (b > leafMax) leafMax = b; });
+      if (leafMax > BigInt(ain.maxLeaf)) bad.push('inv-number-range');
+      const promptNums = new Set(canon(q.prompt).match(/\d+/g) || []);
+      leaves.forEach(function (v) { if (!promptNums.has(v)) bad.push('leaf-not-in-prompt'); });
+      const allowed = new Set(Array.from(leaves));
+      (spec.extra || []).forEach(function (v) { allowed.add(String(v)); });
+      promptNums.forEach(function (v) { if (!allowed.has(v)) bad.push('prompt-extra-number'); });
+      if (form === 'int') {
+        const val = evalArithTree(tree.root);
+        if (val.d !== 1n) bad.push('arith-not-int');
+        else if (val.n.toString() !== String(q.answer)) bad.push('arith-answer');
+        const f = arithTreeFacts(tree);
+        if (!arithTierOk(q.difficulty, f, val)) bad.push('arith-tier=' + JSON.stringify(f));
+        /* 构造器自报的 facts 必须与独立重算一致（口径漂移要被抓住） */
+        if (spec.facts && (spec.facts.steps !== f.steps || spec.facts.brackets !== f.brackets ||
+            spec.facts.maxDigits !== f.maxDigits || !!spec.facts.carry !== !!f.carry ||
+            !!spec.facts.borrow !== !!f.borrow)) {
+          bad.push('facts-drift=' + JSON.stringify(spec.facts) + 'vs' + JSON.stringify(f));
+        }
+      } else {
+        const nn = (String(spec.primary).match(/\d+/g) || []).map(BigInt);
+        if (nn.length !== 2 || nn[1] === 0n) bad.push('qr-primary');
+        else {
+          const qq = nn[0] / nn[1], rr = nn[0] % nn[1];
+          if (rr === 0n || rr >= nn[1]) bad.push('qr-range');
+          const m = /^(\d+)[，,](\d+)$/.exec(String(q.answer));
+          if (m && (BigInt(m[1]) !== qq || BigInt(m[2]) !== rr)) bad.push('arith-answer');
+        }
+      }
+      /* 门 1（运算律）：展开式/别名式必须与主式逐位等价 */
+      const vals = [evalArithTree(tree.root)];
+      (spec.equiv || []).forEach(function (ex) {
+        let t2 = null;
+        try { t2 = parseArith(ex); } catch (e) { bad.push('equiv-parse'); return; }
+        vals.push(evalArithTree(t2.root));
+      });
+      for (let i = 1; i < vals.length; i++) {
+        if (vals[0].n * vals[i].d !== vals[i].n * vals[0].d) bad.push('equiv-mismatch');
+      }
+    }
+    return bad;
+  }
 
   /* 门 3：不变量（数字规模按难度档，独立从题面抽数） */
   const inv = C.INVARIANT[q.difficulty];
@@ -423,19 +657,32 @@ const PLAN_CONSTRUCT = [
 ];
 
 function testStructure() {
-  eq(C.TOPICS.length, 19, '构造器覆盖的 topic 数应为 19');
+  const arithRecipes = C.RECIPES.filter(function (r) { return r.family === 'arithmetic'; });
+  const arithTopics = Array.from(new Set(arithRecipes.map(function (r) { return r.topic; })));
+  ok(arithRecipes.length > 0, '卡1 算术族配方必须已注册');
+  arithTopics.forEach(function (t) {
+    ok(PLAN_CONSTRUCT.indexOf(t) < 0, '算术族点不得混进方程族 19 点：' + t);
+  });
+  eq(C.TOPICS.length, 19 + arithTopics.length, '覆盖点数应为 方程族 19 + 算术族 ' + arithTopics.length);
   PLAN_CONSTRUCT.forEach(function (t) {
     ok(C.supports(t), 'plan 里的 construct 点必须被支持：' + t);
     ok(C.recipesFor(t).length >= 1, '每个点至少一个 recipe：' + t);
   });
-  C.TOPICS.forEach(function (t) {
+  // 方程族点集合必须与 plan 的 19 点完全一致；算术族点是卡1 新增，不属于 plan 的 19 点
+  const eqTopics = Array.from(new Set(C.RECIPES.filter(function (r) { return r.family !== 'arithmetic'; })
+    .map(function (r) { return r.topic; })));
+  eqTopics.forEach(function (t) {
     ok(PLAN_CONSTRUCT.indexOf(t) >= 0, '不得混入 plan 之外的 topic：' + t);
   });
+  eq(C.TOPICS.length - arithTopics.length, PLAN_CONSTRUCT.length, '方程族覆盖点数必须仍是 plan 的 19 点');
 
-  // 家族归属：cnm_221 配方法，其余 equation；不许出现 formParam
+  // 家族归属：cnm_221 配方法，其余方程族 equation；算术族一律 arithmetic；不许出现 formParam
   C.RECIPES.forEach(function (r) {
+    if (r.family === 'arithmetic') return;
     const want = r.topic === 'cnm_221' ? 'completeSquare' : 'equation';
     eq(r.family, want, 'recipe 家族归属：' + r.id);
+  });
+  C.RECIPES.forEach(function (r) {
     ok(r.difficulties.length >= 1, 'recipe 至少一个难度档：' + r.id);
   });
   const fams = new Set(C.RECIPES.map(function (r) { return r.family; }));
@@ -522,14 +769,14 @@ function recipeSpace() {
       n++;
       seen.add(q.difficulty + '|' + canon(q.prompt) + '||' + q.answer);
     }
-    rows.push({ id: r.id, space: seen.size, produced: n });
+    rows.push({ id: r.id, family: r.family, space: seen.size, produced: n });
   });
   return rows;
 }
 
 function testGates() {
   const lib = loadLibrary();
-  const { buckets } = sampleByRecipe(lib, 50, 'gate');
+  const { buckets } = sampleByRecipe(lib, 200, 'gate');
   const perRecipe = [];
   let totalQ = 0, totalBad = 0;
   const reasonCount = {};
@@ -548,11 +795,11 @@ function testGates() {
     totalQ += list.length;
     totalBad += bad;
     perRecipe.push({ id: r.id, topic: r.topic, family: r.family, n: list.length, bad: bad, reasons: localReasons });
-    ok(list.length >= 50, '每个族至少抽 50 道：' + r.id + ' 只有 ' + list.length);
+    ok(list.length >= 200, '每个族至少抽 200 道：' + r.id + ' 只有 ' + list.length);
     ok(bad === 0, '族内全部题目必须过 5 道门：' + r.id + ' 有 ' + bad + ' 道失败 ' + JSON.stringify(localReasons));
   });
 
-  ok(totalQ >= C.RECIPES.length * 50, '抽样总数应 ≥ 50×族数（实际 ' + totalQ + '）');
+  ok(totalQ >= C.RECIPES.length * 200, '抽样总数应 ≥ 200×族数（实际 ' + totalQ + '）');
   return { perRecipe: perRecipe, totalQ: totalQ, totalBad: totalBad, reasonCount: reasonCount, lib: lib };
 }
 
@@ -578,13 +825,25 @@ function testDifficultyTiers() {
 }
 
 function testCoverage(perRecipe) {
-  // plan 的 19 个点都实际覆盖到，且每个点都有 ≥50 道产出
+  // 方程族 19 个点（卡 A 口径，一条不许少）+ 算术族各自的点
   const covered = new Set();
-  perRecipe.forEach(function (r) { if (r.n >= 50 && r.bad === 0) covered.add(r.topic); });
+  perRecipe.forEach(function (r) {
+    if (r.family !== 'arithmetic' && r.n >= 50 && r.bad === 0) covered.add(r.topic);
+  });
   eq(covered.size, 19, '19 个 construct 点应全部覆盖');
   PLAN_CONSTRUCT.forEach(function (t) {
     ok(covered.has(t), 'plan 点必须有覆盖：' + t);
   });
+  const arithCovered = new Set();
+  perRecipe.forEach(function (r) {
+    if (r.family === 'arithmetic') {
+      ok(r.n >= 50 && r.bad === 0, '算术族配方 200 抽样必须全过门：' + r.id +
+        '（n=' + r.n + ' bad=' + r.bad + ' ' + JSON.stringify(r.reasons) + '）');
+      if (r.n >= 50 && r.bad === 0) arithCovered.add(r.topic);
+    }
+  });
+  ok(arithCovered.size > 0, '算术族至少覆盖 1 个点');
+  return covered;
   return covered;
 }
 
@@ -665,8 +924,16 @@ function main() {
   testDeterminism();
   const rep = testRepeatRate();
   const spaces = recipeSpace();
-  const minSpace = spaces.reduce(function (a, r) { return Math.min(a, r.space); }, Infinity);
-  ok(minSpace >= 300, '每个族的题面空间应 ≥ 300 道（最贫瘠的族只有 ' + minSpace + ' 道）');
+  /* 方程族：题面空间 ≥ 300（卡 A 口径，原样保留）。
+     算术族：基础事实集合天然有限（5 以内加法只有 10 个算式、7–9 乘法表只有 9 个），
+     不适用 300 的口径；这里只要求每个配方覆盖到自己的基础事实集合（≥10 道），
+     空间与重复率按族分别打印、分别报告。 */
+  const eqSpaces = spaces.filter(function (r) { return r.family !== 'arithmetic'; });
+  const arithSpaces = spaces.filter(function (r) { return r.family === 'arithmetic'; });
+  const minSpace = eqSpaces.reduce(function (a, r) { return Math.min(a, r.space); }, Infinity);
+  ok(minSpace >= 300, '方程族每个配方的题面空间应 ≥ 300 道（最贫瘠的族只有 ' + minSpace + ' 道）');
+  const minArithSpace = arithSpaces.reduce(function (a, r) { return Math.min(a, r.space); }, Infinity);
+  ok(minArithSpace >= 10, '算术族每个配方至少要覆盖其基础事实集合（≥10 道；最少的族只有 ' + minArithSpace + ' 道）');
   const g = testGates();
   const tiers = testDifficultyTiers();
   const covered = testCoverage(g.perRecipe);

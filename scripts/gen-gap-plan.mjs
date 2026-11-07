@@ -29,6 +29,9 @@
  *   construct   命中闭式族名表（SQUARE / EQUATION_STRONG / EQUATION_WEAK+同章有「方程」）
  *               且该点至少有一道带 verify 表达式的 numeric 题，且题型不是应用题/建模题
  *               ——即「题面 ↔ 答案」的反解关系在现库里已被证实过，可以答案先行反推题面。
+ *               卡1 追加：命中 FAMILY_RECIPES（算术运算族，配方在 diagnose/construct.js 里）
+ *               也算 construct —— 新族靠「配方存在」准入，不要求现库有带 verify 的 numeric 题；
+ *               上面方程族的三条口径一字未改。
  *   verify      其余可机验的知识点：答案可求值，但题面不是模板（应用题、单位换算……）。
  *
  * verifier：
@@ -73,6 +76,23 @@ const ROOT = path.resolve(HERE, '..');
 
 /* 验证门复用 O3 的纯函数层（零网络零 DOM）。只用来做「现有题属哪一族」的证据判定。 */
 const LLM_EVAL = require(path.join(ROOT, 'diagnose', 'llm-eval.js'));
+
+/* 卡1：算术运算族（S1–S4）的族表 —— topicId → 配方 id 列表。
+ * 唯一真源是 diagnose/construct.js 的配方表：这里只按 family === 'arithmetic' 投影，
+ * 不在脚本里另抄一份 id，改配方不会两边漂移。
+ * 新族准入 = 「配方存在」：不要求现库里有带 verify 的 numeric 题（方程族那条口径原样保留）。 */
+const CONSTRUCT = require(path.join(ROOT, 'diagnose', 'construct.js'));
+
+export const FAMILY_RECIPES = (() => {
+  const out = {};
+  for (const r of CONSTRUCT.RECIPES) {
+    if (r.family !== 'arithmetic') continue;
+    if (!out[r.topic]) out[r.topic] = [];
+    out[r.topic].push(r.id);
+  }
+  for (const k of Object.keys(out)) out[k].sort();
+  return out;
+})();
 
 export const SCHEMA = 'gap-plan/1';
 
@@ -191,10 +211,15 @@ export function planForTopic(topic, questions) {
     (q) => q.type === 'numeric' && typeof q.verify === 'string' && q.verify.trim() !== ''
   );
   const family = familyOf(topic);
+  const arithRecipes = FAMILY_RECIPES[topic.id] || [];
 
   let strategy;
   let verifier;
-  if (gradable.length === 0) {
+  if (arithRecipes.length) {
+    /* 卡1 新族：配方存在即可构造，不看现库有没有带 verify 的 numeric 题（放宽准入）。 */
+    strategy = 'construct';
+    verifier = 'arithmetic';
+  } else if (gradable.length === 0) {
     strategy = 'human-only';
     verifier = null;
   } else if (family && numericWithVerify && !NON_TEMPLATE_TYPES.has(topic.type)) {
@@ -215,7 +240,7 @@ export function planForTopic(topic, questions) {
     strategy,
     verifier,
     standards: { exact: links.exact, inferred: links.inferred, total: links.total },
-    family,
+    family: family || (arithRecipes.length ? 'arithmetic' : null),
   };
 }
 
@@ -264,7 +289,7 @@ function emptyStrategyBuckets() {
     verify: 0,
     'human-only': 0,
     gaps: { 'no-challenge': 0, 'no-numeric': 0, 'no-figure': 0, 'no-standards': 0 },
-    verifier: { equation: 0, completeSquare: 0, formParam: 0, 'numeric-compare': 0, none: 0 },
+    verifier: { equation: 0, completeSquare: 0, formParam: 0, arithmetic: 0, 'numeric-compare': 0, none: 0 },
   };
 }
 
@@ -292,7 +317,7 @@ export function buildPlan({ topics, questions, stats, edges }) {
     total: core.length,
     excludedExternal: topics.length - core.length,
     strategy: { construct: 0, verify: 0, 'human-only': 0 },
-    verifier: { equation: 0, completeSquare: 0, formParam: 0, 'numeric-compare': 0, none: 0 },
+    verifier: { equation: 0, completeSquare: 0, formParam: 0, arithmetic: 0, 'numeric-compare': 0, none: 0 },
     gaps: { 'no-challenge': 0, 'no-numeric': 0, 'no-figure': 0, 'no-standards': 0 },
     bySubject: {},
     byGrade: {},
@@ -413,7 +438,8 @@ export function formatSummary(plan) {
   lines.push('gap-plan: ' + plan.total + ' 个知识点 → strategy construct=' + s.strategy.construct
     + ' verify=' + s.strategy.verify + ' human-only=' + s.strategy['human-only']);
   lines.push('verifier: equation=' + s.verifier.equation + ' completeSquare=' + s.verifier.completeSquare
-    + ' formParam=' + s.verifier.formParam + ' numeric-compare=' + s.verifier['numeric-compare']
+    + ' formParam=' + s.verifier.formParam + ' arithmetic=' + s.verifier.arithmetic
+    + ' numeric-compare=' + s.verifier['numeric-compare']
     + ' null=' + s.verifier.none);
   lines.push('gaps: ' + GAP_NAMES.map((g) => g + '=' + s.gaps[g]).join(' '));
   lines.push('课标: 无 exact 锚点 ' + s.standardsWithoutExact + '，一条课标都没有 ' + s.standardsWithoutAny);
