@@ -61,7 +61,13 @@
    * 下面这些模块不在 index.html 的 <script> 链上（首屏脚本 403KB → ≈85KB），
    * 用到时才由 Lazy.load 按依赖顺序注入。依赖顺序只写在这里，调用点不要自己拼列表。
    * 每个使用点都先 Lazy.load 再调用；Lazy 内部按 src 去重，重复调用零成本。 */
-  const LAZY_EXPLAIN = ['explain.js'];                                       // LLM 讲解（llm-config.js 由 explainPanel 按需先补载）
+  /* 卡 t_d85953d7：llm-config.js 必须排在 explain.js 前面 —— explain.js 在模块顶层就
+   * 快照 CFG/PROXY/MODEL（CFG 为空 → 永久 PROXY=null）。卡 D 给 renderQuestion 顶部加了
+   * ensureAskSession，它在「作答」屏幕（还没人加载配置）就会 Lazy.load 这一组，
+   * 于是 explain.js 先到货、拿到 CFG=null，点「不会」后 generate 直接抛
+   * 「LLMConfig 未加载」并被 failInfo 归成 network（学生看到「网络没通」，一次请求都没发）。
+   * 依赖顺序只写在 LAZY_* 组里：把配置放进来，任何调用点都不会再踩这个顺序。 */
+  const LAZY_EXPLAIN = ['llm-config.js', 'explain.js'];                      // LLM 讲解（explain 依赖 llm-config）
   const LAZY_LAB = ['funclab.js', 'geomlab.js', 'labmatch.js', 'chatgraph.js'];  // 画板 + 追问图校验（labmatch/chatgraph 依赖 funclab）
   const LAZY_SHARE = ['../assets/vendor/qrcode.js', 'share.js'];             // 分享图（share 依赖 qrcode）
   const LAZY_PATH = [                                                        // 先修路径图（dagre 依赖 cytoscape）

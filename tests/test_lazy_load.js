@@ -291,7 +291,7 @@ test('app.js：每个 window.Funclab/Explain/ChatGraph/ShareCard/cytoscape 调�
 
 test('app.js：懒加载依赖顺序写在一处，且覆盖全部被移出的模块', function () {
   const groups = {
-    LAZY_EXPLAIN: ['explain.js'],
+    LAZY_EXPLAIN: ['llm-config.js', 'explain.js'],
     LAZY_LAB: ['funclab.js', 'geomlab.js', 'labmatch.js', 'chatgraph.js'],
     LAZY_SHARE: ['../assets/vendor/qrcode.js', 'share.js'],
     LAZY_PATH: ['../assets/vendor/cytoscape.min.js', '../assets/vendor/dagre.min.js', '../assets/vendor/cytoscape-dagre.js'],
