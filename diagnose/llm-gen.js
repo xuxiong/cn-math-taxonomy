@@ -25,18 +25,20 @@
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = factory(
       require('./llm-recipes.js'), require('./llm-gates.js'),
-      require('./llm-config.js'), require('./llm-gateway.js')
+      require('./llm-config.js'), require('./llm-gateway.js'),
+      require('./textfmt.js')
     );
   } else {
-    root.DiagLLMGen = factory(root.DiagLLMRecipes, root.DiagLLMGates, root.LLMConfig, root.DiagLLMGateway);
+    root.DiagLLMGen = factory(root.DiagLLMRecipes, root.DiagLLMGates, root.LLMConfig, root.DiagLLMGateway, root.CnmTextFmt);
   }
-})(typeof self !== 'undefined' ? self : this, function (__recipes, __gates, __cfg, __gw) {
+})(typeof self !== 'undefined' ? self : this, function (__recipes, __gates, __cfg, __gw, __textfmt) {
   'use strict';
 
   var recipes = __recipes;
   var gates = __gates;
   var CFG = __cfg || null;
   var gw = __gw || null;
+  var textfmt = __textfmt || null;
 
   var VERSION = 1;
 
@@ -87,6 +89,31 @@
     try { j = JSON.parse(m[0]); } catch (e) { return { ok: false, candidate: null, reason: 'bad-json' }; }
     if (!j || typeof j !== 'object') return { ok: false, candidate: null, reason: 'not-an-object' };
     return { ok: true, candidate: j, reason: 'parsed' };
+  }
+
+  /**
+   * 模型文本 → 展示形态（卡 t_42e5978b）。
+   * 只洗「上屏字段」：prompt / answer / explanation / options。
+   * verify 与 verifyType 不洗 —— verify 是给 llm-eval 求值用的机器表达式，
+   * 把 `x^2` 洗成 `x²` 会让求值白名单只认 ASCII 的那半边口径漂移（见 textfmt.js 文件头）。
+   * @param {object} candidate
+   * @returns {object} 浅拷贝（不改模型返回的原对象）
+   */
+  function normalizeCandidate(candidate) {
+    if (!candidate || typeof candidate !== 'object') return candidate;
+    if (!textfmt || typeof textfmt.normalize !== 'function') return candidate;
+    var out = {};
+    for (var k in candidate) if (Object.prototype.hasOwnProperty.call(candidate, k)) out[k] = candidate[k];
+    ['prompt', 'answer', 'explanation'].forEach(function (f) {
+      if (typeof out[f] === 'string') out[f] = textfmt.normalize(out[f]);
+    });
+    if (Array.isArray(out.options)) {
+      out.options = out.options.map(function (o) { return typeof o === 'string' ? textfmt.normalize(o) : o; });
+    }
+    if (Array.isArray(out.choices)) {
+      out.choices = out.choices.map(function (o) { return typeof o === 'string' ? textfmt.normalize(o) : o; });
+    }
+    return out;
   }
 
   /* ================================================================
@@ -241,6 +268,11 @@
               _recordReject(recipe, ctx, 'transport', parsed.reason);
               return attemptOnce(n + 1);
             }
+            /* 文本规范化出口（卡 t_42e5978b）：模型文本先洗成展示形态，再进七道门。
+             * 顺序理由：门 4/5（去重/撞题骨架）比的是题面文本，若门看未清洗文本、上屏看清洗后
+             * 文本，两边口径不一致 —— 同一道题写成 x^2 与 x² 会被当成两道。规范化会改文本，
+             * 所以「答案是否出现在题面」的泄露判定必须在清洗之后再跑一次（门 6 在 runGates 里）。 */
+            var cand = normalizeCandidate(parsed.candidate);
             var gateCtx = {
               recipe: recipe,
               topic: ctx.topic,
@@ -249,14 +281,14 @@
               batch: batch,
               pool: _poolIndex(topicId)
             };
-            var r = gates.runGates(parsed.candidate, gateCtx);
+            var r = gates.runGates(cand, gateCtx);
             if (!r.ok) {
               _recordReject(recipe, ctx, r.gate, r.reason);
               return attemptOnce(n + 1);
             }
             var pool = _poolIndex(topicId);
             var index = pool.questions.length;
-            var q = buildQuestion(recipe, parsed.candidate, ctx, {
+            var q = buildQuestion(recipe, cand, ctx, {
               index: index, seed: seed, checks: r.checks, now: now()
             });
             pool.questions.push(q);

@@ -210,49 +210,46 @@
       + (q.explanation ? '\n可参考的标准解析（reveal 里可以展开它，但不要照抄）：' + q.explanation : '');
   }
 
-  /** LaTeX 残留转纯文本：\sqrt{5} -> √5、\frac{1}{2} -> 1/2、\pm -> ±。
-   * 防模型不听话（prompt 已禁 LaTeX，这里是展示层兜底）。
+  /* ---------------- 文本规范化（唯一实现在 diagnose/textfmt.js） ----------------
+   * 卡 t_42e5978b：cleanLatex / cleanMarkdown 搬到 diagnose/textfmt.js，讲解三步、
+   * 追问气泡、卡 C 出题管线（llm-gen→llm-gates）三处共用同一份规则。
+   * 本文件只做薄委托，不许在这里再写一份实现（tests/test_textfmt.js 有源码级断言）。
+   * textfmt 未加载时降级为「原样返回」并告警一次 —— 模型文本仍能上屏，只是不洗。 */
+  let _textfmt = null;
+  let _textfmtWarned = false;
+  function textfmt() {
+    if (_textfmt) return _textfmt;
+    if (typeof CnmTextFmt !== 'undefined' && CnmTextFmt) return (_textfmt = CnmTextFmt);
+    if (typeof require === 'function') {
+      try { return (_textfmt = require('./textfmt.js')); } catch (e) { /* 落到下面的降级 */ }
+    }
+    if (!_textfmtWarned && typeof console !== 'undefined' && console.warn) {
+      _textfmtWarned = true;
+      console.warn('[explain] CnmTextFmt 未加载：模型文本不做规范化（检查 diagnose/index.html 的 script 顺序）');
+    }
+    return null;
+  }
+
+  /**
+   * LaTeX 残留转纯文本：\frac{a}{b} -> (a)/(b)、\sqrt{x} -> √x、\sqrt[n]{x} -> n 次根号 x、\pm -> ±，
+   * 幂写法收口（x^2 -> x²）。实现见 diagnose/textfmt.js。
    * @param {string} text
    * @returns {string}
    */
   function cleanLatex(text) {
-    let s = String(text || '');
-    // 先处理分式（嵌套在最外层，先转 \frac{a}{b} -> a/b）
-    let prev = '';
-    while (prev !== s) {
-      prev = s;
-      s = s.replace(/\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '($1)/($2)');
-    }
-    // 再处理根式 \sqrt[n]{x} / \sqrt{x} -> √x
-    s = s.replace(/\\sqrt\s*\[([^\]]*)\]\s*\{([^{}]*)\}/g, '√[$1]($2)')
-         .replace(/\\sqrt\s*\{([^{}]*)\}/g, '√$1');
-    // 其余常见命令：\pm ±、\times ×、\cdot ·、\div ÷、\le ≤、\ge ≥、\neq ≠、\approx ≈、\infty ∞、\pi π
-    // 注意不能只用 \b（\pm5 中 pm 后是数字 5，仍是单词字符，\b 不成立）；用 (?![a-zA-Z]) 兜住
-    s = s.replace(/\\(pm|times|cdot|div|le|ge|neq|approx|infty|pi)(?![a-zA-Z])/g, function (m, name) {
-      return { pm: '±', times: '×', cdot: '·', div: '÷', le: '≤', ge: '≥', neq: '≠', approx: '≈', infty: '∞', pi: 'π' }[name];
-    });
-    // 其余未知反斜杠命令直接剥掉反斜杠（\alpha -> alpha，\x -> x）
-    s = s.replace(/\\([a-zA-Z]+)/g, '$1');
-    // 去掉裸花括号（\sqrt 等的残留 { }）
-    s = s.replace(/[{}]/g, '');
-    return s;
+    const T = textfmt();
+    return T ? T.cleanLatex(text) : String(text == null ? '' : text).trim();
   }
 
   /**
-   * 清理 LLM 输出里的 Markdown 残留（模型即使被要求纯文本也可能输出 **、`、# 等）。
-   * 孩子看不懂这些标记，展示层必须兜底剥掉：
-   *   **xxx** / *xxx* -> xxx（去掉星号）；`xxx` -> xxx；行首 #、> 剥掉。
+   * 清理 LLM 输出里的 Markdown / LaTeX / 幂写法残留（模型即使被要求纯文本也可能输出 **、`、#）。
+   * 孩子看不懂这些标记，展示层必须兜底。实现见 diagnose/textfmt.js。
    * @param {string} text
    * @returns {string}
    */
   function cleanMarkdown(text) {
-    return cleanLatex(String(text || ''))
-      .replace(/\*\*([^*]*)\*\*/g, '$1')   // **加粗** -> 加粗
-      .replace(/\*([^*]*)\*/g, '$1')        // *斜体* -> 斜体
-      .replace(/`([^`]*)`/g, '$1')          // `代码` -> 代码
-      .replace(/^[#>]+\s*/gm, '')           // 行首 # / >
-      .replace(/^[-*+]\s+/gm, '')           // 行首列表符
-      .trim();
+    const T = textfmt();
+    return T ? T.normalize(text) : String(text == null ? '' : text).trim();
   }
 
   function parseSteps(content) {

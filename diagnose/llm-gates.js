@@ -70,7 +70,14 @@
 
   /** 题面里出现的数字（字符串形式，去重排序）—— 门 2 numeric 的反自证用 */
   function numbersOf(s) {
-    var m = String(s == null ? '' : s).match(/\d+(?:\.\d+)?/g) || [];
+    /* 上标先在前后加空格再折叠：`x²-4=0` 要能看出 2，`10⁶` 要能看出 10 和 6 两个数
+     * （规范化出口 textfmt 会把 x^2 洗成 x²，若这里不认上标，门 2 会看不到题面里的指数）。 */
+    var folded = String(s == null ? '' : s).replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g, function (run) {
+      var digits = '';
+      for (var i = 0; i < run.length; i++) digits += '⁰¹²³⁴⁵⁶⁷⁸⁹'.indexOf(run[i]);
+      return ' ' + digits + ' ';
+    });
+    var m = folded.match(/\d+(?:\.\d+)?/g) || [];
     var seen = {};
     var out = [];
     for (var i = 0; i < m.length; i++) {

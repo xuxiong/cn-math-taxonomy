@@ -26,6 +26,18 @@
 
   var WHITELIST = /^[0-9x+\-*/().^ ]+$/;
 
+  /* 上标数字 → ^<幂>。必须在 NFKC 之前做：NFKC 会把 ² 变成普通数字 2，丢掉幂次含义。
+   * 全 10 个上标都转（不只 ² ³）：文本规范化出口 diagnose/textfmt.js 会把 x^4 → x⁴、x^10 → x¹⁰
+   * 上屏，求值/解析层必须认同一套字形，否则「门看到的题面」和「学生看到的题面」口径不一致。 */
+  var SUP_DIGITS = '⁰¹²³⁴⁵⁶⁷⁸⁹';
+  function unsuperscript(s) {
+    return String(s).replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g, function (run) {
+      var digits = '';
+      for (var i = 0; i < run.length; i++) digits += SUP_DIGITS.indexOf(run[i]);
+      return '^' + digits;
+    });
+  }
+
   /**
    * 安全求值表达式：在给定 x 值处计算 expr 的数值。
    * 白名单过滤 → ²→**2 / √→Math.sqrt 转换 → 检查无字母 → new Function 执行。
@@ -41,8 +53,8 @@
 
     /* NFKC 归一化 + 统一符号 */
     /* 注意：NFKC 会把 ²(U+00B2) 变成普通数字 2，丢失幂次含义。
-     * 所以先转换 ²→**2, ³→**3，再 NFKC。 */
-    s = s.replace(/²/g, '**2').replace(/³/g, '**3');
+     * 所以先把上标数字整段转成 ^<幂>，再 NFKC。 */
+    s = unsuperscript(s);
     s = s.normalize('NFKC');
     s = s.replace(/[−‐-―﹣]/g, '-').replace(/[×·⋅∙]/g, '*').replace(/÷/g, '/');
     s = s.replace(/\s+/g, '');
@@ -165,8 +177,8 @@
     var s = String(str == null ? '' : str).trim();
     if (!s) return null;
 
-    /* 先转 ²→^2, ³→^3 再 NFKC，否则 NFKC 把 ² 变成数字 2 */
-    s = s.replace(/²/g, '^2').replace(/³/g, '^3');
+    /* 先转上标→^<幂> 再 NFKC，否则 NFKC 把 ² 变成数字 2 */
+    s = unsuperscript(s);
     s = s.normalize('NFKC');
     s = s.replace(/[−‐-―﹣]/g, '-').replace(/[×·⋅∙]/g, '*').replace(/÷/g, '/');
     s = s.replace(/\s+/g, '');
@@ -215,7 +227,7 @@
     if (!prompt) return null;
     var s = String(prompt).trim();
     /* 先转 ²→^2, ³→^3 再 NFKC，否则 NFKC 把 ² 变成数字 2 */
-    s = s.replace(/²/g, '^2').replace(/³/g, '^3');
+    s = unsuperscript(s);
     s = s.normalize('NFKC');
     s = s.replace(/[−‐-―﹣]/g, '-');
     s = s.replace(/\s+/g, '');
@@ -335,7 +347,7 @@
   function verifyCompletingSquare(prompt, answer) {
     /* 从题面提取一次项系数 b：找 x²+bx 或 x²-bx 中的 b */
     /* 注意：先转 ²→^2 再 NFKC，否则 NFKC 把 ² 变成数字 2 */
-    var s = String(prompt || '').replace(/²/g, '^2').normalize('NFKC').replace(/[−‐-―﹣]/g, '-').replace(/\s+/g, '');
+    var s = unsuperscript(prompt || '').normalize('NFKC').replace(/[−‐-―﹣]/g, '-').replace(/\s+/g, '');
 
     /* 提取 x²+bx 中的 b：匹配 x^2 后跟 [+-]\d+x */
     var m = /x\^2([+-]\d+)x/.exec(s);
