@@ -71,12 +71,14 @@ function buildFor(topic, opts) {
   });
 }
 
-/* 一份能过全部 5 道闸门的讲解（1-2 年级档：每句 ≤12 字，各段 ≤40/40/60/70/40） */
+/* 一份能过全部闸门的讲解（1-2 年级档：每句 ≤12 字，各段 ≤40/40/60/70/40）。
+ * 卡 A′ 起 early 档禁用符号算式、demo 必须是生活场景，所以 demo 用生活句而不用 2+1=3
+ * （算式类正例另用 P006_PRIMARY 隔离，见第 8 节）。 */
 const GOOD = {
   what: '加法就是把两部分合起来。',
   why: '买东西算钱要用加法。',
   how: '先数第一堆。再数第二堆。从第一个数接着数。',
-  demo: '2+1=3。一共 3 朵。',
+  demo: '妈妈买了 3 个苹果。一共 3 个。',
   trap: '别把两堆数丢了。'
 };
 function segsWith(patch) {
@@ -205,10 +207,14 @@ test('levelOf：10、16 → high', () => {
 });
 
 test('limitsOf：幼儿级 40/40/60/70/40，追问 60，每句 12', () => {
+  /* 卡 A′：多返回 forbidSymbols / requireRealLife 两键；这里仍用整对象 deepStrictEqual
+   * （比只挑三键更强），只是把两键按 early=true 写进字面量。 */
   assert.deepStrictEqual(T.limitsOf('early'), {
     segMax: { what: 40, why: 40, how: 60, demo: 70, trap: 40 },
     replyMax: 60,
-    sentenceMax: 12
+    sentenceMax: 12,
+    forbidSymbols: true,
+    requireRealLife: true
   });
 });
 
@@ -216,7 +222,9 @@ test('limitsOf：小学高年级 60/60/90/110/60，追问 120，每句 20', () =
   assert.deepStrictEqual(T.limitsOf('primary'), {
     segMax: { what: 60, why: 60, how: 90, demo: 110, trap: 60 },
     replyMax: 120,
-    sentenceMax: 20
+    sentenceMax: 20,
+    forbidSymbols: false,
+    requireRealLife: false
   });
 });
 
@@ -224,7 +232,9 @@ test('limitsOf：初中 80/80/120/150/80，追问 150，无句长限制', () => 
   assert.deepStrictEqual(T.limitsOf('middle'), {
     segMax: { what: 80, why: 80, how: 120, demo: 150, trap: 80 },
     replyMax: 150,
-    sentenceMax: null
+    sentenceMax: null,
+    forbidSymbols: false,
+    requireRealLife: false
   });
 });
 
@@ -232,7 +242,9 @@ test('limitsOf：高中 100/80/140/160/100，追问 180，无句长限制', () =
   assert.deepStrictEqual(T.limitsOf('high'), {
     segMax: { what: 100, why: 80, how: 140, demo: 160, trap: 100 },
     replyMax: 180,
-    sentenceMax: null
+    sentenceMax: null,
+    forbidSymbols: false,
+    requireRealLife: false
   });
 });
 
@@ -334,6 +346,10 @@ test('prereqsOf：max 生效且去重', () => {
 console.log('\n--- buildInputs ---');
 
 const P006 = buildFor(topicById('cnm_p006'));
+
+/* 卡 A′：early 档禁符号算式，而 G3（算式一致性）的正例必须带符号算式才可能成立 →
+ * 用同一份素材把语言档抬到小学高年级来隔离早期档规则。题面/答案/白名单一个字不改。 */
+const P006_PRIMARY = Object.assign({}, P006, { level: 'primary', limits: T.limitsOf('primary') });
 
 test('buildInputs：基本字段与学段档（cnm_p006 / 1 年级 → early）', () => {
   assert.strictEqual(P006.topicId, 'cnm_p006');
@@ -587,7 +603,7 @@ test('G2：长度 < 4 字的知识点名不参与匹配（不误伤）', () => {
 });
 
 test('G3 正例：算式操作数来自题面、结果等于题库答案 → 通过', () => {
-  const r = T.checkExplain(segsWith({ demo: '2+1=3。一共 3 朵。' }), P006);
+  const r = T.checkExplain(segsWith({ demo: '2+1=3。一共 3 朵。' }), P006_PRIMARY);
   assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
 });
 
@@ -626,11 +642,14 @@ test('G4 负例：引用本点没有的课标编号 → 拒', () => {
   assert.ok(gates(r).indexOf('G4') >= 0);
 });
 
-test('G4：无课标点跳过本闸（乱写编号也不拒）', () => {
+test('G4：无课标点跳过本闸（乱写编号不报 G4）', () => {
   const inputs = buildFor(topicById('cnm_130'));
   const segs = segsWith({ why: '课标 cms-2022:9.XX.99 要求这样。', demo: '把两堆合起来数一遍。' });
   const r = T.checkExplain(segs, inputs);
-  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
+  /* 卡 A′ 起 G7 会把这个编造编号里的 2022 / 99 另报一条（数字白名单独立生效）；
+   * 本闸（G4）在无课标点必须沉默 —— 断言的就是这一条。 */
+  assert.ok(gates(r).indexOf('G4') < 0, '无课标点不该报 G4：' + JSON.stringify(r.reasons));
+  assert.ok(gates(r).indexOf('G7') >= 0, '编造编号里的数应当被 G7 拦住：' + JSON.stringify(r.reasons));
 });
 
 test('G5 负例：** 加粗 / 反引号 / 反斜杠命令 / 省略号 各自都拒', () => {
@@ -694,7 +713,8 @@ test('G2r 负例：追问回答引入白名单外知识点 → 拒', () => {
 });
 
 test('G3r 正例：允许引用学生自己给的数，算式成立 → 通过', () => {
-  const r = T.checkReply('你说的 4+5=9 是对的。', P006);
+  /* 卡 A′ 起 G7r 只放行「本轮学生问题里出现过的数」，所以学生自己贴的数要在 question 里。 */
+  const r = T.checkReply('你说的 4+5=9 是对的。', P006, '我算得 4 加 5 是 9，对吗？');
   assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
 });
 
@@ -705,7 +725,7 @@ test('G3r 负例：算式与结果对不上 → 拒', () => {
 });
 
 test('G3r：追问轮不做「操作数必须在题面」的检查（学生自带的数允许）', () => {
-  const r = T.checkReply('9+1=10。', P006);
+  const r = T.checkReply('9+1=10。', P006, '9 加 1 是几？');
   assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
 });
 
@@ -904,7 +924,161 @@ test('pruneCache：没到上限 → 一条不删', () => {
 });
 
 /* ================================================================
- * 12. 零网络收尾
+ * 12. 卡 A′：早期档两条（禁符号 / 生活场景）+ G7 / G7r 数字白名单
+ * ================================================================ */
+
+console.log('\n--- 卡 A′：早期档两条 + G7 / G7r 数字白名单 ---');
+
+/* 合成点：素材里只出现 1 与 9（小学高年级档 → 不受早期档规则干扰，单测 G7） */
+const DIGIT_TOPIC = {
+  id: 'cnm_test_digit', name: '测试数字知识点', grade: 5, semester: '上', chapter: '测试章节四',
+  description: '素材里只出现 1 与 9 这两个数。', mastery_criteria: ['测试标准五'], standards: [], type: 'conceptual'
+};
+const DIGIT_INPUTS = T.buildInputs({
+  topic: DIGIT_TOPIC, questions: [], standardsById: {}, deps: [], topics: [DIGIT_TOPIC]
+});
+
+test('limitsOf：forbidSymbols / requireRealLife 只在 early 档为 true（四档逐一取值）', () => {
+  assert.strictEqual(T.limitsOf('early').forbidSymbols, true);
+  assert.strictEqual(T.limitsOf('early').requireRealLife, true);
+  ['primary', 'middle', 'high'].forEach((lv) => {
+    assert.strictEqual(T.limitsOf(lv).forbidSymbols, false, lv + ' 不该禁符号');
+    assert.strictEqual(T.limitsOf(lv).requireRealLife, false, lv + ' 不该要求生活场景');
+  });
+  /* 未知档走 primary 兜底，两键也必须 false */
+  assert.strictEqual(T.limitsOf('unknown').forbidSymbols, false);
+  assert.strictEqual(T.limitsOf(null).requireRealLife, false);
+});
+
+test('buildInputs：limits 带上两键（early 点 true），既有三键一个不改', () => {
+  assert.strictEqual(P006.limits.forbidSymbols, true);
+  assert.strictEqual(P006.limits.requireRealLife, true);
+  assert.deepStrictEqual(P006.limits.segMax, { what: 40, why: 40, how: 60, demo: 70, trap: 40 });
+  assert.strictEqual(P006.limits.replyMax, 60);
+  assert.strictEqual(P006.limits.sentenceMax, 12);
+  assert.strictEqual(MID_INPUTS.limits.forbidSymbols, false);
+  assert.strictEqual(MID_INPUTS.limits.requireRealLife, false);
+});
+
+test('G1 早期档符号负例：讲解含 3 + 2 = 5 → 拒；同一段在 primary 档不因符号被拒', () => {
+  const segs = segsWith({ demo: '3 + 2 = 5。一共 5 个。' });
+  const early = T.checkExplain(segs, P006);
+  assert.strictEqual(early.ok, false);
+  const g1 = early.reasons.filter((x) => x.gate === 'G1' && /符号算式/.test(x.why));
+  assert.strictEqual(g1.length, 1, JSON.stringify(early.reasons));
+  assert.ok(g1[0].why.indexOf('+') >= 0 && g1[0].why.indexOf('=') >= 0, g1[0].why);
+
+  const prim = T.checkExplain(segs, P006_PRIMARY);
+  assert.ok(!prim.reasons.some((x) => /符号算式/.test(x.why)),
+    'primary 档不许因符号被拒：' + JSON.stringify(prim.reasons));
+});
+
+test('G1 早期档符号：全角 ＋ － ＝ 与括号同样命中', () => {
+  const r = T.checkExplain(segsWith({ demo: '３＋２＝５。' }), P006);
+  const g1 = r.reasons.filter((x) => x.gate === 'G1' && /符号算式/.test(x.why));
+  assert.strictEqual(g1.length, 1, JSON.stringify(r.reasons));
+  assert.ok(g1[0].why.indexOf('＋') >= 0 && g1[0].why.indexOf('＝') >= 0, g1[0].why);
+
+  const paren = T.checkExplain(segsWith({ demo: '先算（１加２）。' }), P006);
+  assert.ok(paren.reasons.some((x) => x.gate === 'G1' && /符号算式/.test(x.why)),
+    JSON.stringify(paren.reasons));
+});
+
+test('G1 早期档符号：符号不在 demo 段也要拦（查 5 段全文）', () => {
+  const r = T.checkExplain(segsWith({ how: '先数第一堆。再用 5-2 的办法。' }), P006);
+  assert.ok(r.reasons.some((x) => x.gate === 'G1' && /符号算式/.test(x.why)), JSON.stringify(r.reasons));
+});
+
+test('G1 早期档生活场景负例：demo 纯抽象（三加二等于五）→ 拒', () => {
+  const r = T.checkExplain(segsWith({ demo: '三加二等于五。' }), P006);
+  assert.strictEqual(r.ok, false);
+  assert.ok(r.reasons.some((x) => x.gate === 'G1' && /生活场景/.test(x.why)), JSON.stringify(r.reasons));
+});
+
+test('G1 早期档生活场景正例：demo 含「买 / 个 / 一共」→ 通过', () => {
+  const r = T.checkExplain(segsWith({ demo: '妈妈买了 3 个苹果。一共 3 个。' }), P006);
+  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
+});
+
+test('G7 正例：讲解只用素材里出现过的数 → 通过', () => {
+  const r = T.checkExplain(segsWith({ demo: '2+1=3。一共 3 个。' }), P006_PRIMARY);
+  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
+  assert.ok(!gates(r).includes('G7'));
+});
+
+test('G7 负例：讲解冒出素材没有的数（7）→ 拒，gate G7，why 含 7', () => {
+  const r = T.checkExplain(segsWith({ what: '加法就是把两部分合起来。最多能数到 7。' }), P006);
+  assert.strictEqual(r.ok, false);
+  const hit = r.reasons.find((x) => x.gate === 'G7');
+  assert.ok(hit, JSON.stringify(r.reasons));
+  assert.ok(hit.why.indexOf('7') >= 0, hit.why);
+  assert.ok(/素材里没有的数/.test(hit.why), hit.why);
+});
+
+test('G7 全文检查：数字只出现在 what / how 段（不在 demo）也拒', () => {
+  const r = T.checkExplain(segsWith({ how: '先数第一堆。再数第二堆。最后数到 7。' }), P006);
+  assert.ok(r.reasons.some((x) => x.gate === 'G7' && x.why.indexOf('7') >= 0), JSON.stringify(r.reasons));
+});
+
+test('G7 分数：1/2 两个 token 分别比对（素材有 9 没有 7 → 9/7 被拒）', () => {
+  const bad = T.checkExplain(segsWith({ demo: '写成 9/7 也可以。' }), DIGIT_INPUTS);
+  const hit = bad.reasons.find((x) => x.gate === 'G7');
+  assert.ok(hit && hit.why.indexOf('9') < 0 && hit.why.indexOf('7') >= 0, JSON.stringify(bad.reasons));
+  /* 反证：1/2 两个 token 都落在 COMMON_SMALL_DIGITS 里 → 不报 G7（常量副作用，见交卡评论） */
+  const okCase = T.checkExplain(segsWith({ demo: '一半写成 1/2。' }), DIGIT_INPUTS);
+  assert.ok(!okCase.reasons.some((x) => x.gate === 'G7'), JSON.stringify(okCase.reasons));
+});
+
+test('G7：COMMON_SMALL_DIGITS 里的数（第 2 步 / 一共 10 只）不触发拒', () => {
+  const r = T.checkExplain(segsWith({ how: '第 2 步先数第一堆。', demo: '一共 10 只。' }), DIGIT_INPUTS);
+  assert.ok(!r.reasons.some((x) => x.gate === 'G7'), JSON.stringify(r.reasons));
+});
+
+test('G7：inputs.allowedDigits 给 [2024] 后放行 2024（不给就拒）', () => {
+  const segs = segsWith({ why: '2024 年是这样。' });
+  const without = T.checkExplain(segs, DIGIT_INPUTS);
+  assert.ok(without.reasons.some((x) => x.gate === 'G7' && x.why.indexOf('2024') >= 0),
+    JSON.stringify(without.reasons));
+  const withAllow = T.checkExplain(segs, Object.assign({}, DIGIT_INPUTS, { allowedDigits: [2024] }));
+  assert.ok(!withAllow.reasons.some((x) => x.gate === 'G7'), JSON.stringify(withAllow.reasons));
+});
+
+test('G7 不做算术等价：3 与 4 都在素材里，写 7（=3+4）仍拒', () => {
+  const r = T.checkExplain(segsWith({ demo: '左边 3 个，右边 4 个，一共 7 个。' }), P006_PRIMARY);
+  assert.ok(r.reasons.some((x) => x.gate === 'G7' && x.why.indexOf('7') >= 0), JSON.stringify(r.reasons));
+});
+
+test('G7：多因并列（超纲 + 编数）两条都报，why 最多列 5 个数', () => {
+  const r = T.checkExplain(segsWith({ trap: '三角形的面积加上 7、8、9、11、12、13。' }), P006_PRIMARY);
+  assert.ok(gates(r).includes('G2'), '缺 G2：' + JSON.stringify(r.reasons));
+  const g7 = r.reasons.find((x) => x.gate === 'G7');
+  assert.ok(g7, '缺 G7：' + JSON.stringify(r.reasons));
+  const listed = g7.why.split('：')[1].split('，').filter((s) => /^\d/.test(s));
+  assert.strictEqual(listed.length, 5, g7.why);
+  assert.ok(/共 6 个/.test(g7.why), g7.why);
+});
+
+test('G7r 正例：学生问题里写了 12，答复引用 12 → 通过', () => {
+  const r = T.checkReply('你说的 12 对。再想想 12 是怎么来的。', P006, '是不是 12？');
+  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
+});
+
+test('G7r 负例：答复里有素材与学生问题都没有的数 → 拒（gate G7r）', () => {
+  const r = T.checkReply('12 加 13 得 25。', P006, '12 加 13 是几？');
+  const hit = r.reasons.find((x) => x.gate === 'G7r');
+  assert.ok(hit && hit.why.indexOf('25') >= 0, JSON.stringify(r.reasons));
+});
+
+test('G7r：只放行本轮问题里的数，不放行别的轮次问过的数', () => {
+  const okR = T.checkReply('8 就是你问的这个数。', P006, '那 8 呢？');
+  assert.strictEqual(okR.ok, true, JSON.stringify(okR.reasons));
+  const badR = T.checkReply('12 就是上次说的那个数。', P006, '那 8 呢？');
+  assert.ok(badR.reasons.some((x) => x.gate === 'G7r' && x.why.indexOf('12') >= 0),
+    JSON.stringify(badR.reasons));
+});
+
+/* ================================================================
+ * 13. 零网络收尾
  * ================================================================ */
 
 console.log('\n--- 零网络收尾 ---');

@@ -16,6 +16,12 @@
  *      这样浏览器与 Node 走同一份依赖，不必再写第二套解析/求值。
  *   2) G5 同时查**原始文本**与 normalize 之后的文本：textfmt.normalize 会把 `**`、反引号洗掉，
  *      只查清洗后文本等于给 Markdown 泄漏开后门；两处都查才是「清洗后仍不过 → 拒」的严格版。
+ *
+ * 卡 A′（补卡 A 主动披露的两个缺口，口径来源 docs/o4-topic-explain.md §4.2 / §5）：
+ *   - limitsOf 增加 forbidSymbols / requireRealLife 两键（仅 early 档为 true，其余三档 false），
+ *     checkExplain 在 G1 里据此加「禁符号算式」与「demo 必须生活场景」两条布尔判据；
+ *   - 新增 G7（讲解全文）与 G7r（追问答复）数字白名单闸：正文里每个数字 token 都必须能在
+ *     本次素材里找到同形 token（+ allowedDigits + 小整数常量），逐 token 精确比对、不做算术等价。
  */
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
@@ -47,6 +53,26 @@
   var CACHE_PREFIX = 'cnmDiagnose.topicExplain.v1:';
   var MIN_NAME_LEN = 4;     /* G2：长度 < 4 字的知识点名不参与匹配（避免「数」「比」误命中） */
   var NUM_EPS = 1e-6;
+
+  /* §4.2 幼儿级（1–2 年级）额外规则：不许出现符号算式。这里是唯一的符号表，
+   * 判据是布尔命中（出现任意一个即拒），不用「命中率低于阈值」这类模糊判据。 */
+  var EARLY_FORBID_SYMBOLS = [
+    '+', '-', '＋', '－', '×', '÷', '*', '/', '=', '＝',
+    '<', '>', '≤', '≥', '(', ')', '（', '）'
+  ];
+
+  /* §4.2 幼儿级：demo 段必须至少命中一个生活词（布尔命中，不是比例）。 */
+  var LIFE_SCENE_WORDS = [
+    '个', '只', '块', '元', '根', '本', '朵', '人', '颗', '盒', '袋', '张', '支', '瓶',
+    '把', '件', '米', '厘米', '买', '卖', '送', '分给', '拿走', '剩下', '还剩',
+    '排队', '上车', '下车', '吃了', '一共', '每人', '平均'
+  ];
+
+  /* G7 / G7r 的小整数白名单常量。为什么需要它：讲解里「第一步 / 第二步」的步骤序号、
+   * 「两只手 / 十根手指」这类常识小量，都不是在编造题目里的数据，素材里也不一定有；
+   * 若不放行，正常讲解会被逐条拦下，模型只能改成「首先」「其次」这类别扭说法。
+   * 只放 0–5 与 10 —— 超过这个范围的数都必须能在本次素材里找到（区间外的「编数」照拦）。 */
+  var COMMON_SMALL_DIGITS = [0, 1, 2, 3, 4, 5, 10];
 
   var LEVEL_LABELS = {
     early: '幼儿级（1-2 年级）',
@@ -123,14 +149,18 @@
   };
 
   function limitsOf(level) {
-    var L = LEVEL_LIMITS[level] || LEVEL_LIMITS.primary;
+    var key = LEVEL_LIMITS[level] ? level : 'primary';
+    var L = LEVEL_LIMITS[key];
     return {
       segMax: {
         what: L.segMax.what, why: L.segMax.why, how: L.segMax.how,
         demo: L.segMax.demo, trap: L.segMax.trap
       },
       replyMax: L.replyMax,
-      sentenceMax: L.sentenceMax
+      sentenceMax: L.sentenceMax,
+      /* §4.2 幼儿级两条额外规则（其余三档 false）。卡 A′ 新增，既有三键不改不删。 */
+      forbidSymbols: key === 'early',
+      requireRealLife: key === 'early'
     };
   }
 
@@ -862,6 +892,102 @@
     }
   }
 
+  /* G1 早期档两条（§4.2 幼儿级额外规则；标志恒由 limitsOf 决定，其余三档整段跳过 → 行为一点不变）
+   *   1) 禁符号算式：5 段正文（normalize 后）不得出现 EARLY_FORBID_SYMBOLS 里任何一个；
+   *   2) 必须有生活场景：demo 段至少命中 LIFE_SCENE_WORDS 里一个词。
+   *   两条都是布尔命中，不做比例/阈值判断。 */
+  function gateEarlyLevel(segs, inputs, reasons) {
+    var L = (inputs && inputs.limits) || limitsOf(inputs && inputs.level);
+    if (!L.forbidSymbols && !L.requireRealLife) return;
+
+    if (L.forbidSymbols) {
+      var text = normalize(textOfSegs(segs));
+      var hits = [];
+      EARLY_FORBID_SYMBOLS.forEach(function (sym) {
+        if (text.indexOf(sym) >= 0 && hits.indexOf(sym) < 0) hits.push(sym);
+      });
+      if (hits.length) {
+        reasons.push({ gate: 'G1', why: '1–2 年级不许出现符号算式：' + hits.join('') });
+      }
+    }
+
+    if (L.requireRealLife) {
+      var demo = normalize(asText(segs && segs.demo)).trim();
+      if (!demo) return;   /* 空段已由 G1 结构报过一次，不重复 */
+      var found = false;
+      LIFE_SCENE_WORDS.forEach(function (w) {
+        if (w && demo.indexOf(w) >= 0) found = true;
+      });
+      if (!found) {
+        reasons.push({ gate: 'G1', why: '1–2 年级的例子必须是生活场景，当前例子是抽象算式' });
+      }
+    }
+  }
+
+  /* G7 / G7r 数字白名单：正文里每个数字 token 都必须能在本次素材里找到同形 token。
+   *   - 允许集合全部从入参算出（没有任何业务数字字面量白名单）；
+   *   - 抽取规则 /\d+(?:\.\d+)?/g 逐 token 精确比对：1/2 抽成 1 与 2，两个都要在集合里；
+   *   - 不做算术等价转换（3+4 不会因为 7 在素材里就放行），宁可保守；
+   *   - 与既有闸门并列：命中只 push，不提前 return（多因一起返回）。
+   * 素材来源 = 模型在 materialText 里真能看到的那些字段（卡面表格所列 6 项全在内），
+   * 另外补上 grade / standards[].id / examples 的答案与解析 / 先修名 —— 这些也在素材里，
+   * 不列会把「引用课标编号」（G4 反而要求必须带编号）判成编造。 */
+  function digitTokens(text) {
+    var s = asText(text);
+    var re = /\d+(?:\.\d+)?/g;
+    var out = [], m;
+    while ((m = re.exec(s)) !== null) {
+      if (m[0] && out.indexOf(m[0]) < 0) out.push(m[0]);
+      if (m.index === re.lastIndex) re.lastIndex++;
+    }
+    return out;
+  }
+
+  function digitAllowedSet(inputs) {
+    var ins = inputs || {};
+    var src = [
+      asText(ins.name), asText(ins.desc), asText(ins.grade), asText(ins.questionText)
+    ];
+    (Array.isArray(ins.criteria) ? ins.criteria : []).forEach(function (c) { src.push(asText(c)); });
+    (Array.isArray(ins.standards) ? ins.standards : []).forEach(function (s) {
+      if (!s || typeof s !== 'object') return;
+      src.push(asText(s.text));
+      src.push(asText(s.id));
+    });
+    (Array.isArray(ins.examples) ? ins.examples : []).forEach(function (e) {
+      if (!e || typeof e !== 'object') return;
+      src.push(asText(e.prompt));
+      src.push(asText(e.answer));
+      src.push(asText(e.answerText));
+      src.push(asText(e.explanation));
+    });
+    (Array.isArray(ins.prereqs) ? ins.prereqs : []).forEach(function (p) {
+      if (!p || typeof p !== 'object') return;
+      src.push(asText(p.name));
+    });
+    (Array.isArray(ins.answerValues) ? ins.answerValues : []).forEach(function (v) { src.push(asText(v)); });
+    (Array.isArray(ins.allowedDigits) ? ins.allowedDigits : []).forEach(function (v) { src.push(asText(v)); });
+
+    var allowed = [];
+    src.forEach(function (s) {
+      digitTokens(s).forEach(function (t) { if (allowed.indexOf(t) < 0) allowed.push(t); });
+    });
+    COMMON_SMALL_DIGITS.forEach(function (n) {
+      var t = asText(n);
+      if (allowed.indexOf(t) < 0) allowed.push(t);
+    });
+    return allowed;
+  }
+
+  function gateDigitWhitelist(text, inputs, reasons, gate) {
+    var allowed = digitAllowedSet(inputs);
+    var bad = digitTokens(asText(text)).filter(function (t) { return allowed.indexOf(t) < 0; });
+    if (!bad.length) return;
+    var why = '出现了素材里没有的数：' + bad.slice(0, 5).join('，');
+    if (bad.length > 5) why += '（共 ' + bad.length + ' 个）';
+    reasons.push({ gate: gate || 'G7', why: why });
+  }
+
   function checkExplain(segs, inputs) {
     var reasons = [];
     var ins = inputs || {};
@@ -872,14 +998,18 @@
     var raw = textOfSegs(segs);
     var norm = normalize(raw);
     gateStructure(segs, ins, reasons);
+    gateEarlyLevel(segs, ins, reasons);
     gateWhitelist(norm, ins, reasons, 'G2');
     gateNumbers(norm, normalize(asText(segs.demo)), ins, reasons, 'G3');
     gateStandards(norm, ins, reasons);
     gateHygiene(raw, reasons);
+    gateDigitWhitelist(norm, ins, reasons, 'G7');
     return { ok: reasons.length === 0, reasons: reasons };
   }
 
-  function checkReply(text, inputs) {
+  /* question = 本轮学生提问原文（可选）。G7r 只额外放行**本轮问题里出现过的**数字，
+   * 不放行整个 history 的数字（history 不在入参里，调用方也不许把它塞进 question）。 */
+  function checkReply(text, inputs, question) {
     var reasons = [];
     var ins = inputs || {};
     var raw = asText(text);
@@ -895,6 +1025,14 @@
     gateNumbers(norm, norm, ins, reasons, 'G3r');
     gateStandards(norm, ins, reasons);
     gateHygiene(raw, reasons);
+
+    var qins = ins;
+    if (question !== null && question !== undefined && asText(question).trim()) {
+      qins = {};
+      Object.keys(ins).forEach(function (k) { qins[k] = ins[k]; });
+      qins.questionText = asText(ins.questionText) + '\n' + asText(question);
+    }
+    gateDigitWhitelist(norm, qins, reasons, 'G7r');
     return { ok: reasons.length === 0, reasons: reasons };
   }
 
@@ -1016,6 +1154,10 @@
     MAX_ENTRIES: MAX_ENTRIES,
     subjectOf: subjectOf,
     materialText: materialText,
-    segsToText: segsToText
+    segsToText: segsToText,
+    /* 卡 A′ 两条早期档判据的词表 / 符号表 + G7 小整数常量（卡 B 也可读） */
+    EARLY_FORBID_SYMBOLS: EARLY_FORBID_SYMBOLS,
+    LIFE_SCENE_WORDS: LIFE_SCENE_WORDS,
+    COMMON_SMALL_DIGITS: COMMON_SMALL_DIGITS
   };
 });
