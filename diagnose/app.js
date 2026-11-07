@@ -193,7 +193,11 @@
     withStage2: withStage2, withStage2Data: withStage2Data, stage2Status: stage2Status,
     childBar: childBar, diagnoseHrefFor: diagnoseHrefFor, routeReturnHref: routeReturnHref, withRouteBack: withRouteBack,
     routeBackBar: routeBackBar, isPrereqKnowledge: isPrereqKnowledge, reasonFor: reasonFor,
-    noteBlind: noteBlind, blindResultCard: blindResultCard, llmVariantsMod: llmVariantsMod,
+    noteBlind: noteBlind, blindResultCard: blindResultCard,
+    /* t_50c5ddb9：练习入口的变式模块取用口。漏了这一项，app-flow.js 里裸用的 variantsMod
+     * 在浏览器脚本作用域解析不到 —— 点「练习这 N 题」抛 ReferenceError，而且是在
+     * withStage2Data 的 .then 里抛的，页面上表现为「点了没反应」。 */
+    variantsMod: variantsMod, llmVariantsMod: llmVariantsMod,
     /* a94fef3 拆分时漏挂了 registerFlow：app-flow.js 的 if (typeof registerFlow === 'function')
      * 于是静默跳过注册，FLOW 恒为 null，整年级/单点「点了没反应」的 P0 就出在这里。 */
     registerFlow: registerFlow,

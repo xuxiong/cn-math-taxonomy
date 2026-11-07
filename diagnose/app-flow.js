@@ -37,7 +37,9 @@
   var screenRoundGraph = CORE.screenRoundGraph;
   var childBar = CORE.childBar, diagnoseHrefFor = CORE.diagnoseHrefFor, routeReturnHref = CORE.routeReturnHref, routeBackBar = CORE.routeBackBar;
   var isPrereqKnowledge = CORE.isPrereqKnowledge, reasonFor = CORE.reasonFor, noteBlind = CORE.noteBlind, blindResultCard = CORE.blindResultCard;
-  var llmVariantsMod = CORE.llmVariantsMod;
+  /* t_50c5ddb9：variantsMod 必须在这里从 CORE 取一份 —— 下面 startPractice 里两处裸用
+   * `variantsMod()`，浏览器脚本作用域里没有这个名字就会 ReferenceError（点了没反应）。 */
+  var variantsMod = CORE.variantsMod, llmVariantsMod = CORE.llmVariantsMod;
   /* 卡 E：「再来一道」的路由层 + 卡 C/卡 B 模块的取用口（都是懒加载，模块顶层不抓引用）。 */
   var genRouteMod = CORE.genRouteMod, constructMod = CORE.constructMod, llmGenMods = CORE.llmGenMods;
   var LAZY_GENROUTE = CORE.LAZY_GENROUTE, LAZY_CONSTRUCT = CORE.LAZY_CONSTRUCT;

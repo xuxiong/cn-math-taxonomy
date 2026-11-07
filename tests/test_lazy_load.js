@@ -87,6 +87,9 @@ function stripComments(src) {
 }
 
 const APP = stripComments(APP_RAW);
+/* 浏览器脚本作用域基座：把 diagnose/ 下真会在浏览器里跑的文件按 index.html 顺序加载。
+ * 用于「取用口到底解析不解析得到」这类 Node 侧 require 测不出来的接线缺陷。 */
+const { loadDiagnose } = require('./lib/diagnose-browser.js');
 
 /* 首屏 <script src="…"> 清单（注释里提到的文件名不算） */
 function eagerScripts(html) {
@@ -317,9 +320,18 @@ test('app.js：懒加载依赖顺序写在一处，且覆盖全部被移出的�
   });
 });
 
-test('app.js：练习入口先加载变式模块（模块顶层不再抓引用，抓到会是 undefined）', function () {
+test('app.js：练习入口的变式模块取用口在浏览器作用域里真解析得到', function () {
+  /* 原断言是 `assert.ok(/variantsMod\(\)/.test(body))`：源码里有这串字符就算过 ——
+   * 正是它放过了「app.js 有 variantsMod 函数、CORE 却漏导出，app-flow.js 裸用」这个线上 P0
+   * （t_50c5ddb9：点「练习这 N 题」抛 ReferenceError，异常落进 withStage2Data 的 .then，
+   * 表现为「点了没反应」）。改成真加载：按 index.html 的脚本顺序 + 按需段 app-flow.js
+   * 在 vm 里以浏览器方式执行，再断言 CORE 上真能取到那个取用口。
+   * 行为面（点下去练习态真被触发、拿到 LAZY_VARIANTS）见 tests/test_practice_entry_scope.js。 */
+  const env = loadDiagnose(ROOT);
+  assert.strictEqual(typeof env.ctx.DiagCore.variantsMod, 'function',
+    'CORE 未导出 variantsMod：app-flow.js 里裸用它在浏览器作用域解析不到（ReferenceError，练习入口点了没反应）');
+  /* 下面两条仍是本文件的老口径：练习入口必须先按 LAZY_VARIANTS 取模块，且不许在模块顶层抓引用。 */
   const body = APP.slice(APP.indexOf('function startPractice'), APP.indexOf('function _startPracticeRender'));
-  assert.ok(/variantsMod\(\)/.test(body), 'startPractice 应通过 variantsMod() 现取模块');
   assert.ok(/Lazy\.load\(LAZY_VARIANTS\)/.test(body), 'startPractice 应先 Lazy.load(LAZY_VARIANTS)');
   assert.ok(!/^\s*const V = Browser\.DiagVariants/m.test(APP), '模块顶层不许再抓 Browser.DiagVariants（懒加载后是 undefined）');
 });
