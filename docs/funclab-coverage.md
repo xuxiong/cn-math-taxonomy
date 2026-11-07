@@ -1,7 +1,23 @@
 # funclab 画板覆盖率测算
 
-> 数据：`data/questions.json` 6159 题 / `data/topics.json` 1503 个知识点；被测代码：`diagnose/funclab.js`（本次未改动）。
-> 全部数字由 `node scripts/measure_funclab_coverage.js` 一条命令复现，本文表格即该脚本的 stdout。
+> **口径冻结（2026-11-07）**：本文结论基于合入上游前的 **6159 题**语料（`data/questions.json` 6159 题 / `data/topics.json` 1503 个知识点）+ **当时的代码状态**，冻结 commit `cb57411`（`git show cb57411:diagnose/funclab.js` 与 `git show cb57411:data/questions.json` 可复现本文全部数字）。当前语料已是 13335 题 / 3297 个知识点，**正文结论未随之重算**。
+> **分析模型已换代（必读）**：本文分析基于 **3 类画板（linear / quadratic / inverse）+ 只看 `topicKind`** 的判定模型；现行 `diagnose/funclab.js` 已 **8 类板 + 逐题白名单**，基线可挂 **58→94**、R3 **101**。**不要用本文数字回答「现在能挂多少」**——现在能挂多少看下节速览。
+> 本文表格即 `node scripts/measure_funclab_coverage.js` 在冻结代上的 stdout；现行代码下重跑得到的数字与本文不同，两代不可混用。附录只给复跑命令、不附 stdout。
+
+## 当前读数速览（2026-11-07，当前 13335 题 / 3297 知识点，现行 `diagnose/funclab.js`）
+
+本节数字全部为 `node scripts/measure_funclab_coverage.js` 当前 stdout 直出：只列数，不解释、不下结论，**未经人眼复核**。
+
+| 项 | 读数 |
+| --- | --- |
+| 基线可挂（`topicKind` + `labFor` 原样） | 94 |
+| R1 放宽口径可挂 | 63 |
+| R2 全库 `fromPrompt` 解析出函数 | 225 |
+| R2 解析命中里被答案语义门禁判 misleading | 178 |
+| R2 + 答案语义门禁可挂 | 42 |
+| R3 最终可挂 | 101 |
+
+（同一份 stdout 里另有「基线 58 题」「其中 55 题通不过」字样：58 是脚本内硬编码的旧题单，不是当前基线，见附录「口径缺陷披露」第 ② 条。）
 
 ## 结论摘要
 
@@ -442,6 +458,12 @@ if (asksOffGraphQuantity(prompt)) return null;
 - 其中约 6 题属于「象限/增减性/交点个数」这类**纯图像可读、但画板没有数值标注**的答案，被门禁判得过严。所以本文所有「加门禁」的数字都是**保守下限**。
 
 ## 附：复跑命令
+
+> **口径缺陷披露（只披露、不修；修复另开卡）**
+>
+> **② 基线 58 是脚本内硬编码的题单，`boardAnnotations()` 只认 3 种板型。** `scripts/measure_funclab_coverage.js` 的基线题单与「基线 58 题」字样写死在旧代数据上（现行 `labFor` 下基线已是 94，脚本 stdout 却仍拿 58 当分母、并打印「基线 58 题里 55 题通不过」）；`boardAnnotations()` 只有 quadratic / linear / inverse 三个分支，exp / log / trig / cubic / power 五种新板型一律落到「反比例：无数值标注」分支 → 当前 R2 解析出的 225 题里，落在这 5 种板型的 **37 题必然被判 misleading**，而 R2 判 ok 的 42 题里**一个新板型都没有**。所以「178 题误挂」里含门禁盲区，不等于真实误挂率。
+> **④ 门禁的 `verdict` 有第四个取值 `safe`（人工确认可挂），而计数行只打印 ok / suspect / misleading 三桶。** 当前 R2 的 225 题里 `cnm_156_q3` 被判 `safe`：`42 + 4 + 178 = 224 ≠ 225`，差的这 1 题就是它——它既没进「可挂 42」也没进「误挂 178」，按判定语义应算可挂（R2 实为 43 题）。同一行还被排进 stdout 的「§4.2 R2 候选中的误挂」表里，表名与判定不符。速览一节仍只抄 stdout 直出的 42。
+> 另两条口径缺陷属 `docs/geomlab-coverage.md` 附录头（① 物理「圆周运动」24 题被算进几何「圆」；③ 圆的判定翻转 22 处），此处只做交叉引用。
 
 ```bash
 # 一条命令复现本文全部数字（不依赖网络，只读 data/ 与 diagnose/）
