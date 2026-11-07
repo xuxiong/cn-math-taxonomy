@@ -8,7 +8,8 @@
  *   3. fail-closed：残缺 / 未闭合 / 未知命令一律当普通字符输出，不抛异常、不吞后续文本。
  *   4. XSS 行为：<img onerror>、<script>、</span><b>、裸引号只会以文本出现，
  *      生成的 DOM 里不存在 img / script 元素（断言行为，不读源码）。
- *   5. 体积：diagnose/textfmt.js gzip 增量 ≤ 5120B（zlib 现算，不信手写常量）。
+ *   5. 体积：diagnose/textfmt.js gzip 增量 ≤ 5120B（基线由 tests/fixtures/textfmt-pre-h.js
+ *      用当前进程自己的 zlib 现量，不是手写常量）。
  *   6. 结构快照：\frac / \sqrt / ** / x² 的元素层面形状。
  *
  * 外加一条漂移守卫：纯文本（片段树里只有文本节点）渲染出来的正文必须等于 normalize(x)
@@ -19,6 +20,7 @@
  */
 'use strict';
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
@@ -348,14 +350,30 @@ test('注入串若被结构包裹（**…** 里 / \\frac 里），仍然只是�
 
 console.log('\n--- 5. 体积 ---');
 
+/* 基线 = 卡 H 落地前的文本层（tests/fixtures/textfmt-pre-h.js，逐字节等于
+ * 1f5a1e5:diagnose/textfmt.js）。基线用**当前进程自己的 zlib** 现量，不写手写常量：
+ * 各 node 内置 zlib 对同一份字节读数不同（同一 7 624B 文件实测 v23.11.0 → 3698B、
+ * v23.11.1 / v26.12.1 → 3852B），基线用 A 尺量、当前值用 B 尺量就会假红。
+ * 上限仍是增量 ≤ 5120B（这个数不动）。 */
+const PRE_H_PATH = path.join(__dirname, 'fixtures', 'textfmt-pre-h.js');
+const PRE_H_SHA256 = '7429797ca6ca25f22beefd03e4ccad1d274a5cbd9ea5511c8ad0602b899a7d0f';
+
+test('体积基线 fixture 逐字节等于卡前文本层（改 fixture 抬基线的路在这里红）', () => {
+  const sha = crypto.createHash('sha256').update(fs.readFileSync(PRE_H_PATH)).digest('hex');
+  assert.strictEqual(sha, PRE_H_SHA256,
+    'fixture 被改动：sha256=' + sha + '，应为 ' + PRE_H_SHA256 + '（不许改 fixture 抬高基线骗过体积门）');
+});
+
 test('diagnose/textfmt.js gzip 增量 ≤ 5120B', () => {
-  /* 基线 = 卡前（HEAD）同一个 zlib.gzipSync 的读数，实测 3698B；预算 = 基线 + 5120B */
-  const BASE_GZ = 3698;
-  const LIMIT = BASE_GZ + 5120;
-  const sz = zlib.gzipSync(fs.readFileSync(path.join(ROOT, 'diagnose', 'textfmt.js'))).length;
-  console.log('       textfmt.js gzip = ' + sz + 'B（基线 ' + BASE_GZ + 'B，增量 ' + (sz - BASE_GZ) + 'B，上限 ' + LIMIT + 'B）');
-  assert.ok(sz <= LIMIT, 'gzip 超预算：' + sz + 'B > ' + LIMIT + 'B');
-  assert.ok(sz > BASE_GZ, 'gzip 比卡前还小：' + sz + 'B —— 说明基线常量已过期，请重新测');
+  const BUDGET = 5120; /* 上限：新增渲染器的 gzip 增量预算，这个数不许动 */
+  const base = zlib.gzipSync(fs.readFileSync(PRE_H_PATH)).length;
+  const cur = zlib.gzipSync(fs.readFileSync(path.join(ROOT, 'diagnose', 'textfmt.js'))).length;
+  const incr = cur - base;
+  console.log('       node=' + process.version + ' base=' + base + ' cur=' + cur +
+    ' incr=' + incr + ' headroom=' + (BUDGET - incr));
+  assert.ok(incr <= BUDGET, 'gzip 超预算：增量 ' + incr + 'B > ' + BUDGET + 'B（cur=' + cur + 'B，base=' + base + 'B）');
+  assert.ok(cur > base, '当前文件 gzip 比卡前文本层还小：cur=' + cur + 'B ≤ base=' + base +
+    'B —— 说明 fixture 已过期（不再是卡前那一版），请重新取');
 });
 
 /* ================================================================
