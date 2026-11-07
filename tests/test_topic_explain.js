@@ -73,12 +73,14 @@ function buildFor(topic, opts) {
 
 /* 一份能过全部闸门的讲解（1-2 年级档：每句 ≤12 字，各段 ≤40/40/60/70/40）。
  * 卡 A′ 起 early 档禁用符号算式、demo 必须是生活场景，所以 demo 用生活句而不用 2+1=3
- * （算式类正例另用 P006_PRIMARY 隔离，见第 8 节）。 */
+ * （算式类正例另用 P006_PRIMARY 隔离，见第 8 节）。
+ * 卡 A″ 起 COMMON_SMALL_DIGITS 只剩 [0,1]，这份公共 fixture 因此只用 1：
+ * 这样它在任何素材下都不依赖白名单放行，避免无关用例被数字闸连坐。 */
 const GOOD = {
   what: '加法就是把两部分合起来。',
   why: '买东西算钱要用加法。',
   how: '先数第一堆。再数第二堆。从第一个数接着数。',
-  demo: '妈妈买了 3 个苹果。一共 3 个。',
+  demo: '妈妈买了 1 个苹果。一共 1 个。',
   trap: '别把两堆数丢了。'
 };
 function segsWith(patch) {
@@ -608,7 +610,7 @@ test('G3 正例：算式操作数来自题面、结果等于题库答案 → 通
 });
 
 test('G3 正例：讲解里完全没有算式 → 通过（卡面明写不是拒）', () => {
-  const r = T.checkExplain(segsWith({ demo: '把两堆合起来数一遍。' }), P006);
+  const r = T.checkExplain(segsWith({ demo: '把两堆苹果合起来数一数。有几个？' }), P006);
   assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
 });
 
@@ -726,7 +728,11 @@ test('G3r 负例：算式与结果对不上 → 拒', () => {
 
 test('G3r：追问轮不做「操作数必须在题面」的检查（学生自带的数允许）', () => {
   const r = T.checkReply('9+1=10。', P006, '9 加 1 是几？');
-  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
+  /* 本闸（G3r）不要求操作数在题面 —— 断言的就是这一条 */
+  assert.ok(!gates(r).includes('G3r'), 'G3r 不该报：' + JSON.stringify(r.reasons));
+  /* 卡 A″ 收窄后 10 不再被白名单放行（素材与问题里都没有 10）→ 由 G7r 拦，这是新契约 */
+  assert.ok(r.reasons.some((x) => x.gate === 'G7r' && x.why.indexOf('10') >= 0),
+    JSON.stringify(r.reasons));
 });
 
 test('G4 / G5 在追问轮同样生效', () => {
@@ -995,7 +1001,7 @@ test('G1 早期档生活场景负例：demo 纯抽象（三加二等于五）→
   assert.ok(r.reasons.some((x) => x.gate === 'G1' && /生活场景/.test(x.why)), JSON.stringify(r.reasons));
 });
 
-test('G1 早期档生活场景正例：demo 含「买 / 个 / 一共」→ 通过', () => {
+test('G1 早期档生活场景正例：demo 含「买 / 个」→ 通过', () => {
   const r = T.checkExplain(segsWith({ demo: '妈妈买了 3 个苹果。一共 3 个。' }), P006);
   assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
 });
@@ -1020,18 +1026,24 @@ test('G7 全文检查：数字只出现在 what / how 段（不在 demo）也拒
   assert.ok(r.reasons.some((x) => x.gate === 'G7' && x.why.indexOf('7') >= 0), JSON.stringify(r.reasons));
 });
 
-test('G7 分数：1/2 两个 token 分别比对（素材有 9 没有 7 → 9/7 被拒）', () => {
+test('G7 分数：9/7 拒 7；9/1 通过；1/2 因 2 不在素材而被拒（收窄后契约）', () => {
   const bad = T.checkExplain(segsWith({ demo: '写成 9/7 也可以。' }), DIGIT_INPUTS);
   const hit = bad.reasons.find((x) => x.gate === 'G7');
   assert.ok(hit && hit.why.indexOf('9') < 0 && hit.why.indexOf('7') >= 0, JSON.stringify(bad.reasons));
-  /* 反证：1/2 两个 token 都落在 COMMON_SMALL_DIGITS 里 → 不报 G7（常量副作用，见交卡评论） */
-  const okCase = T.checkExplain(segsWith({ demo: '一半写成 1/2。' }), DIGIT_INPUTS);
+  /* 反证：两个 token 都在素材里（9 与 1）→ 不报 G7 */
+  const okCase = T.checkExplain(segsWith({ demo: '一半写成 9/1。' }), DIGIT_INPUTS);
   assert.ok(!okCase.reasons.some((x) => x.gate === 'G7'), JSON.stringify(okCase.reasons));
+  /* 卡 A″ 收窄：2 不再在 COMMON_SMALL_DIGITS 里，素材也没有 2 → 1/2 现在会被拒 */
+  const narrowed = T.checkExplain(segsWith({ demo: '一半写成 1/2。' }), DIGIT_INPUTS);
+  const narrowedHit = narrowed.reasons.find((x) => x.gate === 'G7');
+  assert.ok(narrowedHit && narrowedHit.why.indexOf('2') >= 0, JSON.stringify(narrowed.reasons));
 });
 
-test('G7：COMMON_SMALL_DIGITS 里的数（第 2 步 / 一共 10 只）不触发拒', () => {
+test('小整数收窄：第 2 步 / 一共 10 只不再放行（2 与 10 都不在素材）', () => {
   const r = T.checkExplain(segsWith({ how: '第 2 步先数第一堆。', demo: '一共 10 只。' }), DIGIT_INPUTS);
-  assert.ok(!r.reasons.some((x) => x.gate === 'G7'), JSON.stringify(r.reasons));
+  const hit = r.reasons.find((x) => x.gate === 'G7');
+  assert.ok(hit, '2 与 10 都不该再被白名单放行：' + JSON.stringify(r.reasons));
+  assert.ok(hit.why.indexOf('2') >= 0 && hit.why.indexOf('10') >= 0, hit.why);
 });
 
 test('G7：inputs.allowedDigits 给 [2024] 后放行 2024（不给就拒）', () => {
@@ -1075,6 +1087,81 @@ test('G7r：只放行本轮问题里的数，不放行别的轮次问过的数',
   const badR = T.checkReply('12 就是上次说的那个数。', P006, '那 8 呢？');
   assert.ok(badR.reasons.some((x) => x.gate === 'G7r' && x.why.indexOf('12') >= 0),
     JSON.stringify(badR.reasons));
+});
+
+/* 合成点：素材里只有 1 与 9（grade 6 → 素材里另有 6），3 / 4 / 5 / 10 一概没有。
+ * 小学高年级档 → 不受早期档符号 / 生活场景规则干扰，单测 G7 收窄。 */
+const SMALL_TOPIC = {
+  id: 'cnm_test_small', name: '测试小整数知识点', grade: 6, semester: '上', chapter: '测试章节六',
+  description: '素材里只出现 1 与 9 这两个数。', mastery_criteria: ['测试标准六'], standards: [], type: 'conceptual'
+};
+const SMALL_INPUTS = T.buildInputs({
+  topic: SMALL_TOPIC, questions: [], standardsById: {}, deps: [], topics: [SMALL_TOPIC]
+});
+
+test('全角数字：素材里没有的 ７ 与半角 7 判定一致（都拒，why 指向同一个数）', () => {
+  const half = T.checkExplain(segsWith({ demo: '比如有 7 个苹果。' }), DIGIT_INPUTS);
+  const full = T.checkExplain(segsWith({ demo: '比如有 ７ 个苹果。' }), DIGIT_INPUTS);
+  const halfHit = half.reasons.find((x) => x.gate === 'G7');
+  const fullHit = full.reasons.find((x) => x.gate === 'G7');
+  assert.ok(halfHit, '半角 7 应被 G7 拒：' + JSON.stringify(half.reasons));
+  assert.ok(fullHit, '全角 ７ 必须与 7 同判（应被 G7 拒）：' + JSON.stringify(full.reasons));
+  assert.ok(fullHit.why.indexOf('7') >= 0, fullHit.why);
+  assert.strictEqual(full.ok, half.ok, '全角与半角的判定结果不一致');
+});
+
+test('全角数字：素材里有的数的全角形式必须放行（９ 与 9 一致）', () => {
+  const half = T.checkExplain(segsWith({ demo: '桌上有 9 个苹果。' }), DIGIT_INPUTS);
+  const full = T.checkExplain(segsWith({ demo: '桌上有 ９ 个苹果。' }), DIGIT_INPUTS);
+  assert.ok(!half.reasons.some((x) => x.gate === 'G7'), JSON.stringify(half.reasons));
+  assert.strictEqual(full.ok, true, '素材里有 9 → 全角 ９ 必须放行：' + JSON.stringify(full.reasons));
+});
+
+test('全角小数：３．５ 与 3.5 同判（素材有 3.5 两边都过，没有两边都拒）', () => {
+  const FW_TOPIC = {
+    id: 'cnm_test_fullwidth', name: '测试全角知识点', grade: 5, semester: '上', chapter: '测试章节八',
+    description: '素材里有 3.5 这个数。', mastery_criteria: ['测试标准八'], standards: [], type: 'conceptual'
+  };
+  const FW_INPUTS = T.buildInputs({
+    topic: FW_TOPIC, questions: [], standardsById: {}, deps: [], topics: [FW_TOPIC]
+  });
+  const passHalf = T.checkExplain(segsWith({ demo: '桌上有 3.5 个苹果。' }), FW_INPUTS);
+  const passFull = T.checkExplain(segsWith({ demo: '桌上有 ３．５ 个苹果。' }), FW_INPUTS);
+  assert.ok(!passHalf.reasons.some((x) => x.gate === 'G7'), JSON.stringify(passHalf.reasons));
+  assert.strictEqual(passFull.ok, true, '素材里有 3.5 → 全角 ３．５ 必须放行：' + JSON.stringify(passFull.reasons));
+
+  const rejectHalf = T.checkExplain(segsWith({ demo: '桌上有 3.5 个苹果。' }), DIGIT_INPUTS);
+  const rejectFull = T.checkExplain(segsWith({ demo: '桌上有 ３．５ 个苹果。' }), DIGIT_INPUTS);
+  const rh = rejectHalf.reasons.find((x) => x.gate === 'G7');
+  const rf = rejectFull.reasons.find((x) => x.gate === 'G7');
+  assert.ok(rh && rh.why.indexOf('3.5') >= 0, JSON.stringify(rejectHalf.reasons));
+  assert.ok(rf && rf.why.indexOf('3.5') >= 0, '素材没有 3.5 → 全角 ３．５ 必须被拒：' + JSON.stringify(rejectFull.reasons));
+});
+
+test('小整数收窄：COMMON_SMALL_DIGITS 只剩 [0,1]；素材没有的 3 / 4 / 5 / 10 一律被 G7 拒', () => {
+  assert.deepStrictEqual(T.COMMON_SMALL_DIGITS, [0, 1], '小整数白名单必须收窄到 [0,1]');
+  [3, 4, 5, 10].forEach((n) => {
+    const r = T.checkExplain(segsWith({ demo: '桌上有 ' + n + ' 个苹果。' }), SMALL_INPUTS);
+    const hit = r.reasons.find((x) => x.gate === 'G7');
+    assert.ok(hit, n + ' 不在素材里，必须被 G7 拒：' + JSON.stringify(r.reasons));
+    assert.ok(hit.why.indexOf(String(n)) >= 0, hit.why);
+  });
+  const ok = T.checkExplain(segsWith({ demo: '桌上有 0 个苹果。只剩下 1 个。' }), SMALL_INPUTS);
+  assert.strictEqual(ok.ok, true, '0 与 1 必须放行：' + JSON.stringify(ok.reasons));
+});
+
+test('生活场景词表：介词「把」不再让抽象例子通过（只留量词与动作动词）', () => {
+  assert.strictEqual(T.LIFE_SCENE_WORDS.indexOf('把'), -1, '「把」必须从生活词表里删掉');
+  ['被', '就', '了', '和', '也', '一共', '平均'].forEach((w) => {
+    assert.strictEqual(T.LIFE_SCENE_WORDS.indexOf(w), -1, '纯语法词 / 副词 / 术语不该留在生活词表：' + w);
+  });
+  const r = T.checkExplain(segsWith({ demo: '把数字加起来就行了。' }), P006);
+  assert.strictEqual(r.ok, false, '抽象例子不许靠「把」通过：' + JSON.stringify(r.reasons));
+  assert.ok(r.reasons.some((x) => x.gate === 'G1' && /生活场景/.test(x.why)), JSON.stringify(r.reasons));
+
+  /* 真生活场景不受影响 */
+  const ok = T.checkExplain(segsWith({ demo: '妈妈买了 3 个苹果。' }), P006);
+  assert.strictEqual(ok.ok, true, JSON.stringify(ok.reasons));
 });
 
 /* ================================================================
