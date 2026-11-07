@@ -191,8 +191,15 @@
       + '学生答错了一道题。请用苏格拉底式三步引导帮助他，按 JSON 输出，不要任何多余文字，格式严格为：'
       + '{"prompt":"第一步：只提问引导，让学生自己发现错误，绝不能给出答案或关键数值","hint":"第二步：给出方向性线索，提示关键步骤，但不能直接写出最终答案","reveal":"第三步：完整解析，先给正确解答，再分步解释为什么"}'
       + '要求：语言简短口语化、贴合初中生；prompt 和 hint 绝不写正确答案，hint 最多给一半思路；reveal 详细但不啰嗦。'
-      + 'reveal 的最后一行请写「答案：x = …」（多解时写「答案：x1 = …，x2 = …」），方便核对。'
-      + '重要：输出必须是纯文本，禁止任何 Markdown 标记（不要用 **、*、`、#、> 等符号）；'
+      /* 卡 t_93dad601：分段只给 reveal。prompt / hint 的价值是「短、一句话」，分行会削弱引导感；
+       * reveal 是步骤讲解，分行 + 行首「- 」才有结构（上屏走 segments() → ul/li）。
+       * 换行必须写在 JSON 字符串里（\n），模型真敲回车会破坏 JSON。 */
+      + 'reveal 的排版（必须照做）：按步骤分行写，每行一个步骤，最多 4 行，行首用「- 」起头；'
+      + '每行只写思路和算式，最后一行才是「答案：x = …」（多解时写「答案：x1 = …，x2 = …」），方便核对。'
+      + 'prompt 和 hint 必须各是一整段一句话，绝对不许换行 —— 这两步要短，分行会削弱引导感。'
+      + '换行要写进 JSON 字符串里，用 \\n 表示，不要真的敲回车。'
+      + 'reveal 示例：{"reveal":"- 先去括号：2x-6 = 4-x\\n- 再移项：3x = 10\\n- 答案：x = 10/3"}（正好 3 行，最后一行才是答案）。'
+      + '重要：输出必须是纯文本，禁止任何 Markdown 标记（不要用 **、*、`、#、> 等符号；只有 reveal 的行首「- 」当步骤编号，这一处可以用）；'
       + '公式用普通文字写，如 "a(x-h)²+k" 直接写，不要加粗、不要用代码块；'
       + '不要写任何反斜杠命令（如 \\sqrt、\\frac、\\times、\\pm 都不要用）；'
       + '根号直接用 √ 符号（如 2±√5），分数用斜杠（如 1/2），允许用 ² 表示平方。'
@@ -417,7 +424,7 @@
         err.detail = 'empty';
         throw err;
       }
-      return { text: cleaned, graph: graph };
+      return { text: cleaned, rich: text, graph: graph };
     });
   }
 
@@ -428,7 +435,9 @@
    *  追问路径以前零日志，出问题查不出原因。日志只放 reason/状态码/文案，不打 body 全文 / Authorization。 */
   function ask(topic, q, userAnswer, steps, question, labDesc, history) {
     return llmAsk(topic, q, userAnswer, steps, question, labDesc, history)
-      .then(function (res) { return { text: res.text, graph: res.graph, from: 'llm' }; })
+      /* rich = 模型原文（未拍平），只给上屏用：追问气泡按 segments()+render() 显示，
+       * 行首「- 」与换行才留得住；text 仍是 normalize 结果，会话历史 / 门禁 / 复制读它。 */
+      .then(function (res) { return { text: res.text, rich: res.rich, graph: res.graph, from: 'llm' }; })
       .catch(function (err) {
         const f = failInfo(err);   // reason/httpStatus/degraded/detail 带出来
         const notice = noticeFor(f.reason, f.httpStatus, f.degraded, f.detail);
@@ -774,6 +783,10 @@
       + 'text 必须引用题干里的具体数字或步骤（如「去括号时 2 要乘进去」），不许给出最终答案。',
     variant: '',   /* 管线动作，不发 LLM 请求，无 schema */
     judge_mine: '只输出一个 JSON 对象，格式：{"firstError":"第一处错的原文片段（没有就写空串）","explain":"为什么错、怎么改"}。'
+      /* 卡 t_93dad601：错因解释固定两行 —— 第一行「错在哪」、第二行「怎么改」，
+       * 最多两行，换行同样写进 JSON 字符串（\n），上屏按行显示。 */
+      + 'explain 必须写成两行：第一行说错在哪，第二行说怎么改，最多 2 行；换行用 \\n 写进 JSON 字符串，不要真的敲回车。'
+      + 'explain 示例：{"explain":"去括号时只乘了第一项，漏乘了 -3。\\n每一项都要乘：2(x-3) = 2x-6。"}。'
       + '只解释第一处错；不要输出 conclusion/verdict 之类的对错结论字段 —— 对错由本地核对决定。',
     hint_leveled: '只输出一个 JSON 对象，格式：{"text":"分级提示正文"}。'
       + '分级规则（必须严格执行）：L1 只给方向，禁止写任何数值结果；'

@@ -125,10 +125,16 @@ test('app-flow.js：真实 .ask-graph 卡片块体只放公式行 + 画板，不
 });
 
 /* ------------------------------------------------------------ 5. 模型文字只出现一次 */
-test('app-flow.js：\'老师：\' + entry.a 全文只出现 1 次（唯一入口是老师气泡）', function () {
-  const m = FLOW_SRC.match(/'老师：' \+ entry\.a/g) || [];
+/* 卡 t_93dad601 起气泡的写法变了：「老师：」前缀单独成文本节点，正文让 richText 往同一元素里渲染
+ * （拼成 '老师：' + 正文 会把模型第一行的行首「- 」吃掉，列表就出不来）。守卫的意图不变 ——
+ * 模型文字只有一个入口，且必须落在 .ask-a 里；同时钉死旧拼串写法不许回来。 */
+test('app-flow.js：模型文字唯一入口是「老师：」气泡（且只有一个 .ask-a 渲染点）', function () {
+  const m = FLOW_SRC.match(/richText\(h\('div', \{ class: 'ask-a' \}, '老师：'\), entry\.rich \|\| entry\.a\)/g) || [];
   assert.strictEqual(m.length, 1,
-    "「'老师：' + entry.a」应只出现 1 次，实际 " + m.length + ' 次 —— 多出来的地方就是把模型文字混进别处');
+    '「.ask-a 里渲染 entry.rich || entry.a」应只出现 1 次，实际 ' + m.length + ' 次 —— 多出来的地方就是把模型文字混进别处');
+  const old = FLOW_SRC.match(/'老师：' \+ entry\.a/g) || [];
+  assert.strictEqual(old.length, 0,
+    "旧的「'老师：' + entry.a」拼串写法不许残留（会把行首「- 」吃掉）");
 });
 
 /* ------------------------------------------------------------ 6. 历史作为第 7 参透传 */

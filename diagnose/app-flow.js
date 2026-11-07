@@ -71,6 +71,10 @@
   /* 三步讲解的展示正文：rich 是模型原文（保住 \frac 供渲染），text 是 normalize 结果
    * （门禁 / 提示词 / 缓存 / 既有测试都读 text，一个字节没变）。 */
   function stepRich(step) { return (step && (step.rich || step.text)) || ''; }
+  /* 三步讲解的「上屏」唯一出口（卡 t_93dad601）：容器 + 步骤对象 → 卡 H 的 segments()/render()。
+   * 想一想 / 提示 / 完整解析三处都走这里，测试也照这个口断言 ——
+   * 单段文本与改动前逐字一致（不多出空元素）；reveal 的行首「- 」渲染成真 ul/li。 */
+  function renderStepText(el, step) { return richText(el, stepRich(step)); }
 
   /* 统一的会话开入口（按钮 goFlow / 深链 init 都走这）：
    * 目标与存档一致就续练（restoreFromSave），否则新开（startSession）。
@@ -1106,7 +1110,7 @@ function explainPanel(item) {
           : show === 1 ? '第 2 步 · 提示（还差一点点）'
             : '第 3 步 · 完整解析'));
     if (show === 0) {
-      box.append(richText(h('div', { class: 'q-text' }), stepRich(steps[0])));
+      box.append(renderStepText(h('div', { class: 'q-text' }), steps[0]));
       box.append(h('div', { class: 'row' },
         h('button', { class: 'good', id: 'btn-soc-got', onclick: function () {
           S.ui.phase = 'ask'; S.ui.answer = ''; S.ui.explainStep = 0; renderQuestion(item);
@@ -1114,7 +1118,7 @@ function explainPanel(item) {
         h('button', { id: 'btn-soc-hint', onclick: function () { S.ui.explainStep = 1; renderQuestion(item); } }, '还是卡住，给我一点提示'),
         h('button', { class: 'small muted', onclick: function () { S.ui.explainStep = 2; renderQuestion(item); } }, '直接看答案')));
     } else if (show === 1) {
-      box.append(richText(h('div', { class: 'explain' }), stepRich(steps[1])));
+      box.append(renderStepText(h('div', { class: 'explain' }), steps[1]));
       box.append(h('div', { class: 'row' },
         h('button', { id: 'btn-soc-reveal', onclick: function () { S.ui.explainStep = 2; renderQuestion(item); } }, '还是不会，看完整解析'),
         h('button', { class: 'good', onclick: function () {
@@ -1123,7 +1127,7 @@ function explainPanel(item) {
     } else {
       box.append(h('details', { class: 'explain-fold' },
         h('summary', null, '看完整解析（自己想清楚再打开）'),
-        richText(h('div', { class: 'explain' }), stepRich(steps[2]))));
+        renderStepText(h('div', { class: 'explain' }), steps[2])));
       /* 函数实验室：配方法/二次函数类题，reveal 时挂可拖拽画板，直观理解几何意义。
        * M 卡：能不能挂、挂哪个画板、讲哪一句话，都由 LLM 语义匹配决定（diagnose/labmatch.js）；
        * 匹配失败/被拒绝/参数校验不过 → 不挂图（无正则保底，见卡面决策 2）。
@@ -1296,8 +1300,12 @@ function askBox(item, steps) {
         answerEl = chipAnswerEl(entry);   // chip 轮：结构化 payload，按 chip 类型渲染（不带「老师：」前缀）
       } else {
         /* 卡 t_dc7163ea：气泡正文整串交给 richText —— 「老师：」前缀是本地文案，entry.a 是模型
-         * 文本，两者拼成一条消息后一起渲染（模型文字仍然只出现在这一个地方）。 */
-        answerEl = richText(h('div', { class: 'ask-a' }), '老师：' + entry.a);
+         * 文本，两者拼成一条消息后一起渲染（模型文字仍然只出现在这一个地方）。
+         * 卡 t_93dad601：① 正文取 rich（模型原文）—— a 是 normalize 拍平后的串，行首「- 」已被剥掉，
+         *   拿它上屏就永远出不了 ul/li；rich 缺失（老存档 / 离线轮）时退回 a，逐字与改动前一致。
+         * ② 前缀单独当一个文本节点：拼进同一串会把模型第一行的行首「- 」弄丢（不再是行首），
+         *   单段文本渲染结果与拼串完全相同（同为行内文本），不改变现有气泡观感。 */
+        answerEl = richText(h('div', { class: 'ask-a' }, '老师：'), entry.rich || entry.a);
       }
       const rowEl = h('div', { class: 'ask-item' },
         h('div', { class: 'ask-q' }, '你：' + entry.q),
@@ -1382,7 +1390,7 @@ function askBox(item, steps) {
           graphRejected = graph ? null : ((v && v.reason) || 'rejected');
         } catch (err) { graph = null; graphRejected = 'threw'; }
         const entries2 = (S.ui.askHistory || []).slice();
-        entries2[idx] = { q: text, a: res.text, from: res.from, graph: graph, reason: res.reason, notice: res.notice, graphRejected: graphRejected };
+        entries2[idx] = { q: text, a: res.text, rich: res.rich, from: res.from, graph: graph, reason: res.reason, notice: res.notice, graphRejected: graphRejected };
         S.ui.askHistory = entries2;
         S.ui.askPending = false;
         S.ui.askScroll = true;   // 刚答完：本次渲染后滚到这条问答，否则答案落在折叠线以下看不见
@@ -2519,6 +2527,9 @@ function resolveTargets(params) {
     standardsCard: standardsCard, refreshStdText: refreshStdText, restart: restart,
     diagnosticOnlyRound: diagnosticOnlyRound, resultHeadline: resultHeadline,
     startPractice: startPractice, startPathPractice: startPathPractice,
-    mountPathGraph: mountPathGraph, ensureDagre: ensureDagre, pathFit: pathFit, pathZoom: pathZoom
+    mountPathGraph: mountPathGraph, ensureDagre: ensureDagre, pathFit: pathFit, pathZoom: pathZoom,
+    /* 上屏出口（卡 t_93dad601）：tests/test_explain_layout.js 直接打这三个口做 DOM 断言，
+     * 免得测试自己重写一遍渲染再声称「上屏走结构」。 */
+    _display: { richText: richText, stepRich: stepRich, renderStepText: renderStepText, isAiQuestion: isAiQuestion }
   };
 });
