@@ -259,9 +259,12 @@
     const kinds = ['prompt', 'hint', 'reveal'];
     const steps = [];
     for (const k of kinds) {
-      const text = cleanMarkdown(j[k] || '');
+      const raw = String(j[k] || '');
+      const text = cleanMarkdown(raw);
       if (!text) return null;
-      steps.push({ kind: k, text: text });
+      /* 卡 t_dc7163ea：text 仍是 normalize 结果（门禁 / 提示词 / 缓存 / 既有测试全读它，
+       * 一个字节没变）；rich 是模型原文，只给上屏渲染 \frac / \sqrt 真排版用。 */
+      steps.push({ kind: k, text: text, rich: raw.trim() ? raw : text });
     }
     return steps;
   }
