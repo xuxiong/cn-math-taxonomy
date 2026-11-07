@@ -38,6 +38,10 @@
   var childBar = CORE.childBar, diagnoseHrefFor = CORE.diagnoseHrefFor, routeReturnHref = CORE.routeReturnHref, routeBackBar = CORE.routeBackBar;
   var isPrereqKnowledge = CORE.isPrereqKnowledge, reasonFor = CORE.reasonFor, noteBlind = CORE.noteBlind, blindResultCard = CORE.blindResultCard;
   var llmVariantsMod = CORE.llmVariantsMod;
+  /* 卡 E：「再来一道」的路由层 + 卡 C/卡 B 模块的取用口（都是懒加载，模块顶层不抓引用）。 */
+  var genRouteMod = CORE.genRouteMod, constructMod = CORE.constructMod, llmGenMods = CORE.llmGenMods;
+  var LAZY_GENROUTE = CORE.LAZY_GENROUTE, LAZY_CONSTRUCT = CORE.LAZY_CONSTRUCT;
+  var questionsKeyOf = CORE.questionsKeyOf, ensureQuestionsIndex = CORE.ensureQuestionsIndex;
   /* screen 会话续接 + 后台补齐进度（都在 app.js，经 CORE 唯一一份状态）。 */
   var extendScreenSession = CORE.extendScreenSession, backgroundFillState = CORE.backgroundFillState;
   /* 常量（都在 app.js 的 CORE 定义之前，直接引用；与核心不共享、私有在这里）。 */
@@ -355,16 +359,23 @@ function startPractice(topicId) {
 
 /* 卡 D：「再来一道」—— 练习面板三个按钮与讲解面板的 variant chip 共用这一条链路。
  * 不可绕过验证门：genLLMVariant 内部过 validateLLMQuestion（重试 3 次），拿不到题就明说。 */
+/* 卡 E（t_0772253d）：「再来一道」按 data/gen-plan.json 三级路由 ——
+ *   construct（19 个点）→ 卡 B 的确定性构造器，零 LLM 零网络；
+ *   verify（1065 个点）  → 卡 C 的参数化管线（七道门 + 缓存池）；
+ *   human-only / 查不到    → 一句确定提示，一个请求都不发（O3 设计 D9 的硬红线）。
+ * 老 O3 路径（LLMV.genLLMVariant）保留不动、继续被既有测试钉着，但不再是这个按钮的默认入口：
+ * 它只认 3 个知识点（cnm_221/222/224），其余点点了必然「AI 这次没出出来」。
+ */
 function askAnother(item, difficulty) {
     /* difficulty: 'basic' | 'standard' | 'advanced' */
     if (S.ui.askAnother && S.ui.askAnother.pending) return;   // 出题中防重复点击
-    const LLMV = llmVariantsMod();
-    if (!LLMV) {
-      /* 变式模块不在首屏链上：第一次用才按需加载，失败明确说，不静默变成「点了没反应」。 */
-      if (S.lazyFailed.variants) { alert('练习题组件没有加载出来，请刷新页面重试。'); return; }
-      Browser.Lazy.load(LAZY_VARIANTS).then(function () { askAnother(item, difficulty); }, function (err) {
-        lazyFail('variants')(err);
-        alert('练习题组件没有加载出来，请检查网络后重试。');
+    const R = genRouteMod();
+    if (!R) {
+      /* 路由层不在首屏链上：第一次用才按需加载。失败明确说，不静默变成「点了没反应」。 */
+      if (S.lazyFailed.genroute) { alert('出题组件没有加载出来，请刷新页面重试。'); return; }
+      Lazy.load(LAZY_GENROUTE).then(function () { askAnother(item, difficulty); }, function (err) {
+        lazyFail('genroute')(err);
+        alert('出题组件没有加载出来，请检查网络后重试。');
       });
       return;
     }
@@ -373,37 +384,149 @@ function askAnother(item, difficulty) {
     function gone() { return tick !== explainTick || !S.ui || S.ui.key !== startKey; }
     S.ui.askAnother = { pending: difficulty };
     renderQuestion(item);
-    LLMV.probeGateway().then(function (reachable) {
+
+    /* AI 标只认单一常量（卡 D）：notice 文案由 gen-route 统一拼，徽标文字从这里注入。 */
+    function badgeText() {
+      const LLMV = llmVariantsMod();
+      return LLMV && LLMV.AI_DRAFT_BADGE ? LLMV.AI_DRAFT_BADGE.text : undefined;
+    }
+    function fail(err) {
       if (gone()) return;
-      if (!reachable) {
-        S.ui.askAnother = { notice: 'AI 现在出不了题（网关不通），先接着做原来的题。' };
-        renderQuestion(item);
-        return null;
-      }
-      return LLMV.genLLMVariant(item.topicId, { difficulty: difficulty }).then(function (q) {
-        if (gone()) return;
-        if (!q) {
-          S.ui.askAnother = { notice: 'AI 这次没出出来（验证没通过），先接着做原来的题。' };
-          renderQuestion(item);
-          return;
-        }
-        if (S.prac) {
-          /* 正在练习：排到当前题后面（S.prac.idx + 1），不打断正在做的题 */
-          S.prac.list.splice(S.prac.idx + 1, 0, q);
-          S.ui.askAnother = { notice: LLMV.AI_DRAFT_BADGE.text + '，已排到下一题。' };
-          renderQuestion(item);
-        } else {
-          /* 诊断会话：开单题覆盖层，答完由 practiceNext 带 returnItem 回原题讲解。 */
-          S.prac = { topicId: item.topicId, list: [q], idx: 0, pact: [], usedVariants: 1, nextIndex: 0, returnItem: item };
-          resetUi();
-          renderQuestion(pracItem());
-        }
-      });
-    }).catch(function () {
-      if (gone()) return;
+      if (typeof console !== 'undefined' && console.warn) console.warn('[gen] 出题失败：', err);
       S.ui.askAnother = { notice: 'AI 这次没出出来（验证没通过），先接着做原来的题。' };
       renderQuestion(item);
+    }
+    function settle(r) {
+      if (gone()) return;
+      const notice = R.noticeFor(r, { badgeText: badgeText() });
+      if (!r || !r.question) { S.ui.askAnother = { notice: notice }; renderQuestion(item); return; }
+      placeAnother(r.question, item, notice);
+    }
+
+    R.ensurePlan({ fetch: Browser.fetch ? Browser.fetch.bind(Browser) : null }).then(function (plan) {
+      if (gone()) return;
+      if (!plan) {
+        S.ui.askAnother = { notice: '出题工单没有加载出来，先接着做原来的题。' };
+        renderQuestion(item);
+        return;
+      }
+      const d = R.decide(plan, item.topicId);
+      if (d.action === 'none') {   // human-only / plan 里查不到：不发请求，只给结论
+        S.ui.askAnother = { notice: R.noticeFor({ action: 'none', reason: d.reason }, { badgeText: badgeText() }) };
+        renderQuestion(item);
+        return;
+      }
+      const next = d.action === 'construct' ? askConstructRoute(R, plan, item, difficulty) : askLLMRoute(R, plan, item, difficulty);
+      next.then(settle, fail);
+    }).catch(fail);
+  }
+
+  /* construct 路线：加载卡 B 的构造器 → 按本知识点已点次数推 index（同 seed 下 index 不同才出新题）。 */
+  function askConstructRoute(R, plan, item, difficulty) {
+    const ready = constructMod() ? Promise.resolve() : Lazy.load(LAZY_CONSTRUCT);
+    return ready.then(function () {
+      const Ctor = constructMod();
+      if (!Ctor) return { action: 'construct', question: null, reason: 'construct-unsupported', topicId: item.topicId };
+      const bank = (S.D && S.D.graph && S.D.graph.bank && S.D.graph.bank[item.topicId]) || [];
+      /* 撞题闸门用构造器自己的 canonical / skeleton 口径（不在这里另造一份归一化）。 */
+      const avoidPrompts = [];
+      const avoidSkeletons = [];
+      for (let i = 0; i < bank.length; i++) {
+        const q = bank[i];
+        if (!q || !q.prompt) continue;
+        avoidPrompts.push(Ctor.canon(q.prompt));
+        const sk = Ctor.skeleton(q.prompt);
+        if (sk) avoidSkeletons.push(sk);
+      }
+      return R.ask({
+        topicId: item.topicId, difficulty: difficulty, plan: plan,
+        index: bumpGenSeq(item.topicId), seed: newSeed(),
+        avoidPrompts: avoidPrompts, avoidSkeletons: avoidSkeletons,
+        deps: { construct: Ctor }
+      });
     });
+  }
+
+  /* verify 路线：先探网关（不通就别让三个重试各等一个超时），再拼 ctx 交给 llm-gen。
+   * 模块顺序由 LAZY_VARIANTS 保证：llm-config → textfmt → eval → gateway → recipes → gates → gen。 */
+  function askLLMRoute(R, plan, item, difficulty) {
+    const LLMV = llmVariantsMod();
+    if (!LLMV) {
+      if (S.lazyFailed.variants) return Promise.resolve({ action: 'llm', question: null, reason: 'llm-modules-missing', topicId: item.topicId });
+      return Lazy.load(LAZY_VARIANTS).then(function () { return askLLMRoute(R, plan, item, difficulty); },
+        function (err) { lazyFail('variants')(err); return { action: 'llm', question: null, reason: 'llm-modules-missing', topicId: item.topicId }; });
+    }
+    const probe = typeof LLMV.probeGateway === 'function' ? LLMV.probeGateway() : Promise.resolve(true);
+    return probe.then(function (reachable) {
+      if (!reachable) return { action: 'llm', question: null, reason: 'gateway-unreachable', topicId: item.topicId };
+      return buildGenContext(item.topicId).then(function (ctx) {
+        const mods = llmGenMods();
+        return R.ask({
+          topicId: item.topicId, difficulty: difficulty, plan: plan, ctx: ctx, seed: newSeed(),
+          deps: { recipes: mods.recipes, gates: mods.gates, gen: mods.gen }
+        });
+      });
+    });
+  }
+
+  /* 拼 llm-gen 的 ctx：知识点本体 + 本章节真题（撞题语料 + 现有题 id/题面）+ 课标 + 同科知识点表。
+   * 全部走首屏层已有的取数口（questionsKeyOf / ensureQuestionsIndex / S.D），不复制 URL 规则。 */
+  function buildGenContext(topicId) {
+    const R = genRouteMod();
+    const mods = llmGenMods();
+    const t = (S.D && S.D.graph && S.D.graph.byId && S.D.graph.byId[topicId]) || null;
+    if (!R || !t || !mods.gates) return Promise.resolve(null);
+    const bank = (S.D.graph.bank && S.D.graph.bank[topicId]) || [];
+    /* 门 7 的词表：同科全部知识点（章节 + 年级 + 名称），与 llm-gates 的口径一致。 */
+    const vocab = (S.D.topics || []).map(function (x) {
+      return { topicId: x.id, name: x.name, subject: S.subject, grade: x.grade, chapter: x.chapter };
+    });
+    /* 课标正文不阻塞出题：没到货时 prompt 里只列 id，下一次点击自然带上。 */
+    try { if (typeof ensureStandards === 'function') ensureStandards(); } catch (e) { /* 课标是增强项，不影响出题 */ }
+    return Promise.resolve()
+      .then(function () { return ensureQuestionsIndex(); })
+      .then(function (idx) {
+        return R.fetchDetail({
+          fetch: Browser.fetch ? Browser.fetch.bind(Browser) : null,
+          index: idx, key: questionsKeyOf(t), topicId: topicId
+        });
+      })
+      .then(function (detail) {
+        return R.buildContext({
+          topic: t, detail: detail, bank: bank, stdById: (S.D && S.D.stdById) || {},
+          vocabulary: vocab, gates: mods.gates, subject: S.subject
+        });
+      })
+      .catch(function () { return null; });
+  }
+
+  /* 出题结果落位：练习中排到当前题后面；诊断会话里开单题覆盖层（答完回原题讲解）。 */
+  function placeAnother(q, item, notice) {
+    const LLMV = llmVariantsMod();
+    /* 卡 D 的准入闸门对新路径同样生效：没过验证门的 AI 题不许进队列、也不许上屏。 */
+    if (LLMV && typeof LLMV._admitToPracticeQueue === 'function' && !LLMV._admitToPracticeQueue(q)) {
+      S.ui.askAnother = { notice: 'AI 这次没出出来（验证没通过），先接着做原来的题。' };
+      renderQuestion(item);
+      return;
+    }
+    if (S.prac) {
+      S.prac.list.splice(S.prac.idx + 1, 0, q);
+      S.ui.askAnother = { notice: notice };
+      renderQuestion(item);
+    } else {
+      S.prac = { topicId: item.topicId, list: [q], idx: 0, pact: [], usedVariants: 1, nextIndex: 0, returnItem: item };
+      resetUi();
+      renderQuestion(pracItem());
+    }
+  }
+
+  /* 每点一次「再来一道」把构造 index 往前推一格：index 是确定性构造器的输入之一，
+   * 不推进就会一直拿到同一道题（同 seed + 同 index = 同题）。 */
+  const GEN_SEQ = Object.create(null);
+  function bumpGenSeq(topicId) {
+    const n = GEN_SEQ[topicId] || 0;
+    GEN_SEQ[topicId] = n + 1;
+    return n;
   }
 
 /* 练习答题面板的「再来一道」一行：pending 时三个按钮禁用并显示等待，notice 展示一次结果。 */

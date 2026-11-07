@@ -77,7 +77,26 @@
     '../assets/vendor/dagre.min.js',
     '../assets/vendor/cytoscape-dagre.js'
   ];
-  const LAZY_VARIANTS = ['variants.js', 'llm-eval.js', 'llm-gateway.js', 'llm-variants.js'];  // 练习（llm-* 依赖链）
+  const LAZY_VARIANTS = [                                                    // 练习（llm-* 依赖链）
+    /* 卡 E（t_0772253d）：「再来一道」改走卡 C 的参数化管线，三个模块按依赖顺序追加在 O3 老路径之后。
+     * 顺序理由（与 b3ef1ad 同一条教训）：llm-gen.js 在模块顶层快照 CFG（llm-config.js）与
+     * DiagLLMRecipes / DiagLLMGates / DiagLLMGateway / textfmt —— 依赖必须排在它前面，
+     * 否则快照恒为 null，max_tokens 退回裸数字、题面也不会 normalize。
+     * llm-config.js 原先不在这组里（llm-variants 是在函数里才取配置的，侥幸没踩），
+     * 这次 gen 要顶层快照，只能把配置排到组首。 */
+    'llm-config.js', 'textfmt.js',
+    'variants.js', 'llm-eval.js', 'llm-gateway.js',
+    'llm-recipes.js', 'llm-gates.js', 'llm-gen.js',
+    'llm-variants.js'
+  ];
+  /* 卡 E：「再来一道」的路由层单独一组。它只读 data/gen-plan.json 做判定，
+   * 不依赖上面任何模块 —— human-only 的点走到这里就能给出「只能做原题」的确定提示，
+   * 不必为了一句提示去下载 60KB 的 LLM 模块（plan 里 2213/3297 个点是这类）。 */
+  const LAZY_GENROUTE = ['gen-route.js'];
+  /* 卡 B 的确定性构造器：只有 construct 路线的点才会加载（零 LLM、零网络）。
+   * construct.js 的浏览器分支要 window.DiagLLMEval（拿 evaluateExpression 复算根），
+   * 所以 llm-eval.js 必须排在它前面 —— Node 侧 construct.js 自己 require，浏览器侧只认全局。 */
+  const LAZY_CONSTRUCT = ['llm-eval.js', 'construct.js'];
   /* 懒加载永远失败一次就够：同一次页面访问不反复重试，用户下次操作/刷新再试。
    * 失败只会让对应功能走已有的降级分支，绝不把错误抛给首屏。 */
   function lazyFail(name) {
@@ -89,6 +108,13 @@
   /* 变式模块是懒加载的：模块顶层不能抓引用（抓到的一定是 undefined），用到时现取。 */
   function variantsMod() { return Browser.DiagVariants; }
   function llmVariantsMod() { return Browser.DiagLLMVariants; }
+  /* 卡 E：「再来一道」的路由层（同类理由 —— 懒加载，模块顶层不抓引用）。 */
+  function genRouteMod() { return Browser.DiagGenRoute; }
+  function constructMod() { return Browser.DiagConstruct; }
+  /** LLM 生成链路的一次性模块包（recipes / gates / gen），供 app-flow 拼 ctx 与出题用。 */
+  function llmGenMods() {
+    return { recipes: Browser.DiagLLMRecipes, gates: Browser.DiagLLMGates, gen: Browser.DiagLLMGen };
+  }
   const LS_SESSION = 'cnmDiagnose.session.v2';
   const LS_SESSION_EN = 'cneDiagnose.session.v2';
   const LS_SESSION_PHY = 'cnpDiagnose.session.v2';
@@ -145,6 +171,9 @@
     /* 按需段要的常量（都是本对象定义之前就声明的 const/let，直接引用无 TDZ） */
     DIFF_LABEL: DIFF_LABEL, LAZY_EXPLAIN: LAZY_EXPLAIN, LAZY_LAB: LAZY_LAB,
     LAZY_SHARE: LAZY_SHARE, LAZY_VARIANTS: LAZY_VARIANTS, LS_PRAC: LS_PRAC, LS_VSEQ: LS_VSEQ,
+    /* 卡 E：路由层自己的懒加载组 + 模块取用口（gen-route / construct / recipes+gates+gen） */
+    LAZY_GENROUTE: LAZY_GENROUTE, LAZY_CONSTRUCT: LAZY_CONSTRUCT,
+    genRouteMod: genRouteMod, constructMod: constructMod, llmGenMods: llmGenMods,
     PRACTICE_N: PRACTICE_N, RESULT_LABEL: RESULT_LABEL, TYPE_LABEL: TYPE_LABEL, VOLUMES: VOLUMES,
     root: root,
     /* 按需段要调的核心工具（function 声明已提升，引用安全） */
@@ -155,6 +184,8 @@
     renderNoQuestions: renderNoQuestions, questionSourcesSettled: questionSourcesSettled,
     screenRoundGraph: screenRoundGraph,
     ensureFullTopics: ensureFullTopics, ensureStandards: ensureStandards,
+    /* 卡 E：拼出题上下文要的两件事 —— questions-index 的 key 规则与索引本身（都在本层，不复制） */
+    questionsKeyOf: questionsKeyOf, ensureQuestionsIndex: ensureQuestionsIndex,
     ensureQuestionsForOne: ensureQuestionsForOne, ensureQuestionsForTopics: ensureQuestionsForTopics,
     ensureQuestionsForAnswers: ensureQuestionsForAnswers,
     withStage2: withStage2, withStage2Data: withStage2Data, stage2Status: stage2Status,
