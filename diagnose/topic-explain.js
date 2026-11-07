@@ -61,20 +61,29 @@
     '<', '>', '≤', '≥', '(', ')', '（', '）'
   ];
 
-  /* §4.2 幼儿级：demo 段必须至少命中一个生活词（布尔命中，不是比例）。
-   * 卡 A″ 自查：只留「名词性量词 / 单位 + 动作动词」——这些词的共同点是它们指名了
-   * 现实里能被数、能被搬、能被分的东西或动作，抽象讲解里不会自发出现。
-   * 已剔除（不能证明生活场景）：
-   *   - 「把」：介词，任何句子都能带（「把数字加起来」），纯语法词 → 白场景；
-   *   - 「一共」：副词，「一共要三步」这类抽象讲解同样命中；
-   *   - 「平均」：形容词 / 数学术语（「平均数是…」），不是生活场景证据。
-   * 已知残留（本卡不动，只披露）：单字量词用 indexOf 子串命中，「这个知识点」「支持」
-   *   「本来」「只有」会把「个 / 支 / 本 / 只」撞出来；要根治得做词边界切分，另开卡。 */
-  var LIFE_SCENE_WORDS = [
+  /* §4.2 幼儿级：demo 段必须至少有一句是真生活场景（按句判定，任一句满足即通过）。
+   * 卡 A‴ 起不再用「裸子串」：单字量词 / 动词会被「这个」「个人」「支持」这类词白撞。
+   *   - 量词（LIFE_SCENE_MEASURES）：必须紧跟阿拉伯数字或中文数字（3 个 / 九个 / 十几个），
+   *     裸「这个」「个人」不算；
+   *   - 动作动词（LIFE_SCENE_ACTIONS）：只有该动词所在句子里同时出现数字才计数
+   *     （「小明买了 9 个苹果」算，「把数字加起来」不算）；
+   *   - 纯语法词 / 副词 / 术语（把 / 被 / 就 / 了 / 一共 / 平均）一个都不进表。 */
+  var LIFE_SCENE_MEASURES = [
     '个', '只', '块', '元', '根', '本', '朵', '人', '颗', '盒', '袋', '张', '支', '瓶',
-    '件', '米', '厘米', '买', '卖', '送', '分给', '拿走', '剩下', '还剩',
-    '排队', '上车', '下车', '吃了'
+    '件', '米', '厘米'
   ];
+  var LIFE_SCENE_ACTIONS = [
+    '买', '卖', '送', '给', '分给', '拿走', '剩下', '还剩',
+    '排队', '上车', '下车', '吃'
+  ];
+  /* 导出名保留（卡 B / 既有测试会读），内容只放动作动词。 */
+  var LIFE_SCENE_WORDS = LIFE_SCENE_ACTIONS;
+
+  /* 量词必须紧跟数字（阿拉伯或中文数字）；动作动词只在「同句有数字」时才计数。 */
+  var LIFE_SCENE_MEASURE_RE = new RegExp(
+    '(?:\\d+|[两二三四五六七八九十百千几]+)\\s*(?:' + LIFE_SCENE_MEASURES.join('|') + ')'
+  );
+  var LIFE_SCENE_DIGIT_RE = /(?:\d+|[两二三四五六七八九十百千几]+)/;
 
   /* G7 / G7r 的小整数白名单常量。卡 A″ 从 [0,1,2,3,4,5,10] 收窄到 [0,1]：
    * 中文里「第一步 / 两只手」本来就用汉字，不需要为「第 2 步」「10 只」放行阿拉伯数字；
@@ -902,15 +911,16 @@
   }
 
   /* G1 早期档两条（§4.2 幼儿级额外规则；标志恒由 limitsOf 决定，其余三档整段跳过 → 行为一点不变）
-   *   1) 禁符号算式：5 段正文（normalize 后）不得出现 EARLY_FORBID_SYMBOLS 里任何一个；
-   *   2) 必须有生活场景：demo 段至少命中 LIFE_SCENE_WORDS 里一个词。
-   *   两条都是布尔命中，不做比例/阈值判断。 */
-  function gateEarlyLevel(segs, inputs, reasons) {
+   *   1) 禁符号算式：5 段正文（归一文本 norm）不得出现 EARLY_FORBID_SYMBOLS 里任何一个；
+   *   2) 必须有生活场景：demo 段（归一文本 normDemo）按句判定，任一句满足即通过 ——
+   *      量词紧跟数字（3 个 / 九个 / 十几个），或动作动词所在句同时出现数字。
+   * 两条都是布尔命中，不做比例/阈值判断。归一文本由入口传入，本函数不再各自 normalize。 */
+  function gateEarlyLevel(segs, inputs, reasons, norm, normDemo) {
     var L = (inputs && inputs.limits) || limitsOf(inputs && inputs.level);
     if (!L.forbidSymbols && !L.requireRealLife) return;
 
     if (L.forbidSymbols) {
-      var text = normalize(textOfSegs(segs));
+      var text = asText(norm);
       var hits = [];
       EARLY_FORBID_SYMBOLS.forEach(function (sym) {
         if (text.indexOf(sym) >= 0 && hits.indexOf(sym) < 0) hits.push(sym);
@@ -921,11 +931,17 @@
     }
 
     if (L.requireRealLife) {
-      var demo = normalize(asText(segs && segs.demo)).trim();
+      var demo = asText(normDemo).trim();
       if (!demo) return;   /* 空段已由 G1 结构报过一次，不重复 */
       var found = false;
-      LIFE_SCENE_WORDS.forEach(function (w) {
-        if (w && demo.indexOf(w) >= 0) found = true;
+      demo.split(/[。！？!?；;\n]/).forEach(function (s) {
+        if (found) return;
+        var sent = s.trim();
+        if (!sent) return;
+        if (LIFE_SCENE_MEASURE_RE.test(sent)) { found = true; return; }
+        if (LIFE_SCENE_DIGIT_RE.test(sent) && LIFE_SCENE_ACTIONS.some(function (w) {
+          return sent.indexOf(w) >= 0;
+        })) found = true;
       });
       if (!found) {
         reasons.push({ gate: 'G1', why: '1–2 年级的例子必须是生活场景，当前例子是抽象算式' });
@@ -933,29 +949,45 @@
     }
   }
 
-  /* 全角数字归一：０-９（U+FF10–U+FF19）→ 0-9，全角小数点 ．(U+FF0E) → . 。
-   * 唯一入口：digitTokens() 抽数前先过这一层（其它地方不许各自 replace）。
-   * 只映射这两个区间，不动全角字母 / 全角标点（符号禁令有自己那份表）。
-   * 为什么需要：模型偶尔输出全角数字（「７ 个苹果」），正则 /\d/ 抽不到 → G7 整段失明，
-   * 编造的数直接放行；归一后 ７ 与 7 走同一套判据。 */
-  function toHalfWidthDigits(text) {
-    return asText(text).replace(/[\uFF0E\uFF10-\uFF19]/g, function (ch) {
-      if (ch === '\uFF0E') return '.';
-      return String.fromCharCode(ch.charCodeAt(0) - 0xFF10 + 0x30);
-    });
+  /* 全角 → 半角归一（唯一实现）。闸门入口对 normalize 后的文本调用一次，之后
+   * G2 / G3 / G4 / G7（含 G2r / G3r / G7r）与早期档符号 / 生活场景都只看归一文本。
+   *
+   * 为什么需要：模型偶尔输出全角数字 / 全角运算符（「３＋１＝２」），正则 /\d/ 与
+   * 半角运算符整段失明 → G3r / G7 放行错误答案。归一后 ３ 与 3、＋ 与 + 走同一套判据。
+   *
+   * 映射（只做这些，不动全角字母）：
+   *   ０-９ → 0-9，．→ .，％→ %，＋→ +，－→ -，×→ *，÷→ /，＝→ =，
+   *   ＜→ <，＞→ >，≤→ <=，≥→ >=，（→ (，）→ )
+   * 幂等：toNarrow(toNarrow(x)) === toNarrow(x)（所有目标字符都不在源字符集里）。
+   * 唯一入口：digitTokens() 抽数前也调这一层，别处不许再写第二份映射表。 */
+  var NARROW_MAP = {
+    '\uFF0E': '.', '\uFF05': '%',
+    '\uFF0B': '+', '\uFF0D': '-', '\u00D7': '*', '\u00F7': '/', '\uFF1D': '=',
+    '\uFF1C': '<', '\uFF1E': '>', '\u2264': '<=', '\u2265': '>=',
+    '\uFF08': '(', '\uFF09': ')'
+  };
+  function toNarrow(text) {
+    return asText(text).replace(
+      /[\uFF0E\uFF05\uFF0B\uFF0D\uFF1D\uFF1C\uFF1E\u2264\u2265\uFF08\uFF09\u00D7\u00F7\uFF10-\uFF19]/g,
+      function (ch) {
+        var code = ch.charCodeAt(0);
+        if (code >= 0xFF10 && code <= 0xFF19) return String.fromCharCode(code - 0xFF10 + 0x30);
+        return NARROW_MAP[ch];
+      }
+    );
   }
 
   /* G7 / G7r 数字白名单：正文里每个数字 token 都必须能在本次素材里找到同形 token。
    *   - 允许集合全部从入参算出（没有任何业务数字字面量白名单）；
    *   - 抽取规则 /\d+(?:\.\d+)?/g 逐 token 精确比对：1/2 抽成 1 与 2，两个都要在集合里；
-   *   - 抽数前先走 toHalfWidthDigits（全角 ７ / ３．５ 与 7 / 3.5 同判）；
+   *   - 抽数前先走 toNarrow（全角 ７ / ３．５ 与 7 / 3.5 同判）；
    *   - 不做算术等价转换（3+4 不会因为 7 在素材里就放行），宁可保守；
    *   - 与既有闸门并列：命中只 push，不提前 return（多因一起返回）。
    * 素材来源 = 模型在 materialText 里真能看到的那些字段（卡面表格所列 6 项全在内），
    * 另外补上 grade / standards[].id / examples 的答案与解析 / 先修名 —— 这些也在素材里，
    * 不列会把「引用课标编号」（G4 反而要求必须带编号）判成编造。 */
   function digitTokens(text) {
-    var s = toHalfWidthDigits(text);
+    var s = toNarrow(text);
     var re = /\d+(?:\.\d+)?/g;
     var out = [], m;
     while ((m = re.exec(s)) !== null) {
@@ -1018,11 +1050,12 @@
       return { ok: false, reasons: reasons };
     }
     var raw = textOfSegs(segs);
-    var norm = normalize(raw);
+    var norm = toNarrow(normalize(raw));
+    var normDemo = toNarrow(normalize(asText(segs.demo)));
     gateStructure(segs, ins, reasons);
-    gateEarlyLevel(segs, ins, reasons);
+    gateEarlyLevel(segs, ins, reasons, norm, normDemo);
     gateWhitelist(norm, ins, reasons, 'G2');
-    gateNumbers(norm, normalize(asText(segs.demo)), ins, reasons, 'G3');
+    gateNumbers(norm, normDemo, ins, reasons, 'G3');
     gateStandards(norm, ins, reasons);
     gateHygiene(raw, reasons);
     gateDigitWhitelist(norm, ins, reasons, 'G7');
@@ -1035,7 +1068,7 @@
     var reasons = [];
     var ins = inputs || {};
     var raw = asText(text);
-    var norm = normalize(raw);
+    var norm = toNarrow(normalize(raw));
     var L = ins.limits || limitsOf(ins.level);
 
     if (!raw.trim()) {
@@ -1180,6 +1213,8 @@
     /* 卡 A′ 两条早期档判据的词表 / 符号表 + G7 小整数常量（卡 B 也可读） */
     EARLY_FORBID_SYMBOLS: EARLY_FORBID_SYMBOLS,
     LIFE_SCENE_WORDS: LIFE_SCENE_WORDS,
+    LIFE_SCENE_MEASURES: LIFE_SCENE_MEASURES,
+    LIFE_SCENE_ACTIONS: LIFE_SCENE_ACTIONS,
     COMMON_SMALL_DIGITS: COMMON_SMALL_DIGITS
   };
 });

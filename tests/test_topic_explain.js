@@ -983,7 +983,8 @@ test('G1 早期档符号：全角 ＋ － ＝ 与括号同样命中', () => {
   const r = T.checkExplain(segsWith({ demo: '３＋２＝５。' }), P006);
   const g1 = r.reasons.filter((x) => x.gate === 'G1' && /符号算式/.test(x.why));
   assert.strictEqual(g1.length, 1, JSON.stringify(r.reasons));
-  assert.ok(g1[0].why.indexOf('＋') >= 0 && g1[0].why.indexOf('＝') >= 0, g1[0].why);
+  /* 归一后提示语报半角，判据未变（全角 ＋ / ＝ 仍命中，只是 why 里显示为 + / =）。 */
+  assert.ok(g1[0].why.indexOf('+') >= 0 && g1[0].why.indexOf('=') >= 0, g1[0].why);
 
   const paren = T.checkExplain(segsWith({ demo: '先算（１加２）。' }), P006);
   assert.ok(paren.reasons.some((x) => x.gate === 'G1' && /符号算式/.test(x.why)),
@@ -1162,6 +1163,58 @@ test('生活场景词表：介词「把」不再让抽象例子通过（只留�
   /* 真生活场景不受影响 */
   const ok = T.checkExplain(segsWith({ demo: '妈妈买了 3 个苹果。' }), P006);
   assert.strictEqual(ok.ok, true, JSON.stringify(ok.reasons));
+});
+
+/* 卡 A‴：全角算式 / 生活场景判据回归（先写测试，确认红后再改实现） */
+
+test('全角算式：３＋１＝２ 在 checkReply 被 G3r 拒', () => {
+  const r = T.checkReply('３＋１＝２', P006);
+  assert.strictEqual(r.ok, false, JSON.stringify(r.reasons));
+  const hit = r.reasons.find((x) => x.gate === 'G3r' && /算式与结果对不上/.test(x.why));
+  assert.ok(hit, JSON.stringify(r.reasons));
+});
+
+test('全角算式：３＋２＝４ 在 checkExplain 的 demo 段被 G3 拒', () => {
+  const r = T.checkExplain(segsWith({ demo: '３＋２＝４。' }), P006);
+  const hit = r.reasons.find((x) => x.gate === 'G3' && /算式与结果对不上/.test(x.why));
+  assert.ok(hit, JSON.stringify(r.reasons));
+});
+
+test('半角对照不回归：3 + 1 = 2 仍被拒', () => {
+  const r = T.checkReply('3 + 1 = 2', P006);
+  const hit = r.reasons.find((x) => x.gate === 'G3r' && /算式与结果对不上/.test(x.why));
+  assert.ok(hit, JSON.stringify(r.reasons));
+});
+
+test('全角正确算式放行：３＋１＝４ 不因归一而误拒', () => {
+  const r = T.checkReply('３＋１＝４', P006);
+  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
+});
+
+test('早期档全角符号也触发禁符号：early 档 demo 含 ３＋２ 被 G1 拒', () => {
+  const r = T.checkExplain(segsWith({ demo: '３＋２＝５。' }), P006);
+  const hit = r.reasons.find((x) => x.gate === 'G1' && /符号算式/.test(x.why));
+  assert.ok(hit, JSON.stringify(r.reasons));
+});
+
+test('生活场景：这个知识点就是这么回事。 被拒', () => {
+  const r = T.checkExplain(segsWith({ demo: '这个知识点就是这么回事。' }), P006);
+  assert.strictEqual(r.ok, false, JSON.stringify(r.reasons));
+  const hit = r.reasons.find((x) => x.gate === 'G1' && /生活场景/.test(x.why));
+  assert.ok(hit, JSON.stringify(r.reasons));
+});
+
+test('生活场景：桌上有 3 个苹果。 通过（量词紧跟数字）', () => {
+  const r = T.checkExplain(segsWith({ demo: '桌上有 3 个苹果。' }), P006);
+  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
+});
+
+test('归一只有一处实现：toNarrow 在 topic-explain.js 里只定义一次', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'diagnose', 'topic-explain.js'), 'utf8');
+  const toNarrowDefs = src.match(/function\s+toNarrow\s*\(/g) || [];
+  const oldDefs = src.match(/function\s+toHalfWidthDigits\s*\(/g) || [];
+  assert.strictEqual(toNarrowDefs.length, 1, 'toNarrow 必须只定义一次');
+  assert.strictEqual(oldDefs.length, 0, '旧的 toHalfWidthDigits 实现必须消失');
 });
 
 /* ================================================================
