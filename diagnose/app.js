@@ -529,7 +529,7 @@
     if (v.indexOf(qid) < 0) { v.push(qid); lsSet(LS_SEEN, v); }
   }
   function newSeed() { return S.seedParam != null ? S.seedParam : Math.random().toString(36).slice(2, 10); }
-  function resetUi() { S.ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiNotice: null, aiRequested: false, askHistory: [], askPending: false, askScroll: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null }; }
+  function resetUi() { S.ui = { key: null, phase: 'ask', answer: '', verdict: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiNotice: null, aiRequested: false, askHistory: [], askPending: false, askScroll: false, askDraft: '', labCfg: null, labDesc: null, labAsk: null, labAskMsg: null, askSession: null, askChipBusy: null, askFreeOpen: false, askAnother: null, newQuestionNotice: false, hintLevel: 1 }; }
   function clearRoot() { while (root.firstChild) root.removeChild(root.firstChild); }
   function teardownPath() {
     S.pathToken++;

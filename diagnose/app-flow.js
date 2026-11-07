@@ -353,8 +353,72 @@ function startPractice(topicId) {
     }
   }
 
-function _startPracticeRender(fp, topicId) {
-    S.prac = { topicId: topicId, list: fp.list, idx: 0, pact: [], usedVariants: fp.usedVariants, nextIndex: fp.nextIndex };
+/* 卡 D：「再来一道」—— 练习面板三个按钮与讲解面板的 variant chip 共用这一条链路。
+ * 不可绕过验证门：genLLMVariant 内部过 validateLLMQuestion（重试 3 次），拿不到题就明说。 */
+function askAnother(item, difficulty) {
+    /* difficulty: 'basic' | 'standard' | 'advanced' */
+    if (S.ui.askAnother && S.ui.askAnother.pending) return;   // 出题中防重复点击
+    const LLMV = llmVariantsMod();
+    if (!LLMV) {
+      /* 变式模块不在首屏链上：第一次用才按需加载，失败明确说，不静默变成「点了没反应」。 */
+      if (S.lazyFailed.variants) { alert('练习题组件没有加载出来，请刷新页面重试。'); return; }
+      Browser.Lazy.load(LAZY_VARIANTS).then(function () { askAnother(item, difficulty); }, function (err) {
+        lazyFail('variants')(err);
+        alert('练习题组件没有加载出来，请检查网络后重试。');
+      });
+      return;
+    }
+    const tick = ++explainTick;   // 复用竞态令牌：出题慢，学生可能已交卷/翻题，只认当前面板这一次
+    const startKey = S.ui.key;
+    function gone() { return tick !== explainTick || !S.ui || S.ui.key !== startKey; }
+    S.ui.askAnother = { pending: difficulty };
+    renderQuestion(item);
+    LLMV.probeGateway().then(function (reachable) {
+      if (gone()) return;
+      if (!reachable) {
+        S.ui.askAnother = { notice: 'AI 现在出不了题（网关不通），先接着做原来的题。' };
+        renderQuestion(item);
+        return null;
+      }
+      return LLMV.genLLMVariant(item.topicId, { difficulty: difficulty }).then(function (q) {
+        if (gone()) return;
+        if (!q) {
+          S.ui.askAnother = { notice: 'AI 这次没出出来（验证没通过），先接着做原来的题。' };
+          renderQuestion(item);
+          return;
+        }
+        if (S.prac) {
+          /* 正在练习：排到当前题后面（S.prac.idx + 1），不打断正在做的题 */
+          S.prac.list.splice(S.prac.idx + 1, 0, q);
+          S.ui.askAnother = { notice: LLMV.AI_DRAFT_BADGE.text + '，已排到下一题。' };
+          renderQuestion(item);
+        } else {
+          /* 诊断会话：开单题覆盖层，答完由 practiceNext 带 returnItem 回原题讲解。 */
+          S.prac = { topicId: item.topicId, list: [q], idx: 0, pact: [], usedVariants: 1, nextIndex: 0, returnItem: item };
+          resetUi();
+          renderQuestion(pracItem());
+        }
+      });
+    }).catch(function () {
+      if (gone()) return;
+      S.ui.askAnother = { notice: 'AI 这次没出出来（验证没通过），先接着做原来的题。' };
+      renderQuestion(item);
+    });
+  }
+
+/* 练习答题面板的「再来一道」一行：pending 时三个按钮禁用并显示等待，notice 展示一次结果。 */
+function anotherRow(item) {
+    const st = S.ui.askAnother;
+    return h('div', { class: 'row ask-again', id: 'ask-again' },
+      h('span', { class: 'muted small' }, '再来一道：'),
+      h('button', { class: 'small', id: 'btn-another-easy', disabled: !!(st && st.pending), onclick: function () { askAnother(item, 'basic'); } }, '简单点'),
+      h('button', { class: 'small', id: 'btn-another-same', disabled: !!(st && st.pending), onclick: function () { askAnother(item, 'standard'); } }, '差不多'),
+      h('button', { class: 'small', id: 'btn-another-hard', disabled: !!(st && st.pending), onclick: function () { askAnother(item, 'advanced'); } }, '难一点'),
+      st && st.pending ? h('span', { class: 'muted small', id: 'ask-another-state' }, 'AI 正在出题…') : null,
+      st && st.notice ? h('span', { class: 'muted small', id: 'ask-another-state', text: st.notice }) : null);
+  }
+
+function _startPracticeRender(fp, topicId) {    S.prac = { topicId: topicId, list: fp.list, idx: 0, pact: [], usedVariants: fp.usedVariants, nextIndex: fp.nextIndex };
     S.pracResult = null;
     S.pracLoading = null;
     resetUi();
@@ -379,6 +443,7 @@ function practiceNext(result) {
     markSeen(S.prac.list[S.prac.idx].id);   // §6.4：练习题也记 seen，下次不重复
     S.prac.idx++;
     if (S.prac.idx >= S.prac.list.length) {
+      const ret = S.prac.returnItem;   // 卡 D：「再来一道」开的单题覆盖层：答完回原题讲解面板，不落结果页
       const ok = S.prac.pact.filter(function (r) { return r === 'correct'; }).length;
       markPracticed(S.prac.topicId);
       if (S.prac.usedVariants > 0) {   // 存回变式序号，下次从新序号继续
@@ -392,6 +457,14 @@ function practiceNext(result) {
       S.prac = null;
       resetUi();
       if (pathPracticeExists()) { finishPathLevel(S.pracResult); return; }   // 路径练习：不直接回结果页，先给「过关」
+      if (ret) {
+        /* 回原题讲解面板：先补 key 再设 phase —— S.ui.key 不匹配时 renderQuestion 会整体重置 S.ui，
+         * phase 会被冲回 'ask'，学生就回不到讲解现场了（AI 讲解有 5 分钟缓存，重触发不重复请求）。 */
+        S.ui.key = ret.topicId + '#' + ret.attempt;
+        S.ui.phase = 'explain';
+        renderQuestion(ret);
+        return;
+      }
       renderResult();   // 回到结果页
     } else {
       renderQuestion(pracItem());
@@ -635,11 +708,18 @@ function renderQuestion(item) {
     const t = S.D.graph.byId[id];
     const pr = !!S.prac;   // T3 练习模式
     const key = id + '#' + item.attempt;
-    if (S.ui.key !== key) S.ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiNotice: null, aiRequested: false, askHistory: [], askPending: false, askScroll: false, labCfg: null, labDesc: null, labAsk: null, labAskMsg: null };
+    if (S.ui.key !== key) S.ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiNotice: null, aiRequested: false, askHistory: [], askPending: false, askScroll: false, askDraft: '', labCfg: null, labDesc: null, labAsk: null, labAskMsg: null, askSession: null, askChipBusy: null, askFreeOpen: false, askAnother: null, newQuestionNotice: false, hintLevel: 1 };
+    /* 卡 D：渲染题面前先把追问会话锚定好 —— 换题（题面 hash 变了）在这里换新会话并置
+     * newQuestionNotice，题卡上的提示行和 askBox 读的都是这一次锚定的结果。 */
+    ensureAskSession(item);
     const n = pr ? S.prac.idx : S.session.answers.length;
     const card = h('div', { class: 'card' });
     const onPath = pr && pathPracticeExists();
-    card.append(
+    /* 卡 D：AI 生成题的「未审核」标 —— 文案/类名单一来源 LLMV.badgeFor（AI_DRAFT_BADGE），
+     * 模块没到货先不渲染（下次渲染自然补上），UI 层不复制这份文案。 */
+    const aibadge = q.variant && q.variantSource === 'llm' && llmVariantsMod() ? llmVariantsMod().badgeFor(q) : null;
+    /* 原生 card.append 会把三目里的 null 字符串化：换成自定义 append(el, [数组])，天生跳过 null。 */
+    append(card, [
       h('div', { class: 'row', id: onPath ? 'path-level-head' : null },
         h('span', { class: 'muted' }, pr
           ? (onPath ? '路径练习 · 第 ' + (S.pracPath.idx + 1) + ' 关 / 共 ' + S.pracPath.queue.length + ' 关 · ' + t.name : '练习：' + t.name)
@@ -653,9 +733,12 @@ function renderQuestion(item) {
         h('span', { class: 'tag diff-' + q.difficulty, text: DIFF_LABEL[q.difficulty] || q.difficulty }),
         h('span', { class: 'tag', text: TYPE_LABEL[q.type] || q.type }),
         h('span', { class: 'tag', text: pr ? '练习第 ' + (S.prac.idx + 1) + ' 题' : '本知识点第 ' + item.attempt + ' / ' + eng().needConfirm(S.D.graph, S.session, id) + ' 题' }),
-        q.variant ? h('span', { class: 'tag', text: q.variantSource === 'llm' ? 'LLM变式' : '变式' }) : null),
+        q.variant ? h('span', { class: 'tag', text: q.variantSource === 'llm' ? 'LLM变式' : '变式' }) : null,
+        aibadge ? h('span', { class: aibadge.cls, text: aibadge.text }) : null),
+      /* 卡 D：换题提示只显示一次 —— ensureAskSession 置位，renderQuestion 末尾清掉。 */
+      S.ui.newQuestionNotice ? h('div', { class: 'newq-notice', id: 'newq-notice' }, '这是新题：题面变了，之前的问答不会带过来。') : null,
       h('div', { class: 'reason', text: pr ? '针对性练习（不进诊断结果）。做完自动判定对错，答错可以点「为什么错了」看讲解。' : reasonFor(item) }),
-      h('div', { class: 'q-text', id: 'q-text', text: q.prompt }));
+      h('div', { class: 'q-text', id: 'q-text', text: q.prompt })]);
     const stemFig = figureEl(q.figure);
     if (stemFig) {
       const qt = card.querySelector('#q-text');
@@ -681,6 +764,9 @@ function renderQuestion(item) {
         q.type === 'self' ? null : h('button', { class: 'primary', id: 'btn-submit', onclick: function () { judgeAndGo(item); } }, '提交答案'),
         q.type === 'choice' ? null : h('button', { id: 'btn-peek', onclick: function () { S.ui.phase = 'self'; S.ui.verdict = null; renderQuestion(item); } }, '看参考答案并自评'),
         h('button', { id: 'btn-skip', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiNotice = null; S.ui.aiRequested = false; renderQuestion(item); } }, '不会')));
+      /* 卡 D：练习里给「再来一道」（简单点/差不多/难一点）—— 诊断会话不放：
+       * 诊断题集由引擎决定，掺 AI 题会污染判分口径。 */
+      if (pr) card.append(anotherRow(item));
     } else if (S.ui.phase === 'auto') {
       const ok = S.ui.verdict.verdict === 'correct';
       const nextResult = ok ? 'correct' : 'wrong';
@@ -736,7 +822,12 @@ function renderQuestion(item) {
     card.append(h('div', { class: 'row no-print', style: 'margin-top:12px' },
       pr ? h('button', { class: 'small', id: 'btn-prac-exit', onclick: function () {
         if (pathPracticeExists()) exitPathPractice();   // 路径练习：向学生明确「关掉整条路径」
-        else { S.prac = null; S.pracResult = null; resetUi(); render(); }
+        else {
+          const ret = S.prac && S.prac.returnItem;   // 卡 D：单题覆盖层中途退出也回原题讲解，别把诊断卡在半路
+          S.prac = null; S.pracResult = null; resetUi();
+          if (ret) { S.ui.key = ret.topicId + '#' + ret.attempt; S.ui.phase = 'explain'; renderQuestion(ret); return; }
+          render();
+        }
       } }, pathPracticeExists() ? '退出路径练习' : '退出练习')
         : h('button', { class: 'small', onclick: function () { if (confirm('确定放弃当前诊断并回到开始页吗？')) restart(); } }, '重新开始')));
     const page = h('div');
@@ -751,6 +842,8 @@ function renderQuestion(item) {
       if (last) last.scrollIntoView({ block: 'start' });
       S.ui.askScroll = false;   // 用完即清：只有「刚提问」「刚答完」这两次渲染滚动，历史气泡/翻步骤/切题一律不滚
     }
+    /* 卡 D：换题提示显示过一次就清 —— 翻步骤/重渲染不重复提示；再换题时 ensureAskSession 会重新置位。 */
+    S.ui.newQuestionNotice = false;
     const inp = document.getElementById('ans');
     if (inp && inp.setSelectionRange && inp.tagName === 'INPUT') { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
     else if (inp) inp.focus();
@@ -1001,13 +1094,39 @@ function askGraphNotice(labCfg) {
   return '本次回答没有配图。';
 }
 
+/* 卡 D：追问会话锚到「这一道题」—— 键 = qid + prompt_hash（空白差异不另开会话）。
+ * 同一道题翻步骤/重渲染复用同一份会话；题面变了（换题、再来一道）就换新会话，
+ * 并置 newQuestionNotice：学生问过的轮次不悄悄跨题生效。
+ * Explain/Tutor 未到货先触发加载（去重）但不等待 —— 锚定在下次渲染自然补上。 */
+function ensureAskSession(item) {
+  if (!window.Explain && !S.lazyFailed.explain) Lazy.load(LAZY_EXPLAIN).then(null, lazyFail('explain'));
+  const T = window.Explain && window.Explain._tutor;
+  if (!T) return null;
+  const key = T.sessionKeyOf(item.question);
+  const cur = S.ui.askSession;
+  if (cur && cur.key === key) return cur;
+  if (cur && cur.rounds && cur.rounds.length) S.ui.newQuestionNotice = true;   // 空会话直接换，不打扰
+  S.ui.askSession = T.newSession(item.question);
+  return S.ui.askSession;
+}
+
+/* judge_mine 的内联 textarea 状态：草稿放模块级 —— 翻步骤/重渲染不该清空学生正在写的过程，
+ * 换题（key 变了）才整体重置。 */
+let chipJudge = { key: null, open: false, draft: '' };
+
 function askBox(item, steps) {
     const q = item.question;
     const t = S.D.graph.byId[item.topicId];
+    /* Explain/Tutor 未到货先触发加载（去重）；到货后 explainPanel 的 .then 会重渲染补上 chips。
+     * 这行紧邻下方所有 window.Explain 引用，满足 test_lazy_load 的 25 行约束。 */
+    if (!window.Explain && !S.lazyFailed.explain) Lazy.load(LAZY_EXPLAIN).then(null, lazyFail('explain'));
+    const T = window.Explain && window.Explain._tutor;
+    if (chipJudge.key !== S.ui.key) chipJudge = { key: S.ui.key, open: false, draft: '' };
     const hist = h('div', { class: 'ask-hist', id: 'ask-hist' });
     (S.ui.askHistory || []).forEach(function (entry, idx) {
       /* 离线气泡文案按 reason 区分（entry.notice 来自 Explain.ask 的 noticeFor），
-       * 不再统一一句；含「再问一次」按钮，点击重发同一条问题（复用 runAsk，不新写一套 HTTP）。 */
+       * 不再统一一句；含「再问一次」按钮，点击重发同一条问题（复用 runAsk，不新写一套 HTTP）。
+       * 卡 D：chip 失败轮的重发改走 sendChip（带当时的 level/solution），自由追问轮才走 runAsk。 */
       let answerEl;
       if (entry.pending) {
         answerEl = h('div', { class: 'ask-a pending' }, 'AI 老师正在想…');
@@ -1015,24 +1134,27 @@ function askBox(item, steps) {
         const notice = entry.notice || 'AI 老师暂时离线，没回答上。稍后再问一次试试。';
         answerEl = h('div', { class: 'ask-a offline' }, notice,
           h('button', { class: 'ask-retry', onclick: function () {
-            /* 重发同一条问题：复用 runAsk，懒加载守卫在 runAsk 顶部。
-             * 重试期间该条变回 pending；S.ui.askPending = true 防止并发再问。
-             * 不自动重试（除 postChat 内部那一次 4xx 降级）。 */
-            if (S.ui.askPending) return;
+            /* 重发同一条问题：chip 轮带补充文本重发 chip，自由轮重发文本；
+             * 重试期间该条变回 pending；sendChip / runAsk 各自持竞态令牌，防并发也丢弃旧回调。 */
+            if (S.ui.askPending || S.ui.askChipBusy) return;
             const cur = (S.ui.askHistory || [])[idx];
             if (!cur) return;
-            const tick = ++explainTick;
-            runAsk(cur.q, idx, tick);
+            if (cur.action) sendChip(cur.action, { level: cur.level, solution: cur.solution, retryIdx: idx });
+            else runAsk(cur.q, idx, ++explainTick);
           } }, '再问一次'));
+      } else if (entry.action) {
+        answerEl = chipAnswerEl(entry);   // chip 轮：结构化 payload，按 chip 类型渲染（不带「老师：」前缀）
       } else {
         answerEl = h('div', { class: 'ask-a' }, '老师：' + entry.a);
       }
       const rowEl = h('div', { class: 'ask-item' },
         h('div', { class: 'ask-q' }, '你：' + entry.q),
         answerEl);
+      /* 卡 D：appendRound 拒写（轮数上限/题面变了）时给一句确定提示 —— 这轮回答照常显示，只是不进会话。 */
+      if (entry.roundLimit) rowEl.append(h('div', { class: 'muted small', id: 'round-limit-' + idx }, '这道题的问答轮数到上限了，点「再来一道」换一道继续。'));
       /* 模型给了 graph:null，或给了图但被身份校验拒：补一句确定性陈述，说清「这次没配图」。
-       * 只对 llm 气泡生效 —— offline 气泡已有自己的 notice，再补一句会变成两种口径。 */
-      if (entry.from === 'llm' && !entry.graph) {
+       * 只对 llm 自由追问轮生效 —— chip 轮没有图（提示/判解只出文字），offline 轮有自己的 notice。 */
+      if (entry.from === 'llm' && !entry.action && !entry.graph) {
         rowEl.append(h('div', { class: 'ask-graph-notice muted', id: 'ask-graph-notice-' + idx }, askGraphNotice(S.ui.labCfg)));
       }
       const g = entry.graph;
@@ -1055,6 +1177,25 @@ function askBox(item, steps) {
       }
       hist.append(rowEl);
     });
+    /* chip 轮的答案气泡：judge_mine 带合成后的 verdict 行 + 第一处错 + 讲解，
+     * hint_leveled 带档位标题。payload 由 Explain.normalizeChipPayload 保证形状，这里只做展示。 */
+    function chipAnswerEl(entry) {
+      const a = entry.a;
+      const box = h('div', { class: 'ask-a chip-answer' });
+      if (entry.action === 'judge_mine' && a && typeof a === 'object') {
+        box.append(h('div', { class: a.verdict ? a.verdict.cls : 'ask-verdict unverified' },
+          a.verdict ? a.verdict.text : '未验证：没看到明确的最终答案，不能替你判断对错。',
+          a.verdict ? h('span', { class: 'ask-verdict-badge', text: '（' + a.verdict.badge + '）' }) : null));
+        if (a.firstError) box.append(h('div', { class: 'chip-first-error' }, '第一处错在：' + a.firstError));
+        box.append(h('div', { class: 'chip-explain' }, a.text || ''));
+      } else if (entry.action === 'hint_leveled' && a && typeof a === 'object') {
+        box.append(h('div', { class: 'ask-level', text: ({ 1: 'L1 方向', 2: 'L2 第一步', 3: 'L3 完整答案' })[a.level] || 'L1 方向' }));
+        box.append(h('div', { class: 'chip-hint' }, a.text || ''));
+      } else {
+        box.append(h('div', {}, typeof a === 'string' ? a : (a && a.text) || ''));
+      }
+      return box;
+    }
     /* runAsk：懒加载守卫 + 设 pending + 发请求 + 用 tick 防竞态 + 替换 askHistory 第 idx 项。
      * sendAsk 首次发和重试按钮都走这里 —— 守卫紧邻 Explain.ask，满足 test_lazy_load 的 25 行约束。 */
     function runAsk(text, idx, tick) {
@@ -1095,14 +1236,85 @@ function askBox(item, steps) {
       });
     }
     function sendAsk() {
-      /* 输入框读取 + askPending 检查 + 调 runAsk；懒加载守卫在 runAsk 顶部 */
+      /* 输入框读取 + askPending/askChipBusy 检查 + 调 runAsk；懒加载守卫在 runAsk 顶部 */
       const inp = document.getElementById('ask-input');
       const text = (inp && inp.value || '').trim();
-      if (!text || S.ui.askPending) return;
+      if (!text || S.ui.askPending || S.ui.askChipBusy) return;   // chip 在跑时也不并发问
       const idx = (S.ui.askHistory || []).length;
       const tick = ++explainTick;   // 复用竞态令牌：回答只属于当前面板
       runAsk(text, idx, tick);
     }
+    /* 卡 D：chip 发送 —— 与 runAsk 同款纪律（懒加载守卫紧邻 runChip 调用、tick 竞态、pending 占位）。
+     * opts: { level, solution, retryIdx }，retryIdx 存在表示重试：原位替换那条历史。 */
+    function sendChip(action, opts) {
+      const chip = T && T.resolveChip(action);   // 白名单：不认识 -> 不发请求
+      if (!chip || S.ui.askChipBusy || S.ui.askPending) return;
+      const s = ensureAskSession(item);
+      if (!s) return;
+      const idx = opts && opts.retryIdx != null ? opts.retryIdx : (S.ui.askHistory || []).length;
+      const level = (opts && opts.level) || 1;
+      const solution = (opts && opts.solution) || '';
+      const qText = chip.label + (solution ? '：' + solution : '');
+      const tick = ++explainTick;
+      const entries = (S.ui.askHistory || []).slice();
+      entries[idx] = { q: qText, action: action, pending: true, level: level, solution: solution };
+      S.ui.askHistory = entries;
+      S.ui.askChipBusy = action;   // 请求期间所有 chip 禁用，sendAsk 也互斥
+      S.ui.askScroll = true;
+      renderQuestion(item);
+      /* 懒加载守卫：Explain 未到货先加载，加载完重发这一次（闭包状态不变）。 */
+      if (!window.Explain) {
+        if (!S.lazyFailed.explain) Lazy.load(LAZY_EXPLAIN).then(function () { sendChip(action, opts); }, lazyFail('explain'));
+        return;
+      }
+      const idn = T.identify(q);
+      const ctx = { topic: t, q: q, userAnswer: S.ui.answer, steps: steps, labDesc: S.ui.labDesc, session: s, level: level, solution: solution };
+      if (action === 'judge_mine') ctx.localVerdict = T.judgeSolution(q, solution);   // 先本地判：模型只补讲解，不许推翻判分
+      window.Explain.runChip(action, ctx).then(function (res) {
+        if (tick !== explainTick || !S.ui || S.ui.phase !== 'explain') return;
+        S.ui.askChipBusy = null;
+        const entries2 = (S.ui.askHistory || []).slice();
+        /* 每轮结束都写会话（失败轮的 a 是离线一句 —— 那也是这轮的事实）；
+         * appendRound 拒写（轮数上限/题面变了）不写会话，只在气泡尾部提示一句。 */
+        const ar = T.appendRound(s, { q: qText, a: res.ok && res.payload ? (res.payload.text || '') : (res.notice || ''), action: action, promptHash: idn.promptHash });
+        if (ar.ok) S.ui.askSession = ar.session;
+        if (res.ok) {
+          entries2[idx] = { q: qText, a: res.payload, action: action, from: 'llm', level: level, solution: solution, roundLimit: !ar.ok };
+          if (action === 'hint_leveled') S.ui.hintLevel = Math.min(3, level + 1);   // 答完升一档，封顶 3
+        } else {
+          entries2[idx] = { q: qText, action: action, from: 'offline', notice: res.notice, reason: res.reason, level: level, solution: solution, roundLimit: !ar.ok };
+        }
+        S.ui.askHistory = entries2;
+        S.ui.askScroll = true;
+        renderQuestion(item);
+      });
+    }
+    function onChip(action) {
+      const chip = T && T.resolveChip(action);   // 白名单：不认识 -> 不发请求
+      if (!chip) return;
+      if (S.ui.askChipBusy || S.ui.askPending) return;   // 同时只允许一发
+      if (action === 'variant') { askAnother(item, 'standard'); return; }   // 转「再来一道」O3 管线（自带验证门）
+      if (action === 'judge_mine') { chipJudge.open = true; renderQuestion(item); return; }   // 先收过程文本，再判
+      sendChip(action, action === 'hint_leveled' ? { level: S.ui.hintLevel || 1 } : {});
+    }
+    const busy = !!(S.ui.askChipBusy || S.ui.askPending);
+    const chipsRow = T ? h('div', { class: 'chips', id: 'chips' }, T.CHIPS.map(function (c) {
+      return h('button', { class: 'chip', id: 'chip-' + c.action, disabled: busy, onclick: function () { onChip(c.action); } }, c.label);
+    })) : null;
+    const judgeBox = T && chipJudge.open && !busy ? h('div', { class: 'chip-judge', id: 'chip-judge' },
+      h('textarea', { class: 'chip-solution', id: 'chip-solution', rows: 3, placeholder: '把你算的过程贴进来，最后一行写清最终答案', value: chipJudge.draft, oninput: function (e) { chipJudge.draft = e.target.value; } }),
+      h('div', { class: 'row', style: 'margin-top:6px' },
+        h('button', { class: 'primary', id: 'btn-chip-judge', onclick: function () {
+          const txt = (chipJudge.draft || '').trim();
+          if (!txt) return;   // 空文本不请求
+          chipJudge.open = false;
+          sendChip('judge_mine', { solution: txt });
+        } }, '判一判'),
+        h('button', { id: 'btn-chip-cancel', onclick: function () { chipJudge.open = false; renderQuestion(item); } }, '先不判了'))) : null;
+    /* chip variant 在讲解面板触发的出题状态（练习面板的状态行在 anotherRow 里）。 */
+    const anotherState = S.ui.askAnother
+      ? h('div', { class: 'muted small', id: 'ask-another-state' }, S.ui.askAnother.pending ? 'AI 正在出题…' : (S.ui.askAnother.notice || ''))
+      : null;
     const inp = h('input', {
       type: 'text', class: 'ask-input', id: 'ask-input', autocomplete: 'off',
       placeholder: '没看懂？问 AI 老师，例如：什么叫去括号？为什么这步要变号？',
@@ -1110,11 +1322,18 @@ function askBox(item, steps) {
       oninput: function (e) { S.ui.askDraft = e.target.value; },
       onkeydown: function (e) { if (e.key === 'Enter' && !e.isComposing) sendAsk(); }
     });
-    return h('div', { class: 'ask-box no-print' },
-      hist,
-      S.ui.askPending ? null : h('div', { class: 'row', style: 'margin-top:8px' },
+    /* 兜底输入框默认收起：chip 覆盖主要追问，自由文本留给长尾问题；收起/展开状态随 S.ui 保存。 */
+    const freeBox = h('details', { class: 'ask-free', id: 'ask-free', open: !!S.ui.askFreeOpen, ontoggle: function (e) { S.ui.askFreeOpen = e.target.open; } },
+      h('summary', {}, 'chip 没覆盖到？自己问一句'),
+      busy ? null : h('div', { class: 'row', style: 'margin-top:8px' },
         h('span', { class: 'grow', style: 'margin-right:8px' }, inp),
         h('button', { class: 'primary', id: 'btn-ask', onclick: sendAsk }, '问 AI 老师')));
+    return h('div', { class: 'ask-box no-print' },
+      hist,
+      chipsRow,
+      judgeBox,
+      anotherState,
+      freeBox);
   }
 
 function renderLabAsk(box, item) {

@@ -45,6 +45,10 @@
 
   var MAX_RETRIES = 3;
 
+  /* 卡 D：AI 现出题的标识（文案 + 样式类名只此一处，别处一律引用，不许写死）。
+   * 「未审核」是事实陈述：这题过了本地验证门，但没人（老师/家长）审过题面语义。 */
+  var AI_DRAFT_BADGE = { text: 'AI 现出题·未审核', cls: 'tag tag-ai-draft' };
+
   /* O3-6：max_tokens 单一真源已收敛到 llm-config.js 的 maxTokens.variants / maxTokens.tools。
    * GEN  —— 出题：一道题 JSON（题面+答案+解析），扩族后题面变长，500 会撞截断，取 8192
    * TOOL —— 工具轮：只需返回 tool_calls 参数，不需要长文本，取 512（也是 >=512 下限）
@@ -334,6 +338,29 @@
   }
 
   /**
+   * 卡 D：练习队列准入 —— 未过验证门的 AI 题不得进入练习队列。
+   * 题库题（variantSource 非 'llm'）一律放行；llm 题必须带 llmVerified === true
+   * （genLLMVariant 只有过了 validateLLMQuestion 验证门才会打这个标）。
+   * @param {object} q
+   * @returns {boolean}
+   */
+  function _admitToPracticeQueue(q) {
+    if (!q || q.variantSource !== 'llm') return true;
+    return q.llmVerified === true;
+  }
+
+  /**
+   * AI 现出题标识：variantSource !== 'llm' 一律 null；否则返回 AI_DRAFT_BADGE 的拷贝
+   * （拷贝防调用方改 badge 时污染单一常量）。
+   * @param {object} q
+   * @returns {{text:string, cls:string}|null}
+   */
+  function badgeFor(q) {
+    if (!q || q.variantSource !== 'llm') return null;
+    return { text: AI_DRAFT_BADGE.text, cls: AI_DRAFT_BADGE.cls };
+  }
+
+  /**
    * 异步生成 1 道 LLM 变式。
    * 管线：调网关 → 验证门 → 通过则写缓存返回 / 不通过重试（限 3 次）→ 全不过返回 null。
    * @param {string} topicId
@@ -391,6 +418,9 @@
             verify: candidate.verify || '',
             variant: true,
             variantSource: 'llm',
+            /* 卡 D：能走到这一步说明已经过 validateLLMQuestion 验证门；
+             * 练习队列准入（_admitToPracticeQueue）只认这个标 */
+            llmVerified: true,
             variantIndex: pool.length,
             seed: seed,
             createdAt: Date.now()
@@ -503,7 +533,18 @@
           usedVariants++;
         }
       }
-      return { list: list, usedVariants: usedVariants, nextIndex: nextIndex };
+      /* 卡 D：返回前再过一遍验证门（整个 list，含 fp.list 带进来的）——
+       * 未过验证门的 AI 题一律不进练习队列。被过滤的计数走既有统计
+       * （键仍为 topicId:difficulty，reason 'not-admitted'），不新增持久化键。 */
+      var admitted = [];
+      for (var k = 0; k < list.length; k++) {
+        if (_admitToPracticeQueue(list[k])) {
+          admitted.push(list[k]);
+        } else {
+          _recordStat(topicId + ':standard', false, 'not-admitted');
+        }
+      }
+      return { list: admitted, usedVariants: usedVariants, nextIndex: nextIndex };
     });
   }
 
@@ -529,6 +570,11 @@
     supports: supports,
     genLLMVariant: genLLMVariant,
     fillPracticeLLM: fillPracticeLLM,
+    /* 卡 D：AI 题标识 + 练习队列准入（文案/类名单一常量） */
+    AI_DRAFT_BADGE: AI_DRAFT_BADGE,
+    admitToPracticeQueue: _admitToPracticeQueue,
+    _admitToPracticeQueue: _admitToPracticeQueue,
+    badgeFor: badgeFor,
     validateLLMQuestion: _evaldn.validateLLMQuestion,
     verifyEquationRoots: _evaldn.verifyEquationRoots,
     verifyCompletingSquare: _evaldn.verifyCompletingSquare,
