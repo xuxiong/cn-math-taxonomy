@@ -13,3 +13,4 @@ PROMPT*.md
 chain.sh
 .cf-token-workers
 .cache/
+tmp/

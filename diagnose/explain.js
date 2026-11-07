@@ -29,6 +29,7 @@
    * 实测依据（探索/追问的 token 长尾）也已搬到 llm-config.js 对应字段旁。 */
   const EXPLAIN_MAX_TOKENS = CFG ? CFG.maxTokens.explain : null;   // 三步讲解（prompt/hint/reveal 的 JSON）
   const FOLLOWUP_MAX_TOKENS = CFG ? CFG.maxTokens.followup : null;
+  const TUTOR_MAX_TOKENS = CFG ? CFG.maxTokens.tutor : null;       // 追问 chip（固定 schema 的短 JSON，卡 D）
 
   /* ---------------- 超时（网络挂起不再永远等） ----------------
    * 讲解与追问都是 chat 类长请求，超时唯一真源是 llm-config.js 的 timeouts.chat；
@@ -36,6 +37,14 @@
    * 每次请求时读取，测试可把该键调小来验证，不必真等 30 秒。 */
   function chatTimeoutMs() {
     const t = CFG && CFG.timeouts && CFG.timeouts.chat;
+    return (typeof t === 'number' && t > 0) ? t : null;
+  }
+
+  /* 卡 D：追问 chip 的超时单独成键（timeouts.tutor），读法与 chatTimeoutMs 相同。
+   * 为什么不共用 chat：测试要能单独把 chip 的超时调小来验证超时路径，
+   * 动 chat 会连累讲解 / 追问两条既有链路的口径。 */
+  function tutorTimeoutMs() {
+    const t = CFG && CFG.timeouts && CFG.timeouts.tutor;
     return (typeof t === 'number' && t > 0) ? t : null;
   }
 
@@ -103,15 +112,15 @@
    *  本次请求体带过 response_format → 去掉该字段重发一次（宽松模式），最多重试一次。
    *  讲解请求不带 response_format，自然不会触发降级；5xx / 401 也不降级。
    *  第二次仍失败 → err.degraded=true，对外 reason 按第二次的实际失败类型。 */
-  function postChat(body) {
+  function postChat(body, timeoutMs) {
     if (typeof fetch !== 'function') return Promise.reject(_markFail(new Error('fetch 不可用'), 'network'));
-    return _postChatOnce(body).catch(function (err) {
+    return _postChatOnce(body, timeoutMs).catch(function (err) {
       if (err && err.reason === 'http' && typeof err.httpStatus === 'number'
           && err.httpStatus >= 400 && err.httpStatus < 500 && err.httpStatus !== 401 && err.httpStatus !== 429 && err.httpStatus !== 403
           && body && body.response_format) {
         const relaxed = Object.assign({}, body);
         delete relaxed.response_format;
-        return _postChatOnce(relaxed).catch(function (err2) {
+        return _postChatOnce(relaxed, timeoutMs).catch(function (err2) {
           if (err2) err2.degraded = true;
           throw err2;
         });
@@ -121,19 +130,21 @@
   }
 
   /* 单次发请求 + 解析。!resp.ok 时读一次 body（截断 ≤200 字符）装到 error 上，
-   * 便于日志 / 文案区分原因；读不到也不改语义（仍抛 reason='http'）。 */
-  function _postChatOnce(body) {
-    const timeoutMs = chatTimeoutMs();
+   * 便于日志 / 文案区分原因；读不到也不改语义（仍抛 reason='http'）。
+   * 卡 D：超时可由调用方注入（chip 走 timeouts.tutor）；不传 / 传非法值时沿用
+   * timeouts.chat —— 既有讲解 / 追问 / 降级重试的单参调用行为一字不变。 */
+  function _postChatOnce(body, timeoutMs) {
+    const ms = (typeof timeoutMs === 'number' && timeoutMs > 0) ? timeoutMs : chatTimeoutMs();
     const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     const opts = {
       method: 'POST',
       headers: Object.assign({ 'Content-Type': 'application/json' }, CFG ? CFG.authHeaders() : {}),
       body: JSON.stringify(body)
     };
-    if (!controller || !timeoutMs) return fetch(PROXY, opts);
+    if (!controller || !ms) return fetch(PROXY, opts);
 
     opts.signal = controller.signal;
-    let timer = setTimeout(function () { timer = null; try { controller.abort(); } catch (e) { /* 已 abort */ } }, timeoutMs);
+    let timer = setTimeout(function () { timer = null; try { controller.abort(); } catch (e) { /* 已 abort */ } }, ms);
     const done = function () { if (timer) { clearTimeout(timer); timer = null; } };
     return fetch(PROXY, opts).then(function (resp) {
       if (!resp.ok) {
@@ -504,9 +515,454 @@
       });
   }
 
+  /* ================================================================
+   * 卡 D：追问 chip 化（Tutor 层）—— chip 白名单 / 会话锚定 / 本地判解 / 分级提示
+   *
+   * 与自由追问（ask）的区别：chip 走固定 schema 的短 JSON，输出只有文本/短字段；
+   * 会话锚到题（qid + prompt_hash），题面一变即新会话；对错结论只认本地求值。
+   * 导出：Explain.runChip（公开）+ Explain._tutor（测试用）。
+   * ================================================================ */
+
+  const MAX_ROUNDS = 10;   // 轮数上限：再长的问题是新的一题，上下文挤不下
+  const KEEP_ROUNDS = 3;   // 超出后只保留最近 3 轮 + 摘要
+
+  /* chip 定义（顺序即 UI 顺序，文案一字不改；UI 从这里取，不另写一份） */
+  const TUTOR_CHIPS = [
+    { action: 'why_step', label: '这一步为什么这么做' },
+    { action: 'variant', label: '换个数字再来一道' },   // 不走 LLM，转 O3 管线（app-flow 接线）
+    { action: 'judge_mine', label: '我这样算对不对' },
+    { action: 'hint_leveled', label: '给我一点点提示' }
+  ];
+
+  /* 白名单：只认这 4 个 action 字符串。「不认识的 action 不发请求」的唯一判据 ——
+   * 恶意 / 拼错的 action 在这里就挡下，永远碰不到 fetch。 */
+  function resolveChip(action) {
+    if (typeof action !== 'string') return null;
+    for (let i = 0; i < TUTOR_CHIPS.length; i++) {
+      if (TUTOR_CHIPS[i].action === action) return TUTOR_CHIPS[i];
+    }
+    return null;
+  }
+
+  /* ---------------- 会话锚定（键 = qid + prompt_hash） ---------------- */
+
+  /* FNV-1a 32bit：哈希乘法必须用 Math.imul（直接乘会超 2^53 丢精度，
+   * 相邻题面可能撞出同一个 hash，锚题就失效了）。输出 8 位小写 hex。 */
+  function promptHash(prompt) {
+    const s = String(prompt == null ? '' : prompt).replace(/\s+/g, ' ').trim();
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    const hex = (h >>> 0).toString(16);
+    return '00000000'.slice(hex.length) + hex;   // padStart 手写：兼容老浏览器
+  }
+
+  function identify(q) {
+    const prompt = (q && q.prompt) || '';
+    const hash = promptHash(prompt);
+    return {
+      qid: String((q && q.id) || 'anon') + '@' + hash,
+      promptHash: hash,
+      prompt: prompt
+    };
+  }
+
+  function sessionKeyOf(q) {
+    const idn = identify(q);
+    return idn.qid + '|' + idn.promptHash;
+  }
+
+  function newSession(q) {
+    const idn = identify(q);
+    return {
+      key: idn.qid + '|' + idn.promptHash,
+      qid: idn.qid,
+      promptHash: idn.promptHash,
+      prompt: idn.prompt,   // 题面快照：一经创建不再变，题面变了就开新会话
+      rounds: [],
+      summary: '',
+      trimmed: false
+    };
+  }
+
+  /* 摘要单元格截 24 字：摘要只要让模型知道「大致聊过什么」，不是全文复读 */
+  function clip24(s) {
+    const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+    return t.length > 24 ? t.slice(0, 24) + '…' : t;
+  }
+
+  /* 确定性文本摘要（无 LLM）：'更早的 N 轮：问「…」→答「…」；…'。
+   * prevSummary 非空时接在前面；总长 ≤ 200（超长从尾部硬截，不加省略号——
+   * 摘要本身就是要被截的，再叠一层「…」只是浪费预算）。 */
+  function summarize(prevSummary, rounds) {
+    const parts = (rounds || []).map(function (r) {
+      return '问「' + clip24(r && r.q) + '」→答「' + clip24(r && r.a) + '」';
+    });
+    let text = (prevSummary ? String(prevSummary) : '')
+      + (prevSummary && parts.length ? '；' : '')
+      + '更早的 ' + parts.length + ' 轮：' + parts.join('；');
+    return text.length > 200 ? text.slice(0, 200) : text;
+  }
+
+  /* 会话一律不可变风格：appendRound 返回新对象，不改传入的 session ——
+   * app-flow 里 S.ui.askSession 直接换成返回值，出问题也好回退。 */
+  function appendRound(session, round) {
+    if (!session || !session.key) return { ok: false, reason: 'no-session' };
+    if (round && round.promptHash != null && round.promptHash !== session.promptHash) {
+      /* 题面变了就是新题，不许往旧会话里塞 */
+      return { ok: false, reason: 'prompt-changed' };
+    }
+    const rounds = session.rounds.slice();
+    let summary = session.summary;
+    let trimmed = session.trimmed;
+    if (rounds.length >= MAX_ROUNDS) {
+      /* 超上限：把前面部分并入摘要，只留最近 KEEP_ROUNDS-1 轮再入新轮 */
+      const cut = rounds.length - (KEEP_ROUNDS - 1);
+      summary = summarize(summary, rounds.slice(0, cut));
+      rounds.splice(0, cut);
+      trimmed = true;
+    }
+    rounds.push({
+      q: String((round && round.q) || ''),
+      a: String((round && round.a) || ''),
+      action: (round && round.action) || null,
+      promptHash: (round && round.promptHash != null) ? round.promptHash : session.promptHash
+    });
+    return {
+      ok: true,
+      session: {
+        key: session.key,
+        qid: session.qid,
+        promptHash: session.promptHash,
+        prompt: session.prompt,
+        rounds: rounds,
+        summary: summary,
+        trimmed: trimmed
+      }
+    };
+  }
+
+  /* 给 prompt 拼装用的会话上下文：返回拷贝，不把内部 rounds 引用交出去 */
+  function contextFor(session) {
+    if (!session) return { qid: '', promptHash: '', prompt: '', summary: '', rounds: [] };
+    return {
+      qid: session.qid,
+      promptHash: session.promptHash,
+      prompt: session.prompt,
+      summary: session.summary,
+      rounds: (session.rounds || []).map(function (r) {
+        return { q: r.q, a: r.a, action: r.action, promptHash: r.promptHash };
+      })
+    };
+  }
+
+  /* ---------------- 本地判解（chip「我这样算对不对」） ----------------
+   * 判「最终答案」只认本地求值，模型无权给结论 —— AI 说「你对了」不算数。 */
+
+  function _diagEngine() {
+    /* 浏览器挂 window.DiagEngine（index.html 先加载 engine.js）；
+     * Node 测试直接 require —— 与 _loadLLMConfig 同款双端写法 */
+    if (global.DiagEngine) return global.DiagEngine;
+    if (typeof require === 'function') {
+      try { return require('./engine.js'); } catch (e) { /* 落到 unverified */ }
+    }
+    return null;
+  }
+
+  /* 抽「最终答案」：只压空白不压换行（路径 3 的行首/行尾匹配依赖 \n）。
+   * 三条路径按信号强度排序：显式前缀 > 结论词 > 整行赋值。无命中返回 null。 */
+  function extractFinalAnswer(text) {
+    const s = String(text == null ? '' : text).replace(/[^\S\n]+/g, ' ');
+    if (!s.trim()) return null;
+    let m = s.match(/(?:答案|答)\s*[:：]\s*([^\n。；;]{1,40})/);
+    if (m) return m[1].trim();
+    m = s.match(/(?:所以|因此|故|即|得)\s*([A-Za-z]?\s*[=＝]?\s*-?\d[^\n。；;，,]{0,20})/);
+    if (m) return m[1].trim();
+    m = s.match(/(?:^|\n)\s*([A-Za-z]\s*[=＝]\s*-?\d[^\n。；;]{0,20})\s*(?:\n|$)/m);
+    if (m) return m[1].trim();
+    return null;
+  }
+
+  /* 去变量前缀（x= / x1= / x ＝）与尾部句读，把声明压成 engine 能判的 claim */
+  function normalizeClaim(candidate) {
+    let s = String(candidate == null ? '' : candidate).trim();
+    s = s.replace(/^[A-Za-z][0-9]*\s*[=＝]\s*/, '');
+    return s.replace(/[。\.\s；;]+$/, '').trim();
+  }
+
+  function judgeSolution(q, text) {
+    const ref = q && q.answer;
+    if (!ref) return { conclusion: 'unverified', reason: 'no-reference', claim: null, reference: null };
+    const raw = extractFinalAnswer(text);
+    if (!raw) return { conclusion: 'unverified', reason: 'no-final-answer', claim: null, reference: String(ref) };
+    const claim = normalizeClaim(raw);
+    const E = _diagEngine();
+    if (!E || typeof E.judgeQuestion !== 'function') {
+      return { conclusion: 'unverified', reason: 'no-verifier', claim: claim, reference: String(ref) };
+    }
+    let verdict = null;
+    try { verdict = E.judgeQuestion(q, claim).verdict; } catch (e) { verdict = null; }
+    if (verdict === 'correct') return { conclusion: 'correct', reason: 'local-correct', claim: claim, reference: String(ref) };
+    if (verdict === 'wrong') return { conclusion: 'wrong', reason: 'local-wrong', claim: claim, reference: String(ref) };
+    return { conclusion: 'unverified', reason: 'unsure', claim: claim, reference: String(ref) };
+  }
+
+  /* 学生可见的判读文案：三档各说各话。unverified 绝不说「答对了/你做对了」——
+   * 没核对过就不下结论，孩子照着错误结论走下去比没有结论更糟。 */
+  function renderVerdict(res) {
+    const c = res && res.conclusion;
+    if (c === 'correct') {
+      return { text: '本地核对：最后写的答案和标准答案一致。', cls: 'ask-verdict ok', badge: '已核对' };
+    }
+    if (c === 'wrong') {
+      return { text: '本地核对：最后写的答案和标准答案不一致，先看第一处错在哪。', cls: 'ask-verdict no', badge: '已核对' };
+    }
+    return {
+      text: '未验证：没看到明确的最终答案，不能替你判断对错 —— 先把最后结果写出来，或看下面的解析。',
+      cls: 'ask-verdict unverified',
+      badge: '未验证'
+    };
+  }
+
+  /* ---------------- 分级提示（L1 方向 / L2 第一步 / L3 完整答案） ---------------- */
+
+  /* 泄漏判据双路：engine 的解值声明口径（只读复用 verifyReveal，不改判分）
+   * + 纯数字答案的边界包含。第二路必须有：verifyReveal 对口语化文本
+   * （如「x=3 就对了」）常返回 no-claim（ok:null），单靠它会把泄漏放进 L1。 */
+  function answerLeak(text, answer) {
+    const t = String(text == null ? '' : text);
+    const ref = String(answer == null ? '' : answer).trim();
+    if (!t || !ref) return false;
+    const E = _diagEngine();
+    if (E && typeof E.verifyReveal === 'function') {
+      try { if (E.verifyReveal(t, ref).ok === true) return true; } catch (e) { /* 落到边界判据 */ }
+    }
+    if (/^-?\d+(\.\d+)?$/.test(ref)) {
+      /* 边界要求：数字前后不能再是数字/小数点 —— '13' 里的 3 不是答案 '3' */
+      const escaped = ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp('(^|[^0-9.])' + escaped + '([^0-9.]|$)').test(t);
+    }
+    /* 非纯数字答案：压掉空白做包含判断（宁严勿漏，fail-closed） */
+    return t.replace(/\s+/g, '').indexOf(ref.replace(/\s+/g, '')) >= 0;
+  }
+
+  /* L1/L2 的固定安全文案：模型泄漏时整句换掉 —— 改写半句既费 token 又可能漏 */
+  const SAFE_HINT = {
+    1: '先别算：看清题目要你求什么，再想想这一步在等号两边各动了什么。',
+    2: '第一步：把含未知数的项都移到等号左边，常数项移到右边（移项要变号）。'
+  };
+
+  function sanitizeHint(level, text, q) {
+    /* level 归一为 1/2/3：非数字或越界一律按 1（提示永远从最保守档给起） */
+    const lv = (typeof level === 'number' && isFinite(level) && level >= 1 && level <= 3) ? Math.floor(level) : 1;
+    const raw = String(text == null ? '' : text);
+    if (lv === 3) return { level: 3, text: raw, leaked: false, redacted: false, gate: 'reveal' };
+    if (!q || !q.answer) return { level: lv, text: raw, leaked: false, redacted: false, gate: 'no-reference' };
+    if (answerLeak(raw, q.answer)) {
+      return { level: lv, text: SAFE_HINT[lv], leaked: true, redacted: true, gate: 'redacted' };
+    }
+    return { level: lv, text: raw, leaked: false, redacted: false, gate: 'ok' };
+  }
+
+  /* ---------------- chip 请求与执行 ---------------- */
+
+  /* 每个 chip 的固定输出 schema：写进 system prompt，解析时按字段校验 */
+  const CHIP_SCHEMA = {
+    why_step: '只输出一个 JSON 对象，格式：{"text":"不超过 120 字的错因说明"}。'
+      + 'text 必须引用题干里的具体数字或步骤（如「去括号时 2 要乘进去」），不许给出最终答案。',
+    variant: '',   /* 管线动作，不发 LLM 请求，无 schema */
+    judge_mine: '只输出一个 JSON 对象，格式：{"firstError":"第一处错的原文片段（没有就写空串）","explain":"为什么错、怎么改"}。'
+      + '只解释第一处错；不要输出 conclusion/verdict 之类的对错结论字段 —— 对错由本地核对决定。',
+    hint_leveled: '只输出一个 JSON 对象，格式：{"text":"分级提示正文"}。'
+      + '分级规则（必须严格执行）：L1 只给方向，禁止写任何数值结果；'
+      + 'L2 只给第一步，可写算式但不得写最终答案；L3 才给完整答案。'
+  };
+
+  const CHIP_COMMON_BAN = '输出必须是纯 JSON，禁止任何 Markdown 标记（不要 **、*、`、#、>）与反斜杠命令；'
+    + '根号用 √、分数用斜杠；语言口语化、贴合初中生，不写废话。';
+
+  function chipSystemPrompt(chip, ctx) {
+    let lvRule = '';
+    if (chip.action === 'hint_leveled') {
+      /* level 由调用方给（不采信模型返回值）；本次档位写明，模型才好拿捏尺度 */
+      const lv = (ctx && ctx.level) || 1;
+      lvRule = ' 本次要 L' + lv + ' 档提示：'
+        + (lv === 1 ? '只给方向，禁止写任何数值结果。'
+          : lv === 2 ? '只给第一步，可写算式但不得写最终答案。'
+            : '给完整答案与解析。');
+    }
+    return '你是人教版初中数学的一对一辅导老师，学生基础薄弱，正盯着他做错的一道题看讲解。'
+      + (CHIP_SCHEMA[chip.action] || '')
+      + lvRule + ' ' + CHIP_COMMON_BAN;
+  }
+
+  function chipUserPrompt(chip, ctx) {
+    const q = (ctx && ctx.q) || {};
+    const topic = (ctx && ctx.topic) || {};
+    const steps = (ctx && ctx.steps) || [];
+    const ua = (ctx && ctx.userAnswer) == null ? '' : ctx.userAnswer;
+    const stepsText = steps.map(function (s) {
+      return '  [' + (STEP_LABEL[s.kind] || s.kind) + '] ' + s.text;
+    }).join('\n');
+    /* 会话上下文：摘要 + 最近 3 轮（chip 有轮数上限与裁剪，带 3 轮足够 */
+    const session = ctx && ctx.session;
+    let histText = '';
+    if (session && (session.summary || (session.rounds && session.rounds.length))) {
+      const parts = [];
+      if (session.summary) parts.push('更早的轮次摘要：' + session.summary);
+      const tail = (session.rounds || []).slice(-3);
+      if (tail.length) {
+        parts.push('最近 ' + tail.length + ' 轮：\n' + tail.map(function (r) {
+          return '学生：' + clipHistoryText(r.q) + '\n老师：' + clipHistoryText(r.a);
+        }).join('\n---\n'));
+      }
+      histText = '\n' + parts.join('\n');
+    }
+    let extra = '';
+    if (chip.action === 'judge_mine' && ctx && ctx.solution) {
+      extra = '学生贴来的解法（判断第一处错在哪）：\n' + ctx.solution + '\n\n';
+    }
+    return '题目：' + (q.prompt || '')
+      + '\n知识点：' + (topic.name || '')
+      + '\n学生答案：' + (ua === '' ? '（没填）' : ua)
+      + (q.answer ? '\n本题目标准答案：' + q.answer + '（除 L3 提示外，不得在给学生的正文里直接说出）' : '')
+      + '\n当前讲解进度（学生已看到的引导）：\n' + (stepsText || '（无）')
+      + histText
+      + '\n\n' + extra + '学生的请求：' + chip.label;
+  }
+
+  /* 发一次 chat 请求并按固定 schema 解析出 JSON 对象。
+   * chip 是严格解析（区别于 ask 的宽松兜底）：schema 固定、字段少，
+   * 缺字段按 detail:'badjson' 走既有失败文案，学生点「再问一次」即可。 */
+  function llmChip(chip, ctx) {
+    if (!CFG) return Promise.reject(new Error('LLMConfig 未加载（llm-config.js 没引入）'));
+    const body = {
+      model: MODEL,
+      messages: [
+        { role: 'system', content: chipSystemPrompt(chip, ctx) },
+        { role: 'user', content: chipUserPrompt(chip, ctx) }
+      ],
+      max_tokens: TUTOR_MAX_TOKENS,
+      temperature: 0.4,
+      response_format: { type: 'json_object' }
+    };
+    return postChat(body, tutorTimeoutMs()).then(function (data) {
+      const c = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+      const raw = c == null ? '' : String(c);
+      const m = raw.match(/\{[\s\S]*\}/);
+      let j = null;
+      if (m) { try { j = JSON.parse(m[0]); } catch (e) { j = null; } }
+      if (!j || typeof j !== 'object') {
+        const err = _markFail(new Error('llm bad json'), 'llm');
+        err.detail = 'badjson';
+        throw err;
+      }
+      return j;
+    });
+  }
+
+  /* why_step 正文截断：超 120 字截成 120 字 + '…'，截断尽量落在词尾空白前 */
+  function clipChipText(text, max) {
+    const s = String(text == null ? '' : text);
+    if (s.length <= max) return s;
+    let cut = s.slice(0, max);
+    const lastWs = cut.lastIndexOf(' ');
+    if (lastWs > max * 0.6) cut = cut.slice(0, lastWs);   // 半截词回退到上一个空白
+    return cut.replace(/[^\S\n]+$/, '') + '…';
+  }
+
+  function _emptyErr() {
+    const err = _markFail(new Error('llm empty'), 'llm');
+    err.detail = 'empty';
+    return err;
+  }
+
+  /* 按 chip 归一化输出。judge_mine 的结论由本地判解合成；模型只供解释文本。 */
+  function normalizeChipPayload(chip, ctx, j) {
+    if (chip.action === 'why_step') {
+      const text = cleanMarkdown(j && j.text);
+      if (!text) throw _emptyErr();
+      return { text: clipChipText(text, 120) };
+    }
+    if (chip.action === 'judge_mine') {
+      const firstError = cleanMarkdown(j && j.firstError);
+      let explain = cleanMarkdown(j && j.explain);
+      if (!explain) throw _emptyErr();
+      /* 结论只认本地判解（app-flow 传入 ctx.localVerdict 避免重复判） */
+      const verdict0 = (ctx && ctx.localVerdict) || judgeSolution(ctx && ctx.q, (ctx && ctx.solution) || '');
+      const conclusion = verdict0.conclusion;
+      if (conclusion === 'unverified') {
+        /* unverified 时模型文本里的结论词一律替换 —— AI 不能替孩子下没核对过的结论 */
+        explain = explain.replace(/答对了|做对了|完全正确|是对的/g, '这里先不下结论');
+      }
+      return {
+        text: explain,
+        firstError: firstError,
+        conclusion: conclusion,
+        verified: conclusion !== 'unverified',
+        verdict: renderVerdict(verdict0)
+      };
+    }
+    /* hint_leveled：level 由调用方给（不采信模型返回值）；返回后必过 sanitizeHint 兜底 */
+    const rawText = cleanMarkdown(j && j.text);
+    if (!rawText) throw _emptyErr();
+    return sanitizeHint((ctx && ctx.level) || 1, rawText, ctx && ctx.q);
+  }
+
+  /** 执行一个 chip。返回 Promise，永不 reject（与 ask 一致）：
+   *   成功  —— { ok: true, from: 'llm', action, payload }
+   *   白名单不认 —— { ok: false, from: 'none', action, reason: 'unknown-action' }（绝不发请求）
+   *   variant 是管线动作 —— { ok: false, from: 'pipeline', action: 'variant', reason: 'pipeline-action' }
+   *   缺会话 —— { ok: false, from: 'none', action, reason: 'no-session' }
+   *   失败（timeout/network/http/llm）—— 沿用 failInfo + noticeFor 文案 */
+  function runChip(action, ctx) {
+    return Promise.resolve().then(function () {
+      const chip = resolveChip(action);
+      if (!chip) return { ok: false, from: 'none', action: String(action), reason: 'unknown-action' };
+      if (chip.action === 'variant') return { ok: false, from: 'pipeline', action: 'variant', reason: 'pipeline-action' };
+      if (!ctx || !ctx.session || !ctx.session.key) return { ok: false, from: 'none', action: chip.action, reason: 'no-session' };
+      return llmChip(chip, ctx).then(function (j) {
+        return { ok: true, from: 'llm', action: chip.action, payload: normalizeChipPayload(chip, ctx, j) };
+      });
+    }).catch(function (err) {
+      const f = failInfo(err);
+      const notice = noticeFor(f.reason, f.httpStatus, f.degraded, f.detail);
+      if (global.console && global.console.warn) {
+        global.console.warn('Explain.runChip(' + action + ') 失败（' + f.reason + '）：' + notice);
+      }
+      return { ok: false, from: 'none', action: action, reason: f.reason, notice: notice, httpStatus: f.httpStatus, degraded: f.degraded };
+    });
+  }
+
   global.Explain = {
     generate: generate,
     ask: ask,
+    /* 卡 D：追问 chip 化 —— 公开入口 + 测试用的内部层 */
+    runChip: runChip,
+    _tutor: {
+      CHIPS: TUTOR_CHIPS.slice(),   // 浅拷贝：UI 顺序与文案单源，测试改不动内部表
+      resolveChip: resolveChip,
+      promptHash: promptHash,
+      identify: identify,
+      sessionKeyOf: sessionKeyOf,
+      newSession: newSession,
+      summarize: summarize,
+      appendRound: appendRound,
+      contextFor: contextFor,
+      extractFinalAnswer: extractFinalAnswer,
+      normalizeClaim: normalizeClaim,
+      judgeSolution: judgeSolution,
+      renderVerdict: renderVerdict,
+      sanitizeHint: sanitizeHint,
+      SAFE_HINT: SAFE_HINT,
+      MAX_ROUNDS: MAX_ROUNDS,
+      KEEP_ROUNDS: KEEP_ROUNDS,
+      chipSystemPrompt: chipSystemPrompt,
+      chipUserPrompt: chipUserPrompt,
+      runChip: runChip
+    },
     _cache: cache,
     _ttl: TTL,
     /* 内部 prompt（t_85395e07 起可带 labDesc）；导出供测试直接断言画板段落 */

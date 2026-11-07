@@ -100,7 +100,11 @@
      * 改这两个值之前先看 tests/test_llm_variants.js 的 max_tokens 契约断言。 */
     variants: 8192,
     tools: 512,
-    route: 1600     /* ≥1200：网关把 reasoning 算进预算 */
+    route: 1600,    /* ≥1200：网关把 reasoning 算进预算 */
+    /* 追问 chip（卡 D）：固定 schema 的 JSON，只有文本/短字段，没有 followup 的 graph
+     * 结构化参数，输出比 followup 短一截 —— 与 explain/followup 同档预算取 2048
+     * （足够容纳 reasoning 长尾 + 短 JSON），不放大到 4096 计费档。 */
+    tutor: 2048
   };
 
   var timeouts = {
@@ -112,7 +116,10 @@
     /* O3-4：探测超时放宽到 15s（联调时网关负载大响应可能 >5s，5s 太紧导致误判 false） */
     probe: 15000,
     labmatch: 20000,  /* 推理模型 + 多选项题面实测可超 12s（cnm_230_q1 就吃过超时） */
-    route: 60000
+    route: 60000,
+    /* 追问 chip：与 timeouts.chat 同档（同为 chat 类长请求，reasoning 先吃预算）。
+     * 单列成键是为了不动既有 chat 口径 —— 测试可单独把这一键调小验证 chip 超时路径。 */
+    tutor: 30000
   };
 
   /** 浏览器（有 document.location）才默认走相对路径 /v1（同源反代） */

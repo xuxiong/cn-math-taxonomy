@@ -387,6 +387,44 @@ table.log select { min-height: 44px; }
 .ask-graph .funclab-canvas { height: 240px; }
 .ask-graph-formula { font-size: 0.95rem; font-weight: 700; color: var(--brand); margin-bottom: 4px; }
 
+/* ---- 卡 D：追问 chips / 判一判面板 / 兜底输入框 / 换题提示 / AI 题标 ---- */
+/* chips 行默认换行：窄屏（390px 级）四个 chip 也能两行排开，不横向溢出。 */
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.chip {
+  padding: 6px 12px; font-size: 0.92rem; font-weight: 700;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--bg-elev); color: var(--text); cursor: pointer;
+}
+.chip:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
+.chip:disabled { opacity: 0.5; cursor: default; }
+/* 兜底输入框默认收起：chip 覆盖主要追问，自由文本留给长尾问题。 */
+.ask-free { margin-top: 8px; }
+.ask-free > summary { cursor: pointer; color: var(--muted); font-size: 0.92rem; }
+.ask-free[open] > summary { margin-bottom: 4px; }
+.chip-judge { margin-top: 8px; }
+.chip-solution {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+  font-size: 0.95rem; font-family: inherit; resize: vertical; min-height: 64px;
+}
+/* 判一判的结论行：ok/no/unverified 三档，配色沿用 .verdict 的变量。 */
+.ask-verdict { font-weight: 700; padding: 4px 10px; border-radius: 8px; margin-top: 2px; }
+.ask-verdict.ok { background: var(--ok-bg); color: var(--ok); }
+.ask-verdict.no { background: var(--bad-bg); color: var(--bad); }
+.ask-verdict.unverified { background: var(--warn-bg); color: var(--warn); }
+.ask-verdict-badge { font-weight: 400; font-size: 0.88rem; }
+.ask-level { font-weight: 800; color: var(--brand); margin-top: 2px; }
+.chip-first-error { color: var(--warn); font-weight: 600; margin-top: 2px; }
+.chip-explain, .chip-hint { margin-top: 2px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* 换题提示：只在新题第一次渲染出现（renderQuestion 末尾清位）。 */
+.newq-notice { margin-top: 8px; padding: 6px 10px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-size: 0.92rem; }
+/* 练习里的「再来一道」一行。 */
+.ask-again { margin-top: 8px; }
+/* AI 生成题的「未审核」标：橙色系虚线框，一眼可辨、与既有难度/状态 tag 不混淆。 */
+.tag.tag-ai-draft { background: #fff7ed; color: #9a3412; border: 1px dashed #fdba74; }
+@media (prefers-color-scheme: dark) {
+  .tag.tag-ai-draft { background: #431407; color: #fed7aa; border-color: #c2410c; }
+}
+
 /* ---- 解析公式可读性（O4）：公式段高亮 + 上下标符号显示 ---- */
 .explain, .refans { line-height: 1.65; }
 .explain b, .refans b { color: var(--brand, #2a7de1); }
