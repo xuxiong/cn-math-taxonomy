@@ -40,14 +40,18 @@ if (typeof TX.needsRefetch !== 'function') {
   throw new Error('diagnose/topic-explain.js 未导出 needsRefetch：卡 D 的截断重发判定必须复用产品实现');
 }
 
+/* 卡 E：网关错误体判定同样复用产品实现。 */
+if (typeof TX.gatewayErrorOf !== 'function') {
+  throw new Error('diagnose/topic-explain.js 未导出 gatewayErrorOf：卡 E 的网关错误体判定必须复用产品实现');
+}
+
 const RAW_DIR = path.join(ROOT, 'tmp/o4-live-raw');
 const DOC_PATH = path.join(ROOT, 'docs/o4-live-acceptance.md');
 const FULL_REPORT_PATH = path.join(ROOT, 'tmp/o4-live-report.md');
 
-/* 卡 D 章节（§7）；卡 C 的 §0–§6 是历史读数，脚本不再覆盖。 */
+/* 卡 E 章节（§9）。卡 C 的 §0–§6 与卡 D 的 §7–§8 是历史读数，脚本不再覆盖。 */
 const CARD_D_HEADING = '## 7. 卡 D 修后重跑';
-const CARD_C_RAW_HEADING = '## 8. 原始返回';
-const LEGACY_RAW_HEADING = '## 7. 原始返回';
+const CARD_E_HEADING = '## 9. 卡 E 修后重跑：网关错误体';
 
 /* 固定追问三类（可复现） */
 const FOLLOWUPS = [
@@ -162,37 +166,45 @@ function judgeReply(text) {
   return { ok: c.ok, reasons: c.reasons };
 }
 
-/* ---------- 3b. 文档写入：只维护 §7，卡 C 的 §0–§6 原样保留 ---------- */
+/* 网关错误体的可读标签（报告用；技术串只出现在报告，不进页面） */
+function gwCodeText(gw) {
+  if (!gw) return '—';
+  if (gw.code === 'no-choices') return 'no-choices';
+  if (typeof gw.code === 'number') return 'retCode=' + gw.code;
+  return String(gw.code);
+}
 
-/* 把 cardDText（以 `## 7. …` 开头）写进 doc：
- *  - 已有 §7 → 整段替换到下一个二级标题之前（重跑幂等）
- *  - 没有 §7 → 插在 `## 8. 原始返回` 之前（保持章节号顺序）；找不到该节就追加到文末 */
-function upsertSection(docPath, sectionText) {
+function gwWhy(gw) {
+  if (!gw) return '网关错误体';
+  if (gw.code === 'no-choices') return '网关错误体（HTTP 200 但缺 choices）';
+  if (typeof gw.code === 'number') return '网关错误体 retCode=' + gw.code;
+  return '网关错误体 ' + String(gw.code);
+}
+
+/* 两次返回摘要：压平空白、截断、转义表格竖线 */
+function gwBrief(text) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!s) return '(空)';
+  return s.slice(0, 48).replace(/\|/g, '\\|');
+}
+
+/* ---------- 3b. 文档写入：只维护 §9，卡 C/卡 D 的 §0–§8 原样保留 ---------- */
+
+/* 通用的二级标题整段 upsert：
+ *  - 已有 heading → 整段替换到下一个 `## ` 之前（重跑幂等，不重复追加）
+ *  - 没有 heading → 追加到文末
+ * 返回 'replaced' | 'appended'。 */
+function upsertSection(docPath, heading, sectionText) {
   const cur = fs.readFileSync(docPath, 'utf8');
   const block = sectionText.replace(/\s*$/, '\n\n');
-  const at = cur.indexOf(CARD_D_HEADING);
+  const at = cur.indexOf(heading);
 
   if (at >= 0) {
-    const rest = cur.slice(at + CARD_D_HEADING.length);
+    const rest = cur.slice(at + heading.length);
     const m = /\n## /.exec(rest);
-    const end = m ? at + CARD_D_HEADING.length + m.index + 1 : cur.length;
+    const end = m ? at + heading.length + m.index + 1 : cur.length;
     fs.writeFileSync(docPath, cur.slice(0, at) + block + cur.slice(end), 'utf8');
     return 'replaced';
-  }
-
-  const ins8 = cur.indexOf(CARD_C_RAW_HEADING);
-  if (ins8 >= 0) {
-    fs.writeFileSync(docPath, cur.slice(0, ins8) + block + cur.slice(ins8), 'utf8');
-    return 'inserted';
-  }
-
-  /* 卡 C 的末节是 `## 7. 原始返回`：给卡 D 让出 §7，把它顺延成 §8。
-   * 只改标题号，正文一个字不动。 */
-  const ins7 = cur.indexOf(LEGACY_RAW_HEADING);
-  if (ins7 >= 0) {
-    const tail = cur.slice(ins7).replace(LEGACY_RAW_HEADING, CARD_C_RAW_HEADING);
-    fs.writeFileSync(docPath, cur.slice(0, ins7) + block + tail, 'utf8');
-    return 'inserted-renumber';
   }
 
   fs.writeFileSync(docPath, cur.replace(/\s*$/, '\n\n') + block, 'utf8');
@@ -211,8 +223,9 @@ async function main() {
   const stdoutLines = [];
   const say = (s) => { stdoutLines.push(s); console.log(s); };
 
-  /* 卡 D：截断重发计数（每个点最多 1 次） */
+  /* 卡 D：截断重发计数；卡 E：网关错误重发计数（每个点合计最多 1 次重发） */
   let refetches = 0;
+  let gatewayRefetches = 0;
   let refetchHttp200 = 0;
 
   say(`# O4 真机验收 — ${new Date().toISOString()}`);
@@ -246,7 +259,7 @@ async function main() {
 
     say(`\n[${String(seq).padStart(2, '0')}/${points.length}] ${subject} ${topic.id} ${topic.name} (grade ${topic.grade})`);
 
-    /* --- 讲解（卡 D：命中 needsRefetch 就原样重发一次，判据用产品模块，脚本不另写） --- */
+    /* --- 讲解（卡 E + 卡 D：先判网关错误体、再判截断，合计最多 2 次请求） --- */
     const explainBody = {
       model: CFG.model,
       messages: TX.explainMessages(inputs),
@@ -264,24 +277,49 @@ async function main() {
     }
 
     let explainRefetched = false;
+    let refetchKind = '';
     let firstFinish = '';
     let firstEmpty = false;
     let firstNeedsRefetch = false;
+    let firstGw = null;
+    let secondGw = null;
+    let firstRaw = '';
+    let secondRaw = '';
     let explainMs = explainReq.r ? explainReq.r.ms : 0;
 
     if (explainReq.r) {
       firstFinish = finishOf(explainReq.r.json);
       firstEmpty = !contentOf(explainReq.r.json).trim();
+      firstGw = TX.gatewayErrorOf(explainReq.r.json);
       firstNeedsRefetch = TX.needsRefetch(explainReq.r.json);
-      if (firstNeedsRefetch) {
+      firstRaw = String(explainReq.r.text || '').trim();
+
+      if (firstGw) {
+        /* 与页面一致：先判网关错误体 → 退避 800ms，同 messages / 同 max_tokens 重发 1 次。 */
+        explainRefetched = true;
+        refetchKind = 'gateway';
+        gatewayRefetches += 1;
+        say(`  explain   首次命中网关错误体 ${gwCodeText(firstGw)}（${firstRaw.slice(0, 40) || '空'}）→ sleep 800ms 原样重发 1 次`);
+        await sleep(800);
+        explainReq = await post(explainBody, CFG.timeouts.chat);
+        if (explainReq.r) {
+          explainMs += explainReq.r.ms;
+          if (Number(explainReq.r.http) === 200) refetchHttp200 += 1;
+          secondGw = TX.gatewayErrorOf(explainReq.r.json);
+          secondRaw = String(explainReq.r.text || '').trim();
+        }
+      } else if (firstNeedsRefetch) {
         /* 与页面 generate() 一致：同 messages、同 max_tokens，最多重发 1 次。 */
         explainRefetched = true;
+        refetchKind = 'refetch';
         refetches += 1;
         say(`  explain   首次 ${firstFinish || '(no finish)'} 正文${firstEmpty ? '空' : '有'} → needsRefetch，原样重发 1 次`);
         explainReq = await post(explainBody, CFG.timeouts.chat);
         if (explainReq.r) {
           explainMs += explainReq.r.ms;
           if (Number(explainReq.r.http) === 200) refetchHttp200 += 1;
+          secondGw = TX.gatewayErrorOf(explainReq.r.json);
+          secondRaw = String(explainReq.r.text || '').trim();
         }
       }
     }
@@ -290,27 +328,43 @@ async function main() {
       rec.explain = {
         kind: 'explain', http: explainReq.attempts.map((a) => a.http).join('/'),
         ms: explainMs + explainReq.attempts.reduce((s, a) => s + a.ms, 0),
-        ok: false, failed: true, refetched: explainRefetched,
+        ok: false, failed: true, refetched: explainRefetched, refetchKind,
         firstFinish, firstEmpty, firstNeedsRefetch,
+        firstGw, secondGw, firstRaw, secondRaw,
         reasons: [{ gate: 'request_failed', why: '讲解请求失败（重试 1 次仍失败）' }],
         raw: '', content: '', finish: '', usage: null
       };
       say(`  explain   http=${rec.explain.http}  ${fmtMs(rec.explain.ms)}  attempt=${explainReq.attempts.length}  -> request_failed`);
+    } else if (secondGw) {
+      /* 第 2 次仍命中网关错误 → 记 gwerror（不是 G1，不写缓存 / history），继续下一点。 */
+      const bx = secondGw || firstGw;
+      rec.explain = {
+        kind: 'gwerror', http: explainReq.r.http, ms: explainMs, attempts: explainReq.attempts.length,
+        ok: false, failed: false, refetched: explainRefetched, refetchKind,
+        firstFinish, firstEmpty, firstNeedsRefetch,
+        firstGw, secondGw, firstRaw, secondRaw,
+        reasons: [{ gate: 'gwerror', why: gwWhy(bx) }],
+        raw: explainReq.r.text, content: contentOf(explainReq.r.json),
+        finish: finishOf(explainReq.r.json),
+        usage: explainReq.r.json.usage || null
+      };
+      say(`  explain   http=${rec.explain.http}  ${fmtMs(rec.explain.ms)}  attempt=${rec.explain.attempts}  重发=1  -> gwerror（${gwCodeText(bx)}）`);
     } else {
       const j = explainReq.r.json;
       const content = contentOf(j);
       const verdict = judgeExplain(content);
       rec.explain = {
         kind: 'explain', http: explainReq.r.http, ms: explainMs, attempts: explainReq.attempts.length,
-        ok: verdict.ok, failed: false, refetched: explainRefetched,
+        ok: verdict.ok, failed: false, refetched: explainRefetched, refetchKind,
         firstFinish, firstEmpty, firstNeedsRefetch,
+        firstGw, secondGw, firstRaw, secondRaw,
         reasons: verdict.reasons,
         raw: explainReq.r.text, content,
         finish: finishOf(j),
         usage: j.usage || null
       };
       say(`  explain   http=${rec.explain.http}  ${fmtMs(rec.explain.ms)}  attempt=${rec.explain.attempts}` +
-          (explainRefetched ? `  重发=1` : '') +
+          (explainRefetched ? `  重发=${refetchKind}` : '') +
           `  finish=${rec.explain.finish}  segs=${verdict.segs ? 5 : 0}  ok=${verdict.ok}` +
           (verdict.ok ? '' : `  reasons=${JSON.stringify(verdict.reasons)}`));
     }
@@ -397,15 +451,29 @@ async function main() {
   }
 
   const http200 = explainItems.concat(followItems).filter((x) => Number(String(x.http).split('/')[0]) === 200).length + refetchHttp200;
-  const totalRequests = explainItems.length + followItems.length + refetches;
+  const totalRequests = explainItems.length + followItems.length + refetches + gatewayRefetches;
   const retried = explainItems.concat(followItems).filter((x) => (x.attempts || 1) > 1).length;
 
   /* 卡 D：截断与重发（判据一律是 product 的 needsRefetch 结果，脚本不自己判） */
   const explainFirstNeedsRefetch = explainItems.filter((x) => x.firstNeedsRefetch === true).length;
-  const explainRefetchPoints = explainItems.filter((x) => x.refetched === true);
+  const explainRefetchPoints = explainItems.filter((x) => x.refetched === true && x.refetchKind === 'refetch');
   const explainRefetchStillBad = explainRefetchPoints.filter((x) => x.failed ||
     x.finish === 'length' || !String(x.content || '').trim()).length;
   const explainRefetchRecovered = explainRefetchPoints.length - explainRefetchStillBad;
+
+  /* 卡 E：网关错误体 vs G1（两者互不重复计入） */
+  const gwFirstPoints = explainItems.filter((x) => x.firstGw);
+  const gwRetryPoints = explainItems.filter((x) => x.refetchKind === 'gateway');
+  const gwStillPoints = gwRetryPoints.filter((x) => x.secondGw);
+  const gwRecovered = gwRetryPoints.filter((x) => !x.secondGw && !x.failed).length;
+  const gwerrorPoints = explainItems.filter((x) => x.kind === 'gwerror');
+  const g1Points = explainItems.filter((x) => !x.ok && (x.reasons || []).some((r) => r.gate === 'G1'));
+  const gwCodeCounts = new Map();
+  for (const it of gwFirstPoints) {
+    const c = gwCodeText(it.firstGw);
+    gwCodeCounts.set(c, (gwCodeCounts.get(c) || 0) + 1);
+  }
+  const gwCodeSummary = [...gwCodeCounts.entries()].map(([c, n]) => `${c} × ${n}`).join('；');
 
   const withSegs = runs.filter((r) => r.anchorSource === 'segs').length;
   const anchorRaw = runs.filter((r) => r.anchorSource === 'raw-text').length;
@@ -453,6 +521,9 @@ async function main() {
   say(`讲解 finish_reason=length ${explainFinishLength}/${explainItems.length}（其中内容为空串 ${explainEmpty}、被截断 ${explainTruncated}、completion_tokens 等于 maxTokens.explain=${CFG.maxTokens.explain} 的 ${explainLengthAtCap}）`);
   say(`追问 finish_reason=length ${followFinishLength}/${followItems.length}（内容为空串 ${followEmpty}）`);
   say(`截断重发 ${refetches} 次（首答命中 needsRefetch ${explainFirstNeedsRefetch}/${explainItems.length}，重发后恢复 ${explainRefetchRecovered}、仍截断 ${explainRefetchStillBad}）`);
+  say(`网关错误体 首答命中 ${gwFirstPoints.length}/${explainItems.length}（码分布 ${gwCodeSummary || '（无）'}），网关错误重发 ${gatewayRefetches} 次（恢复 ${gwRecovered}、仍为网关错误 ${gwStillPoints.length}）`);
+  say(`gwerror ${gwerrorPoints.length} 点 / G1 结构拒 ${g1Points.length} 点（互不重复计入）`);
+  say('（说明：needsRefetch 对缺 choices 返回 false 是设计 —— 它是截断判据；网关错误体由 gatewayErrorOf 单独识别。）');
   say(`平均耗时：讲解 ${explainMean}ms（${explainItems.length - explainItems.filter((x) => x.failed).length} 次成功请求，合计 ${explainTotalMs}ms）；` +
       `追问 ${followMean}ms（${followItems.length - followItems.filter((x) => x.failed).length} 次成功请求，合计 ${followTotalMs}ms）`);
   say(`追问锚点来源：5 段=${withSegs} 点 / 原始返回文本=${anchorRaw} 点 / 占位=${anchorPlaceholder} 点`);
@@ -472,7 +543,8 @@ async function main() {
   md.push(`- 超时：讲解 ${CFG.timeouts.chat}ms（llm-config.timeouts.chat）/ 追问 ${CFG.timeouts.tutor}ms（llm-config.timeouts.tutor）`);
   md.push('- 失败重试：1 次，仍失败记 `request_failed` 并继续下一点');
   md.push(`- 截断重发：${refetches} 次（判据 = \`diagnose/topic-explain.js\` 的 \`needsRefetch\`：\`finish_reason=length\` 或正文 trim 后为空；同一 messages、同一 max_tokens，每点最多 1 次）`);
-  md.push(`- 请求次数：${totalRequests}（讲解 ${explainItems.length} + 追问 ${followItems.length} + 截断重发 ${refetches}；其中 HTTP 失败重试过的请求 ${retried} 次），HTTP 200：${http200}`);
+  md.push(`- 网关错误重发：${gatewayRefetches} 次（判据 = \`diagnose/topic-explain.js\` 的 \`gatewayErrorOf\`：\`retCode≠0\` / \`error\` / 无 \`choices\` 且无 \`message\`；退避 800ms，同一 messages、同一 max_tokens；与截断重发互斥，合计每点最多 1 次重发）`);
+  md.push(`- 请求次数：${totalRequests}（讲解 ${explainItems.length} + 追问 ${followItems.length} + 截断重发 ${refetches} + 网关错误重发 ${gatewayRefetches}；其中 HTTP 失败重试过的请求 ${retried} 次），HTTP 200：${http200}`);
   md.push('- 采样规则：学科顺序取 `data/stats.json` 的 `subjects` 键序；每学科在 `data/topics-lite/<subject>.json` 中按 **id 字典序升序取前两个**（可复现）');
   md.push('');
   md.push('## 1. 采样表（20 点）');
@@ -638,25 +710,74 @@ async function main() {
   d.push('- `tmp/` 在 `.gitignore` 内，不入库。');
   d.push('');
 
-  const cardDText = d.join('\n');
+  /* ---------- 8. 卡 E 一节（只维护 §9；§0–§8 原样保留） ---------- */
+
+  const e = [];
+  e.push(CARD_E_HEADING);
+  e.push('');
+  e.push(`运行时间：${new Date().toISOString()}`);
+  e.push('');
+  e.push('本节是**卡 E**（网关错误体单独识别 + 退避 800ms 重发一次）改完之后，用**同一个脚本、同一套采样规则**的重跑读数。');
+  e.push('§0–§8 是卡 C / 卡 D 的历史读数，原样保留、未被本节覆盖。');
+  e.push('');
+  e.push('### 9.1 本次运行参数');
+  e.push('');
+  e.push(`- 网关：${CFG.chatUrl()}`);
+  e.push(`- model：\`${CFG.model}\`，temperature：0`);
+  e.push(`- max_tokens：讲解 ${CFG.maxTokens.explain} / 追问 ${CFG.maxTokens.tutor}`);
+  e.push(`- 超时：讲解 ${CFG.timeouts.chat}ms / 追问 ${CFG.timeouts.tutor}ms`);
+  e.push(`- 请求总数：${totalRequests}（讲解 ${explainItems.length} + 追问 ${followItems.length} + 截断重发 ${refetches} + 网关错误重发 ${gatewayRefetches}）`);
+  e.push(`- 合规率：讲解 **${explainOk}/${explainItems.length}**；追问 **${followOk}/${followItems.length}**`);
+  e.push('');
+  e.push('### 9.2 网关错误体 vs G1 结构拒（分开计数，互不重复）');
+  e.push('');
+  e.push('| 项 | 计数 |');
+  e.push('|---|---|');
+  e.push(`| 讲解首答命中网关错误体 | ${gwFirstPoints.length}/${explainItems.length} |`);
+  e.push(`| 网关错误体码分布 | ${gwCodeSummary || '（无）'} |`);
+  e.push(`| 网关错误重发次数 | ${gatewayRefetches} |`);
+  e.push(`| 重发后恢复（不再是网关错误） | ${gwRecovered} |`);
+  e.push(`| 重发后仍为网关错误 | ${gwStillPoints.length} |`);
+  e.push(`| \`gwerror\` 点数 | ${gwerrorPoints.length} |`);
+  e.push(`| G1 结构拒点数 | ${g1Points.length} |`);
+  e.push(`| gwerror + G1（两者之和，已互斥不重复） | ${gwerrorPoints.length + g1Points.length} |`);
+  e.push('');
+  e.push('### 9.3 逐条网关错误点');
+  e.push('');
+  const gwPoints = runs.filter((r) => r.explain && (r.explain.firstGw || r.explain.secondGw));
+  if (gwPoints.length) {
+    e.push('| # | 学科 | topicId | 首次返回摘要 | 重发后摘要 | 码 |');
+    e.push('|---|---|---|---|---|---|');
+    for (const r of gwPoints) {
+      const x = r.explain;
+      const code = x.secondGw || x.firstGw;
+      e.push(`| ${r.seq} | ${r.subject} | ${r.topicId} | \`${gwBrief(x.firstRaw)}\` | \`${gwBrief(x.secondRaw)}\` | ${gwCodeText(code)} |`);
+    }
+  } else {
+    e.push('（本轮没有网关错误体）');
+  }
+  e.push('');
+  e.push('### 9.4 如实申报');
+  e.push('');
+  e.push(`本轮网关错误体 ${gwFirstPoints.length} 次（首答命中；其中重发后仍为网关错误 ${gwStillPoints.length} 次，重发后恢复 ${gwRecovered} 次）。`);
+  e.push('');
+  e.push('`needsRefetch` 对缺 `choices` 返回 `false` 是设计（它是截断判据），网关错误体由 `gatewayErrorOf` 单独识别。');
+  e.push('');
+
+  const cardEText = e.join('\n');
   let docsMode;
   let prev = '';
-  try { prev = fs.readFileSync(DOC_PATH, 'utf8'); } catch (e) { prev = ''; }
+  try { prev = fs.readFileSync(DOC_PATH, 'utf8'); } catch (e2) { prev = ''; }
 
   if (!prev.trim()) {
-    /* 首次运行：整份写入（§0–§8 + §7） */
-    fs.writeFileSync(DOC_PATH, fullReport + '\n' + cardDText, 'utf8');
-    docsMode = 'created';
-  } else {
-    docsMode = upsertSection(DOC_PATH, cardDText);
+    /* 首次运行：先落 §0–§8（卡 C 口径的完整报告），再追加 §9。 */
+    fs.writeFileSync(DOC_PATH, fullReport, 'utf8');
   }
+  docsMode = upsertSection(DOC_PATH, CARD_E_HEADING, cardEText);
 
   const DOCS_MSG = {
-    created: '整份写入（含卡 C 的 §0–§6 与 §7）',
-    replaced: '§7 已整段替换',
-    inserted: '§7 已插入（§0–§6 未动）',
-    'inserted-renumber': '§7 已插入（§0–§6 未动；卡 C 的「原始返回」顺延为 §8，只改标题号）',
-    appended: '§7 已追加到文末（未找到「原始返回」节）'
+    replaced: '§9 已整段替换（§0–§8 未动）',
+    appended: '§9 已追加到文末（§0–§8 未动）'
   };
   const docsMsg = DOCS_MSG[docsMode] || docsMode;
   say(`\n报告已写入 ${path.relative(ROOT, DOC_PATH)}：${docsMsg}`);

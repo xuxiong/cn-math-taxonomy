@@ -167,11 +167,12 @@ function dataOf(text) {
   return { choices: [{ message: { content: text } }] };
 }
 
-function loadModule(storage, config, gateway) {
+function loadModule(storage, config, gateway, opts) {
+  const o = opts || {};
   const sandbox = {
     console: console,
-    setTimeout: setTimeout,
-    clearTimeout: clearTimeout
+    setTimeout: typeof o.setTimeout === 'function' ? o.setTimeout : setTimeout,
+    clearTimeout: typeof o.clearTimeout === 'function' ? o.clearTimeout : clearTimeout
   };
   sandbox.self = sandbox;
   sandbox.window = sandbox;
@@ -188,6 +189,20 @@ function loadModule(storage, config, gateway) {
 
 function flush() {
   return new Promise(function (resolve) { setTimeout(resolve, 0); });
+}
+
+/* 记录型假定时器：记下 ms 后异步（微任务）执行回调，用来验证退避延迟与调用次数。 */
+function makeFakeTimers() {
+  const delays = [];
+  return {
+    delays: delays,
+    setTimeout: function (fn, ms) {
+      delays.push(ms);
+      Promise.resolve().then(fn);
+      return delays.length;
+    },
+    clearTimeout: function () { /* 测试里不需要真正取消 */ }
+  };
 }
 
 function topic(id, name, grade) {
@@ -616,6 +631,111 @@ testAsync('7c. 两次都 finish=length → 恰好 2 次请求（不是 3 次）�
   assert.ok(byClass(box, 'tai-retry').length === 1, '应给可见重试按钮');
   assert.strictEqual(textOf(box).indexOf('正在重试'), -1, '不许给用户加「正在重试」的技术噪音');
   assert.strictEqual(explainCacheKeys(storage), 0, '重发失败不写缓存');
+});
+
+/* ================================================================ 7d. 网关错误体（卡 E） */
+
+const GW_ERR = { retCode: 9 };
+
+testAsync('卡E-1. 首次网关错误体、第二次正常 → 2 次请求、800ms 退避恰好 1 次、5 段上屏、缓存已写', async function () {
+  const storage = makeStorage();
+  const timers = makeFakeTimers();
+  const gateway = makeGateway(function (body, n) {
+    return n === 1 ? GW_ERR : dataOf(SEG_JSON);
+  });
+  const mod = loadModule(storage, makeConfig(true), gateway, timers);
+
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_gw_ok', '网关恢复')));
+  await flush();
+  await flush();
+
+  assert.strictEqual(gateway.calls.length, 2, '网关错误只重发 1 次（共 2 次请求）');
+  assert.deepStrictEqual(gateway.calls[1].messages, gateway.calls[0].messages, '重发必须用同样的 messages');
+  assert.strictEqual(gateway.calls[1].max_tokens, gateway.calls[0].max_tokens, '重发必须用同样的 max_tokens');
+  assert.deepStrictEqual(timers.delays, [800], '退避延迟必须恰好 800ms 且只调用 1 次');
+  assert.strictEqual(byClass(box, 'tai-seg').length, 5, '重发成功后讲解应正常上屏');
+  assert.ok(byClass(box, 'tai-gate').length === 0, '不该出现「格式没成形」');
+  assert.ok(explainCacheKeys(storage) >= 1, '拿到合规 5 段后应写入讲解缓存');
+});
+
+testAsync('卡E-2. 两次都网关错误 → 2 次请求（不是 3）、显示「暂时没接通」、缓存未写、无对话输入框', async function () {
+  const storage = makeStorage();
+  const timers = makeFakeTimers();
+  const gateway = makeGateway(function () { return GW_ERR; });
+  const mod = loadModule(storage, makeConfig(true), gateway, timers);
+
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_gw_bad', '一直网关错误')));
+  await flush();
+  await flush();
+
+  assert.strictEqual(gateway.calls.length, 2, '合计最多 2 次请求（不是 3 次）');
+  assert.ok(textOf(box).indexOf('暂时没接通') >= 0, '应出现「AI 老师那边暂时没接通…」文案');
+  assert.strictEqual(explainCacheKeys(storage), 0, '网关错误不许写讲解缓存');
+  assert.strictEqual(storage.length, 0, '网关错误不许写任何 storage 键');
+  assert.strictEqual(byClass(box, 'tai-input').length, 0, 'gwerror 下不出现对话输入框');
+  assert.strictEqual(byClass(box, 'tai-error').length, 1, '应使用既有的 tai-error 样式');
+  const retry = byClass(box, 'tai-retry')[0];
+  assert.ok(retry, '应给「再试一次」按钮');
+  assert.strictEqual(textOf(retry), '再试一次', 'gwerror 按钮文案应为「再试一次」');
+});
+
+testAsync('卡E-3. 两次都网关错误时，页面不出现 retCode 字样', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function () { return GW_ERR; });
+  const mod = loadModule(storage, makeConfig(true), gateway, makeFakeTimers());
+
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_gw_text', '技术串不外泄')));
+  await flush();
+  await flush();
+
+  assert.ok(textOf(box).indexOf('retCode') < 0, '学生可见文本不许出现 retCode');
+});
+
+testAsync('卡E-4. 首次网关错误、第二次截断 → 仍 2 次请求、落 gate（不是 gwerror）、不写缓存', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function (body, n) {
+    return n === 1 ? GW_ERR : TRUNCATED;
+  });
+  const mod = loadModule(storage, makeConfig(true), gateway, makeFakeTimers());
+
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_gw_then_trunc', '网关后截断')));
+  await flush();
+  await flush();
+
+  assert.strictEqual(gateway.calls.length, 2, '网关错误重发后不再因截断重发（合计 2 次）');
+  assert.ok(byClass(box, 'tai-gate').length === 1, '第 2 次是截断应落 gate');
+  assert.strictEqual(byClass(box, 'tai-error').length, 0, '不应落 gwerror');
+  assert.strictEqual(textOf(box).indexOf('暂时没接通'), -1);
+  assert.strictEqual(explainCacheKeys(storage), 0, '不写缓存');
+});
+
+testAsync('卡E-5. 追问收到网关错误体 → 显示同一句文案、history 不增长', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function (body, n) {
+    return n === 1 ? dataOf(SEG_JSON) : GW_ERR;
+  });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_gw_chat', '追问网关')));
+  await flush();
+
+  const input = byClass(box, 'tai-input')[0];
+  input.value = '为什么这样算？';
+  byClass(box, 'tai-send')[0].click();
+  await flush();
+
+  assert.ok(textOf(box).indexOf('暂时没接通') >= 0, '追问失败应显示同一句「没接通」文案');
+  assert.strictEqual(byClass(box, 'tai-bubble-teacher').length, 0, '网关错误不进 history（无老师气泡）');
+  let chatKeys = 0;
+  for (let i = 0; i < storage.length; i++) {
+    if (storage.key(i).indexOf('cnmDiagnose.topicExplain.v1.chat.') === 0) chatKeys++;
+  }
+  assert.strictEqual(chatKeys, 0, '网关错误不写 history（无 chat 键）');
 });
 
 /* ================================================================ 8. 红线 */

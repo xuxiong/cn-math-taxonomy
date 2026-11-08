@@ -33,6 +33,7 @@
   var GATE_TEXT = '这条没通过自动校验（格式没成形），换一次试试';
   var CHAT_FAIL = '这条没通过自动校验（格式没成形），再问一次试试';
   var ERROR_TEXT = '这次没取到讲解，点重试再来一次';
+  var GW_TEXT = 'AI 老师那边暂时没接通，过一会儿再试一次';
 
   /* topicId → state。状态放模块里，切换知识点再切回来不重发请求。 */
   var STATE = new Map();
@@ -88,7 +89,7 @@
       id: ctx.topic.id,
       box: null,
       ctx: ctx,
-      status: 'idle',       /* idle | loading | ready | gate | noconfig | error */
+      status: 'idle',       /* idle | loading | ready | gate | gwerror | noconfig | error */
       inputs: null,
       explainKey: null,
       variant: 0,           /* 只用于「换个说法重讲」的缓存键后缀 */
@@ -268,12 +269,44 @@
       apply(st, parsed.segs, key);
     }
 
-    /* 截断重发（卡 D）：首次响应满足 needsRefetch（finish_reason=length 或正文 trim 后为空）时，
-     * 原样再要一次 —— 最多 1 次。重发后再截断就走上面的「格式没成形」文案，不递归、不循环；
-     * 页面文案不变，不给用户加「正在重试」的技术噪音。 */
+    /* 网关错误体（卡 E）：HTTP 200 里的业务错误包，不是模型输出 —— 不按「格式」处理，
+     * 落独立的 gwerror 状态，不写缓存、不写 history。 */
+    function gwError() {
+      st.status = 'gwerror';
+      render(st);
+    }
+
+    function isGwError(data) {
+      return !!data && typeof api.gatewayErrorOf === 'function' && !!api.gatewayErrorOf(data);
+    }
+
+    function isTruncated(data) {
+      return !!data && typeof api.needsRefetch === 'function' && !!api.needsRefetch(data);
+    }
+
+    /* 退避 800ms 后再发一次（保持 loading，别让错误闪烁一下）。 */
+    function retryLater() {
+      return new Promise(function (resolve) {
+        if (typeof root.setTimeout !== 'function') { resolve(send()); return; }
+        root.setTimeout(function () { resolve(send()); }, 800);
+      });
+    }
+
+    /* 重发后的统一处理：第 2 次命中网关错误就停在 gwerror；否则按原 finish() 走
+     * （第 2 次是截断也不再重发，交给 finish 判 gate）。 */
+    function afterRetry(data2) {
+      if (!data2) return fail();
+      if (isGwError(data2)) return gwError();
+      return finish(data2);
+    }
+
+    /* 判序（卡 E + 卡 D）：先网关错误、再截断，一次请求只可能有一条重发理由，
+     * attempts 共享一个上限 2（不是 4）。缺依赖时按「没命中」退回卡 D 行为。 */
     send().then(function (data) {
-      if (!data || typeof api.needsRefetch !== 'function' || !api.needsRefetch(data)) return finish(data);
-      return send().then(finish);
+      if (!data) return fail();
+      if (isGwError(data)) return retryLater().then(afterRetry);
+      if (isTruncated(data)) return send().then(afterRetry);
+      return finish(data);
     }).catch(fail);
   }
 
@@ -301,11 +334,16 @@
       messages: messages,
       max_tokens: cfg.maxTokens.tutor
     }).then(function (data) {
+      st.chatPending = false;
+      st.pendingQuestion = null;
+      /* 网关错误体（卡 E）：先判它，命中就用同一句「没接通」文案，不写 history。 */
+      if (data && typeof api.gatewayErrorOf === 'function' && api.gatewayErrorOf(data)) {
+        st.chatError = GW_TEXT;
+        return render(st);
+      }
       var text = data && data.choices && data.choices[0] && data.choices[0].message
         ? data.choices[0].message.content : '';
       text = trim(text);
-      st.chatPending = false;
-      st.pendingQuestion = null;
       if (!text || !api.checkReply(text).ok) {
         st.chatError = CHAT_FAIL;   /* 不写 history */
         return render(st);
@@ -343,6 +381,7 @@
     else if (st.status === 'noconfig') renderNoConfig(box);
     else if (st.status === 'ready') renderReady(st, box);
     else if (st.status === 'gate') renderGate(box, st);
+    else if (st.status === 'gwerror') renderGwError(st, box);
     else renderError(box, st);
   }
 
@@ -372,12 +411,17 @@
     box.append(el('p', 'tai-gate', GATE_TEXT), retryButton(st, false));
   }
 
+  /* 网关错误体：沿用 tai-error 样式，不新增 CSS；按钮文案「再试一次」。 */
+  function renderGwError(st, box) {
+    box.append(el('p', 'tai-error', GW_TEXT), retryButton(st, false, '再试一次'));
+  }
+
   function renderError(box, st) {
     box.append(el('p', 'tai-error', ERROR_TEXT), retryButton(st, false));
   }
 
-  function retryButton(st, force) {
-    var btn = el('button', 'tai-retry', '重试');
+  function retryButton(st, force, label) {
+    var btn = el('button', 'tai-retry', label || '重试');
     btn.setAttribute('type', 'button');
     btn.addEventListener('click', function () { generate(st, force); });
     return btn;

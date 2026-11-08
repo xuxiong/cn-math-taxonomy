@@ -853,6 +853,51 @@ test('needsRefetch：纯函数，不改入参', () => {
 });
 
 /* ================================================================
+ * 13b. 网关错误体 gatewayErrorOf（卡 E：HTTP 200 里的业务错误包，不是模型输出）
+ * ================================================================ */
+
+console.log('\n--- 网关错误体 gatewayErrorOf（卡 E） ---');
+
+test('gatewayErrorOf：{"retCode":9} → {code:9}', () => {
+  assert.deepStrictEqual(T.gatewayErrorOf({ retCode: 9 }), { code: 9 });
+});
+
+test('gatewayErrorOf：retCode:0 且有正常 choices → null（拿到模型输出，0 不算错误）', () => {
+  assert.strictEqual(T.gatewayErrorOf({ retCode: 0, choices: [{ message: { content: 'x' } }] }), null);
+});
+
+test('gatewayErrorOf：error.code / error.type / 空 error 各自取码', () => {
+  assert.deepStrictEqual(T.gatewayErrorOf({ error: { code: 'x' } }), { code: 'x' });
+  assert.deepStrictEqual(T.gatewayErrorOf({ error: { type: 'y' } }), { code: 'y' });
+  assert.deepStrictEqual(T.gatewayErrorOf({ error: {} }), { code: 'error' });
+});
+
+test('gatewayErrorOf：{} 与 retCode:0（无 choices）→ no-choices', () => {
+  assert.deepStrictEqual(T.gatewayErrorOf({}), { code: 'no-choices' });
+  assert.deepStrictEqual(T.gatewayErrorOf({ retCode: 0 }), { code: 'no-choices' });
+});
+
+test('gatewayErrorOf：null / undefined / 字符串 / 数字 / 数组 → null', () => {
+  assert.strictEqual(T.gatewayErrorOf(null), null);
+  assert.strictEqual(T.gatewayErrorOf(undefined), null);
+  assert.strictEqual(T.gatewayErrorOf('str'), null);
+  assert.strictEqual(T.gatewayErrorOf(42), null);
+  assert.strictEqual(T.gatewayErrorOf([]), null);
+});
+
+test('gatewayErrorOf：正常 choices → null，且有 choices 优先于 no-choices 兜底', () => {
+  assert.strictEqual(T.gatewayErrorOf({ choices: [{ message: { content: '...' } }] }), null);
+  assert.strictEqual(T.gatewayErrorOf({ choices: [] }), null);
+});
+
+test('gatewayErrorOf：纯函数，不改入参', () => {
+  const body = { retCode: 9 };
+  const before = JSON.stringify(body);
+  T.gatewayErrorOf(body);
+  assert.strictEqual(JSON.stringify(body), before, 'gatewayErrorOf 不许改入参');
+});
+
+/* ================================================================
  * 14. 零网络收尾
  * ================================================================ */
 

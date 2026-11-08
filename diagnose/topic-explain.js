@@ -555,6 +555,44 @@
     }
   }
 
+  /* 网关错误体：网关在 HTTP 200 里回自己的业务错误包（实测 {"retCode":9}），
+   * 没有 choices、没有 message —— 这不是模型的输出，不能按「格式」处理。
+   *
+   * 判据只有三类（别的都不加）：
+   *   1) retCode 存在且 !== 0 → {code: retCode}；
+   *   2) error 存在 → {code: error.code || error.type || 'error'}；
+   *   3) 既无 choices 也无 message → {code: 'no-choices'}。
+   * 有正常 choices 一律 null（拿到模型输出了，即便同时有 retCode:0）。
+   * 纯函数，无副作用，不改入参，不判断内容质量。 */
+  function gatewayErrorOf(body) {
+    try {
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+      var has = Object.prototype.hasOwnProperty;
+
+      /* 1) 显式 retCode（0 不算错误；0 且无 choices 会落到第 3 类） */
+      if (has.call(body, 'retCode') && body.retCode !== 0) {
+        return { code: body.retCode };
+      }
+
+      /* 2) 显式 error 对象 */
+      if (has.call(body, 'error') && body.error) {
+        return { code: body.error.code || body.error.type || 'error' };
+      }
+
+      /* 有正常 choices：拿到模型输出了，优先于 no-choices 兜底 */
+      if (has.call(body, 'choices') && body.choices && body.choices.length) return null;
+
+      /* 3) 兜底：既无 choices 也无 message */
+      if (!has.call(body, 'choices') && !has.call(body, 'message')) {
+        return { code: 'no-choices' };
+      }
+
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   /* ================================================================
    * 9. 闸门（只剩两道：G1 结构 / G5 文本卫生）
    * ================================================================ */
@@ -729,6 +767,7 @@
     explainMessages: explainMessages,
     parseExplain: parseExplain,
     needsRefetch: needsRefetch,
+    gatewayErrorOf: gatewayErrorOf,
     checkExplain: checkExplain,
     chatMessages: chatMessages,
     checkReply: checkReply,
