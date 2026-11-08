@@ -240,9 +240,13 @@
     var messages = api.explainMessages(st.inputs);
     var maxTokens = cfg.maxTokens.explain;
 
-    /* 一次发送：重发复用同一份 messages 与同一个 max_tokens，不换请求通道、不改 URL。 */
-    function send() {
-      return gateway.postOnce({ model: model, messages: messages, max_tokens: maxTokens });
+    /* 截断重发那一次的预算（卡 H）：只在首答命中 needsRefetch 时使用；取不到就回落 explain。
+     * 网关错误的退避重发不走这里 —— 那是网关问题，跟预算无关，仍用 explain。 */
+    var retryTokens = (cfg.maxTokens && cfg.maxTokens.explainRetry) || maxTokens;
+
+    /* 一次发送：重发复用同一份 messages，只有「预算」按重发理由分两档，不换请求通道、不改 URL。 */
+    function send(max) {
+      return gateway.postOnce({ model: model, messages: messages, max_tokens: max });
     }
 
     function fail() {
@@ -284,11 +288,11 @@
       return !!data && typeof api.needsRefetch === 'function' && !!api.needsRefetch(data);
     }
 
-    /* 退避 800ms 后再发一次（保持 loading，别让错误闪烁一下）。 */
+    /* 退避 800ms 后再发一次（保持 loading，别让错误闪烁一下）。网关错误跟预算无关 → 仍用 explain。 */
     function retryLater() {
       return new Promise(function (resolve) {
-        if (typeof root.setTimeout !== 'function') { resolve(send()); return; }
-        root.setTimeout(function () { resolve(send()); }, 800);
+        if (typeof root.setTimeout !== 'function') { resolve(send(maxTokens)); return; }
+        root.setTimeout(function () { resolve(send(maxTokens)); }, 800);
       });
     }
 
@@ -301,11 +305,12 @@
     }
 
     /* 判序（卡 E + 卡 D）：先网关错误、再截断，一次请求只可能有一条重发理由，
-     * attempts 共享一个上限 2（不是 4）。缺依赖时按「没命中」退回卡 D 行为。 */
-    send().then(function (data) {
+     * attempts 共享一个上限 2（不是 4）。缺依赖时按「没命中」退回卡 D 行为。
+     * 卡 H：截断重发换 explainRetry 预算；网关错误重发仍用 explain。 */
+    send(maxTokens).then(function (data) {
       if (!data) return fail();
       if (isGwError(data)) return retryLater().then(afterRetry);
-      if (isTruncated(data)) return send().then(afterRetry);
+      if (isTruncated(data)) return send(retryTokens).then(afterRetry);
       return finish(data);
     }).catch(fail);
   }

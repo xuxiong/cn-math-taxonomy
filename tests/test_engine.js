@@ -2746,6 +2746,19 @@ test('单一出处：llm-config.js 定义 explain=4096 / followup=4096，explain
     'explain.js 的 FOLLOWUP_MAX_TOKENS 应从 LLMConfig 取值（配置唯一真源）');
 });
 
+/* 卡 H：截断重发档位单列 —— 只在重发那一次用，不许把常态 explain 放大，也不许把它抬成第二档常态。 */
+test('卡H：llm-config.js 的 explainRetry = 6144 且 <= 8192（防放大），explain 仍 <= 4096', () => {
+  const cfg = require('../diagnose/llm-config.js');
+  assert.strictEqual(cfg.maxTokens.explainRetry, 6144,
+    'explainRetry 应为 6144（explain 4096 的 1.5 倍；实测长尾 completion 3463–4096+、reasoning 最长 9187 字符）');
+  assert.ok(cfg.maxTokens.explainRetry <= 8192,
+    'explainRetry 不得超过 8192（防过度放大）: ' + cfg.maxTokens.explainRetry);
+  assert.ok(cfg.maxTokens.explain <= 4096,
+    '常态 explain 仍须 <= 4096（红线）: ' + cfg.maxTokens.explain);
+  assert.ok(cfg.maxTokens.explainRetry > cfg.maxTokens.explain,
+    'explainRetry 必须严格大于 explain，否则「升档」无意义');
+});
+
 /* ============================================ 函数实验室 fromPrompt 解析 */
 const Funclab = require('../diagnose/funclab.js');
 
