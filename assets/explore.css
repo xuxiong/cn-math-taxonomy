@@ -267,3 +267,110 @@ body.page-explore .site-footer { flex: none; }
     border-radius: 999px;
   }
 }
+
+/* ---------------------------------------------------------------- O4 卡B：知识点 AI 讲解 */
+
+.tai {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.tai-btn {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--brand);
+  border-radius: 999px;
+  background: var(--brand);
+  color: var(--on-brand);
+  font-weight: 800;
+  cursor: pointer;
+}
+.tai-btn:disabled { opacity: 0.6; cursor: default; }
+.tai-hint, .tai-line, .tai-badge {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.tai-line { font-weight: 600; }
+.tai-seg { margin: 16px 0; }
+.tai-seg-title {
+  margin: 0 0 6px;
+  font-size: 1.02rem;
+  color: var(--brand-strong);
+}
+.tai-list, .tai-steps { margin: 4px 0 0; padding-left: 1.3em; }
+.tai-list li, .tai-steps li { margin: 4px 0; line-height: 1.6; }
+.tai-q {
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: var(--bg-muted);
+  border-left: 4px solid var(--brand);
+  border-radius: 8px;
+  font-weight: 800;
+  white-space: pre-wrap;
+}
+.tai-ans { margin-top: 8px; }
+.tai-ans > summary { cursor: pointer; font-weight: 700; color: var(--brand-strong); }
+.tai-ans p { margin: 6px 0 0; white-space: pre-wrap; }
+.tai-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 14px 0 4px;
+  flex-wrap: wrap;
+}
+.tai-again, .tai-retry, .tai-send, .tai-clear {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+}
+.tai-again:hover, .tai-retry:hover, .tai-send:hover, .tai-clear:hover { background: var(--bg-muted); }
+.tai-chat { margin-top: 14px; }
+.tai-bubbles { display: flex; flex-direction: column; gap: 8px; }
+.tai-bubble {
+  max-width: 85%;
+  padding: 9px 12px;
+  border-radius: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tai-bubble-student {
+  align-self: flex-end;
+  background: var(--brand-soft);
+  color: var(--text);
+  border-bottom-right-radius: 4px;
+}
+.tai-bubble-teacher {
+  align-self: flex-start;
+  background: var(--bg-muted);
+  border-bottom-left-radius: 4px;
+}
+.tai-bubble-text { margin: 0; }
+.tai-bubble .tai-badge { margin-top: 4px; }
+.tai-ask { display: flex; gap: 8px; margin-top: 10px; }
+.tai-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text);
+}
+.tai-chat-foot { margin-top: 10px; }
+.tai-gate, .tai-error, .tai-noconfig {
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: var(--warn-bg);
+  border-radius: 10px;
+  line-height: 1.6;
+}
+.tai-noconfig a { color: var(--brand-strong); font-weight: 800; }

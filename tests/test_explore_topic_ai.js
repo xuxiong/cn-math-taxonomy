@@ -1,0 +1,603 @@
+#!/usr/bin/env node
+/* O4 卡B：知识点 AI 讲解的页面接线守卫（零依赖、零真网络、vm 沙箱 + 假 DOM）。
+ *
+ * 覆盖卡面 §5 的 1–9 + 额外一条：
+ *   1. 点击前零加载 / 点击后 5 个脚本按序懒加载；
+ *   2. 未配模型：零网络、零 postOnce，给设置入口；
+ *   3. 成功路径：5 段结构化渲染（how 去双序号、demo 题面 / 分步 / 折叠答案）；
+ *   4. 被闸门拒：可见重试、失败轮不写缓存 / 对话；
+ *   5. 追问：气泡、10 轮上限、清空对话、第 11 轮被拒；
+ *   6. 切换 topic 再切回：不重发、状态还在；
+ *   7. 缓存命中：新模块实例、同一 storage、零 postOnce；
+ *   8. 红线：禁 innerHTML 一干、CSS 新增选择器带 .tai- 前缀；
+ *   9. 首屏脚本恰好 5 个且不含 topic-ai.js；
+ *   额外：topic-ai.js 里不出现 fetch(。
+ *
+ * 做法对齐 tests/test_explore_detail_retry.js：从 explore/app.js 按括号配平取真实函数源码，
+ * 塞进 vm 沙箱跑；topic-ai.js 用 vm.runInContext 按浏览器方式加载。测试里不复制等价实现。
+ */
+'use strict';
+
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const ROOT = path.resolve(__dirname, '..');
+const APP_PATH = path.join(ROOT, 'explore', 'app.js');
+const APP = fs.readFileSync(APP_PATH, 'utf8');
+const MODULE_PATH = path.join(ROOT, 'explore', 'topic-ai.js');
+const CSS_PATH = path.join(ROOT, 'assets', 'explore.css');
+const INDEX_PATH = path.join(ROOT, 'explore', 'index.html');
+
+const BADGE = 'AI 生成 · 未经人工审核';
+
+let passed = 0;
+let failed = 0;
+const ASYNC = [];
+
+function test(name, fn) {
+  try { fn(); passed++; console.log('  ok   ' + name); }
+  catch (e) { failed++; console.log('  FAIL ' + name + '\n       ' + (e && e.stack || e).split('\n').slice(0, 8).join('\n       ')); }
+}
+function testAsync(name, fn) {
+  ASYNC.push(fn().then(
+    function () { passed++; console.log('  ok   ' + name); },
+    function (e) { failed++; console.log('  FAIL ' + name + '\n       ' + (e && e.stack || e).split('\n').slice(0, 8).join('\n       ')); }
+  ));
+}
+
+/* ================================================================ 假 DOM */
+
+function makeNode(tag) {
+  const node = {
+    tagName: String(tag).toUpperCase(),
+    className: '',
+    textContent: '',
+    hidden: false,
+    disabled: false,
+    value: '',
+    children: [],
+    parent: null,
+    _attrs: {},
+    _listeners: {},
+    append: function () {
+      for (let i = 0; i < arguments.length; i++) {
+        const child = arguments[i];
+        if (Array.isArray(child)) { child.forEach(function (c) { node.append(c); }); continue; }
+        if (child === null || child === undefined) continue;
+        if (typeof child === 'string' || typeof child === 'number') { node.children.push(String(child)); continue; }
+        node.children.push(child);
+        child.parent = node;
+      }
+    },
+    appendChild: function (child) { node.append(child); return child; },
+    replaceChildren: function () {
+      node.children.forEach(function (c) { if (c && typeof c === 'object') c.parent = null; });
+      node.children = [];
+      node.append.apply(node, arguments);
+    },
+    remove: function () {
+      if (!node.parent) return;
+      const i = node.parent.children.indexOf(node);
+      if (i >= 0) node.parent.children.splice(i, 1);
+      node.parent = null;
+    },
+    addEventListener: function (type, fn) {
+      if (!node._listeners[type]) node._listeners[type] = [];
+      node._listeners[type].push(fn);
+    },
+    click: function () {
+      if (node.disabled) return;
+      const list = (node._listeners.click || []).slice();
+      list.forEach(function (fn) { fn({ type: 'click', target: node }); });
+    },
+    setAttribute: function (k, v) { node._attrs[k] = String(v); },
+    getAttribute: function (k) { return Object.prototype.hasOwnProperty.call(node._attrs, k) ? node._attrs[k] : null; }
+  };
+  return node;
+}
+
+function byClass(node, cls) {
+  const out = [];
+  (function walk(n) {
+    if (!n || typeof n === 'string') return;
+    const cn = n.className || '';
+    if ((' ' + cn + ' ').indexOf(' ' + cls + ' ') >= 0) out.push(n);
+    (n.children || []).forEach(walk);
+  })(node);
+  return out;
+}
+
+function byTag(node, tag) {
+  const want = String(tag).toUpperCase();
+  const out = [];
+  (function walk(n) {
+    if (!n || typeof n === 'string') return;
+    if (n.tagName === want) out.push(n);
+    (n.children || []).forEach(walk);
+  })(node);
+  return out;
+}
+
+function textOf(node) {
+  if (node === null || node === undefined) return '';
+  if (typeof node === 'string') return node;
+  let s = typeof node.textContent === 'string' ? node.textContent : '';
+  (node.children || []).forEach(function (c) { s += textOf(c); });
+  return s;
+}
+
+/* ================================================================ 假 localStorage / 沙箱 */
+
+function makeStorage() {
+  const map = Object.create(null);
+  return {
+    getItem: function (k) { return Object.prototype.hasOwnProperty.call(map, k) ? map[k] : null; },
+    setItem: function (k, v) { map[k] = String(v); },
+    removeItem: function (k) { delete map[k]; },
+    key: function (i) { return Object.keys(map)[i] === undefined ? null : Object.keys(map)[i]; },
+    get length() { return Object.keys(map).length; }
+  };
+}
+
+function makeConfig(on) {
+  return {
+    model: 'test-model',
+    maxTokens: { explain: 111, tutor: 222 },
+    isConfigured: function () { return on !== false; }
+  };
+}
+
+/** 可编程网关：postOnce(body) 立刻按 responder(body, index) 回包。 */
+function makeGateway(responder) {
+  const calls = [];
+  return {
+    calls: calls,
+    postOnce: function (body) {
+      calls.push(body);
+      let value;
+      try { value = responder(body, calls.length); } catch (e) { return Promise.reject(e); }
+      return Promise.resolve(value);
+    }
+  };
+}
+
+function dataOf(text) {
+  return { choices: [{ message: { content: text } }] };
+}
+
+function loadModule(storage, config, gateway) {
+  const sandbox = {
+    console: console,
+    setTimeout: setTimeout,
+    clearTimeout: clearTimeout
+  };
+  sandbox.self = sandbox;
+  sandbox.window = sandbox;
+  sandbox.document = { createElement: function (tag) { return makeNode(tag); } };
+  sandbox.localStorage = storage;
+  sandbox.CnmTopicExplain = require('../diagnose/topic-explain.js');
+  sandbox.LLMConfig = config;
+  sandbox.DiagLLMGateway = gateway;
+  sandbox.fetch = function () { throw new Error('不许发真网络'); };
+  vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(MODULE_PATH, 'utf8'), sandbox, { filename: MODULE_PATH });
+  return sandbox;
+}
+
+function flush() {
+  return new Promise(function (resolve) { setTimeout(resolve, 0); });
+}
+
+function topic(id, name, grade) {
+  return { id: id, name: name || id, grade: grade || 3, subject: 'math' };
+}
+
+function ctxOf(t, questions, deps, topics) {
+  return { topic: t, questions: questions || [], deps: deps || [], topics: topics || [t] };
+}
+
+function autoCtx(t, questions, deps, topics) {
+  var ctx = ctxOf(t, questions, deps, topics);
+  ctx.autostart = true;
+  return ctx;
+}
+
+const SEG = { what: '甲\n乙', why: '丙', how: '1. 第一步\n2. 第二步', demo: '一共有几个苹果？\n先数一数。\n答案：3 个', trap: '丁' };
+const SEG_JSON = JSON.stringify(SEG);
+const REPLY = '好的，先说题意。';
+
+/* ================================================================ 源码提取（注释 / 字符串里的括号不算） */
+
+function scan(src, keepStrings) {
+  let out = '';
+  let i = 0;
+  let state = 'code';
+  while (i < src.length) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (state === 'code') {
+      if (c === '/' && n === '/') { out += '  '; i += 2; state = 'line'; continue; }
+      if (c === '/' && n === '*') { out += '  '; i += 2; state = 'block'; continue; }
+      if (c === "'" || c === '"' || c === '`') { out += c; i++; state = c; continue; }
+      out += c; i++; continue;
+    }
+    if (state === 'line') {
+      if (c === '\n') { out += c; state = 'code'; } else { out += ' '; }
+      i++; continue;
+    }
+    if (state === 'block') {
+      if (c === '*' && n === '/') { out += '  '; i += 2; state = 'code'; continue; }
+      out += (c === '\n' ? c : ' ');
+      i++; continue;
+    }
+    if (c === '\\') { out += keepStrings ? c + (n || '') : '  '; i += 2; continue; }
+    if (c === state) { out += c; i++; state = 'code'; continue; }
+    out += keepStrings ? c : (c === '\n' ? c : ' ');
+    i++;
+  }
+  return out;
+}
+
+const CODE_ONLY = scan(APP, false);
+
+function extractFunction(name) {
+  const re = new RegExp('function\\s+' + name + '\\s*\\(');
+  const m = re.exec(CODE_ONLY);
+  assert.ok(m, 'explore/app.js 里找不到函数 ' + name);
+  const open = CODE_ONLY.indexOf('{', m.index + m[0].length - 1);
+  assert.ok(open >= 0, '找不到 ' + name + ' 的起始花括号');
+  let depth = 0;
+  for (let i = open; i < CODE_ONLY.length; i++) {
+    const c = CODE_ONLY[i];
+    if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return APP.slice(m.index, i + 1);
+    }
+  }
+  throw new Error(name + ' 的花括号不配对');
+}
+
+function aiScriptsFromSource() {
+  const decl = /var\s+AI_SCRIPTS\s*=\s*\[([\s\S]*?)\]/.exec(APP);
+  assert.ok(decl, 'explore/app.js 里找不到 AI_SCRIPTS 数组声明');
+  const files = [];
+  const lit = /['"]([^'"]+)['"]/g;
+  let m;
+  while ((m = lit.exec(decl[1])) !== null) files.push(m[1]);
+  return files;
+}
+
+const EXPECTED_SCRIPTS = ['../diagnose/textfmt.js', '../diagnose/topic-explain.js',
+  '../diagnose/llm-config.js', '../diagnose/llm-gateway.js', 'topic-ai.js'];
+
+/* ================================================================ 1. 点击前零加载 / 点击后按序 */
+
+testAsync('1. 点击前 Lazy.load 零调用；点击后恰好一次、参数严格等于 5 个路径；resolve 后 mount 且 autostart === true', async function () {
+  const scripts = aiScriptsFromSource();
+  assert.deepStrictEqual(scripts, EXPECTED_SCRIPTS, 'AI_SCRIPTS 必须严格等于卡面 §2 的 5 个路径且顺序一致');
+
+  const sandbox = {
+    questionsByTopic: new Map(),
+    deps: [],
+    topics: [],
+    document: { createElement: function (tag) { return makeNode(tag); } },
+    console: console,
+    Promise: Promise
+  };
+  sandbox.self = sandbox;
+  sandbox.window = sandbox;
+  function sandboxEl(tag, attrs) {
+    const node = makeNode(tag);
+    const a = attrs || {};
+    Object.keys(a).forEach(function (k) {
+      if (a[k] === null || a[k] === false) return;
+      if (k === 'class') node.className = a[k];
+      else if (k === 'text') node.textContent = a[k];
+      else node.setAttribute(k, a[k]);
+    });
+    for (let i = 2; i < arguments.length; i++) node.append(arguments[i]);
+    return node;
+  }
+  sandbox.el = sandboxEl;
+  sandbox.Lazy = { load: function (list) { sandbox.__lazyCalls.push(list.slice()); return sandbox.__lazyPromise; } };
+  sandbox.AI_SCRIPTS = scripts;
+  sandbox.__lazyCalls = [];
+  let resolveLazy;
+  sandbox.__lazyPromise = new Promise(function (resolve) { resolveLazy = resolve; });
+  const mountCalls = [];
+  sandbox.CnmTopicAI = null;
+
+  vm.createContext(sandbox);
+  vm.runInContext(extractFunction('mountTopicAI'), sandbox, { filename: 'explore/app.js#mountTopicAI' });
+
+  const box = makeNode('div');
+  const t = topic('cnm_sw', '甲');
+  sandbox.mountTopicAI(box, t);
+
+  assert.strictEqual(sandbox.__lazyCalls.length, 0, '点击前 Lazy.load 必须零调用（首屏不加载）');
+  const btn = byClass(box, 'tai-btn')[0];
+  assert.ok(btn, '点击前必须先出现「让 AI 讲一遍」按钮');
+  assert.strictEqual(textOf(btn), '让 AI 讲一遍');
+
+  sandbox.CnmTopicAI = { mount: function (b, ctx) { mountCalls.push({ box: b, ctx: ctx }); } };
+  btn.click();
+
+  assert.strictEqual(sandbox.__lazyCalls.length, 1, '点击后 Lazy.load 恰好调用一次');
+  assert.deepStrictEqual(sandbox.__lazyCalls[0], EXPECTED_SCRIPTS, '懒加载顺序必须与卡面 §2 一致');
+  assert.strictEqual(mountCalls.length, 0, '脚本还没 resolve，先不能 mount');
+
+  resolveLazy();
+  await flush();
+
+  assert.strictEqual(mountCalls.length, 1, '加载 resolve 后应调用一次 CnmTopicAI.mount');
+  assert.strictEqual(mountCalls[0].ctx.autostart, true, '自动开讲：mount 时 autostart 必须为 true');
+});
+
+/* ================================================================ 2. 未配模型 */
+
+testAsync('2. isConfigured() === false：postOnce / fetch 零调用，渲染「还没配置模型」+ 设置链接', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function () { return dataOf(SEG_JSON); });
+  const mod = loadModule(storage, makeConfig(false), gateway);
+  let fetchCalls = 0;
+  mod.fetch = function () { fetchCalls++; throw new Error('不许发真网络'); };
+
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_nc', '未配')));
+  await flush();
+
+  assert.strictEqual(gateway.calls.length, 0, '未配模型时 postOnce 必须零调用');
+  assert.strictEqual(fetchCalls, 0, '未配模型时 fetch 必须零调用');
+  const p = byClass(box, 'tai-noconfig')[0];
+  assert.ok(p, '应渲染 .tai-noconfig');
+  assert.ok(textOf(p).indexOf('还没配置模型') >= 0, '整段文字应含「还没配置模型」');
+  const a = byTag(p, 'a')[0];
+  assert.ok(a, '应包含设置链接');
+  assert.strictEqual(a.getAttribute('href'), '../diagnose/settings.html');
+  assert.strictEqual(textOf(a), '设置');
+});
+
+/* ================================================================ 3. 成功路径 */
+
+testAsync('3. 成功：5 段齐全；how 有 ol 且去双序号；demo 有题面 / 分步 / 折叠答案；badge 文案严格', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function () { return dataOf(SEG_JSON); });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+
+  const box = makeNode('div');
+  const t = topic('cnm_ok', '加法');
+  mod.CnmTopicAI.mount(box, autoCtx(t));
+  await flush();
+
+  const segs = byClass(box, 'tai-seg');
+  assert.strictEqual(segs.length, 5, '必须渲染 5 个 .tai-seg');
+  assert.deepStrictEqual(segs.map(function (s) { return textOf(byClass(s, 'tai-seg-title')[0]); }),
+    ['这是什么', '为什么要学', '怎么做', '看个例子', '容易错的地方'], '5 段标题顺序必须固定');
+
+  const how = segs[2];
+  const ols = byTag(how, 'ol');
+  assert.strictEqual(ols.length, 1, 'how 段应有 ol');
+  const lis = byTag(ols[0], 'li');
+  assert.strictEqual(lis.length, 2, 'how 段 li 数应为 2');
+  assert.strictEqual(textOf(lis[0]), '第一步', 'how 的 li 文本不能带「1.」前缀');
+  assert.ok(textOf(lis[0]).indexOf('1.') < 0, 'how 的 li 文本不含 1.');
+
+  const demo = segs[3];
+  assert.strictEqual(textOf(byClass(demo, 'tai-q')[0]), '一共有几个苹果？', 'demo 题面应是含问号的那行');
+  const details = byTag(demo, 'details')[0];
+  assert.ok(details, 'demo 段应有 details 折叠答案');
+  assert.strictEqual(textOf(byTag(details, 'summary')[0]), '查看答案', 'summary 文字应为「查看答案」');
+  assert.ok(textOf(details).indexOf('答案：3 个') >= 0, '折叠块应含答案正文');
+
+  const badge = byClass(box, 'tai-badge')[0];
+  assert.strictEqual(textOf(badge), BADGE, 'badge 文案必须严格为「AI 生成 · 未经人工审核」');
+  assert.ok(byClass(box, 'tai-again').length === 1, '应有「换个说法重讲」按钮');
+});
+
+/* ================================================================ 4. 闸门拒绝 + 重试 */
+
+testAsync('4. 被闸门拒：可见失败文案 + 重试；失败轮不写讲解缓存 / 对话', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function (body, n) {
+    return n === 1 ? dataOf('这不是 JSON') : dataOf(SEG_JSON);
+  });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_gate', '闸门')));
+  await flush();
+
+  assert.strictEqual(byClass(box, 'tai-seg').length, 0, '被拒时不能出现 5 段');
+  const gate = byClass(box, 'tai-gate')[0];
+  assert.ok(gate, '应渲染 .tai-gate');
+  assert.strictEqual(textOf(gate), '这条没通过自动校验（格式没成形），换一次试试', '闸门文案必须严格');
+  const retry = byClass(box, 'tai-retry')[0];
+  assert.ok(retry, '应有重试按钮');
+  assert.strictEqual(gateway.calls.length, 1);
+
+  let explainKeys = 0;
+  let chatKeys = 0;
+  for (let i = 0; i < storage.length; i++) {
+    const k = storage.key(i);
+    if (k.indexOf('cnmDiagnose.topicExplain.v1.chat.') === 0) chatKeys++;
+    else if (k.indexOf('cnmDiagnose.topicExplain.v1:') === 0) explainKeys++;
+  }
+  assert.strictEqual(explainKeys, 0, '失败轮不许写讲解缓存');
+  assert.strictEqual(chatKeys, 0, '失败轮不许写对话');
+
+  retry.click();
+  await flush();
+  assert.strictEqual(gateway.calls.length, 2, '点重试应再发一次');
+  assert.strictEqual(byClass(box, 'tai-seg').length, 5, '重试成功后应出现 5 段');
+});
+
+/* ================================================================ 4b. 网关 resolve null（失败/超时） */
+
+testAsync('网关 resolve null（失败/超时）→ 显示取不到讲解的错误行，不显示「格式没成形」，不写缓存', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function (body, n) {
+    return n === 1 ? null : dataOf(SEG_JSON);
+  });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, ctxOf(topic('cnm_null', '超时')));
+  byClass(box, 'tai-btn')[0].click();
+  await flush();
+
+  const err = byClass(box, 'tai-error')[0];
+  assert.ok(err, '网关失败应渲染 .tai-error');
+  assert.strictEqual(textOf(err), '这次没取到讲解，点重试再来一次', '错误行文案必须严格');
+  assert.strictEqual(byClass(box, 'tai-gate').length, 0, '网关失败不该出现 .tai-gate');
+  assert.ok(textOf(box).indexOf('没通过自动校验') < 0, '整段文字不应含「没通过自动校验」');
+  assert.strictEqual(byClass(box, 'tai-seg').length, 0, '失败时不该出现 5 段');
+
+  let explainKeys = 0;
+  for (let i = 0; i < storage.length; i++) {
+    if (storage.key(i).indexOf('cnmDiagnose.topicExplain.v1:') === 0) explainKeys++;
+  }
+  assert.strictEqual(explainKeys, 0, '网关失败不许写讲解缓存');
+
+  byClass(box, 'tai-retry')[0].click();
+  await flush();
+  assert.strictEqual(gateway.calls.length, 2, '点重试应再发一次');
+  assert.strictEqual(byClass(box, 'tai-seg').length, 5, '重试成功后应出现 5 段（可恢复）');
+});
+
+/* ================================================================ 5. 追问 */
+
+testAsync('5. 追问：学生 / 老师气泡；10 轮后禁用 + 清空；第 11 轮不再发', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function (body, n) {
+    return n === 1 ? dataOf(SEG_JSON) : dataOf(REPLY);
+  });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_chat', '加法')));
+  await flush();
+
+  let input = byClass(box, 'tai-input')[0];
+  let send = byClass(box, 'tai-send')[0];
+  input.value = '为什么这样算？';
+  send.click();
+  await flush();
+
+  assert.strictEqual(byClass(box, 'tai-bubble-student').length, 1, '应有一个学生气泡');
+  assert.strictEqual(byClass(box, 'tai-bubble-teacher').length, 1, '应有一个老师气泡');
+  assert.ok(byClass(byClass(box, 'tai-bubble-teacher')[0], 'tai-badge').length >= 1, '老师气泡底部应有 badge');
+
+  for (let round = 2; round <= 10; round++) {
+    input = byClass(box, 'tai-input')[0];
+    send = byClass(box, 'tai-send')[0];
+    input.value = '第 ' + round + ' 问？';
+    send.click();
+    await flush();
+  }
+
+  input = byClass(box, 'tai-input')[0];
+  send = byClass(box, 'tai-send')[0];
+  assert.strictEqual(input.disabled, true, '10 轮后输入框应 disabled');
+  assert.strictEqual(send.disabled, true, '10 轮后发送按钮应 disabled');
+  assert.ok(byClass(box, 'tai-clear').length === 1, '10 轮后应出现「清空对话」');
+
+  const before = gateway.calls.length;
+  const bubblesBefore = byClass(box, 'tai-bubble').length;
+  input.value = '还想再问？';
+  send.click();
+  await flush();
+  assert.strictEqual(gateway.calls.length, before, '第 11 轮不许再发请求');
+  assert.strictEqual(byClass(box, 'tai-bubble').length, bubblesBefore, '第 11 轮气泡数不变');
+});
+
+/* ================================================================ 6. 切换 topic 再切回 */
+
+testAsync('6. 切换 topic 再切回：各生成一次、切回不重发且 5 段还在', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function () { return dataOf(SEG_JSON); });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+
+  const a = topic('cnm_a', 'A');
+  const b = topic('cnm_b', 'B');
+  const boxA = makeNode('div');
+  const boxB = makeNode('div');
+
+  mod.CnmTopicAI.mount(boxA, autoCtx(a, [], [], [a, b]));
+  await flush();
+  mod.CnmTopicAI.mount(boxB, autoCtx(b, [], [], [a, b]));
+  await flush();
+  assert.strictEqual(gateway.calls.length, 2, 'A、B 各生成一次');
+
+  mod.CnmTopicAI.mount(boxA, autoCtx(a, [], [], [a, b]));
+  await flush();
+  assert.strictEqual(gateway.calls.length, 2, '切回 A 不许重发');
+  assert.strictEqual(byClass(boxA, 'tai-seg').length, 5, '切回 A 后 5 段仍在');
+});
+
+/* ================================================================ 7. 缓存命中 */
+
+testAsync('7. 缓存命中：新模块实例 + 同一 storage，点击后零 postOnce、直接出 5 段', async function () {
+  const storage = makeStorage();
+
+  const g1 = makeGateway(function () { return dataOf(SEG_JSON); });
+  const m1 = loadModule(storage, makeConfig(true), g1);
+  const t = topic('cnm_cache', '缓存');
+  const box1 = makeNode('div');
+  m1.CnmTopicAI.mount(box1, autoCtx(t));
+  await flush();
+  assert.strictEqual(g1.calls.length, 1, '首次生成应调用一次 postOnce');
+  assert.strictEqual(byClass(box1, 'tai-seg').length, 5);
+
+  const g2 = makeGateway(function () { return dataOf(SEG_JSON); });
+  const m2 = loadModule(storage, makeConfig(true), g2);
+  const box2 = makeNode('div');
+  m2.CnmTopicAI.mount(box2, ctxOf(t));
+  await flush();
+  assert.strictEqual(byClass(box2, 'tai-seg').length, 0, '未点击时应是 idle 按钮，不直接渲染');
+  byClass(box2, 'tai-btn')[0].click();
+  await flush();
+  assert.strictEqual(g2.calls.length, 0, '缓存命中时 postOnce 必须零调用');
+  assert.strictEqual(byClass(box2, 'tai-seg').length, 5, '缓存命中应直接渲染 5 段');
+});
+
+/* ================================================================ 8. 红线 */
+
+test('8. 红线：topic-ai.js 无 innerHTML 一干；CSS 的 .tai- 选择器成规模', function () {
+  const src = fs.readFileSync(MODULE_PATH, 'utf8');
+  ['innerHTML', 'insertAdjacentHTML', 'outerHTML', 'document.write', 'new Function', 'eval('].forEach(function (bad) {
+    assert.strictEqual(src.indexOf(bad), -1, 'explore/topic-ai.js 不许出现 ' + bad);
+  });
+  const css = fs.readFileSync(CSS_PATH, 'utf8');
+  const hits = css.split('.tai-').length - 1;
+  assert.ok(hits >= 15, 'CSS 里 .tai- 至少出现 15 次（实际 ' + hits + '）');
+});
+
+/* ================================================================ 9. 首屏脚本不变 + 额外 fetch 守卫 */
+
+test('9. explore/index.html 首屏脚本恰好 5 个且不含 topic-ai.js', function () {
+  const html = fs.readFileSync(INDEX_PATH, 'utf8');
+  const srcs = [];
+  const re = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/g;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const src = m[1];
+    if (/^https?:/i.test(src)) continue;
+    srcs.push(src);
+  }
+  assert.deepStrictEqual(srcs, ['../diagnose/lazyload.js', 'app.js', '../assets/stats-config.js', '../assets/stats.js', '../assets/pwa.js'],
+    '首屏脚本必须恰好是这 5 个且顺序一致');
+  assert.strictEqual(srcs.indexOf('topic-ai.js'), -1, 'topic-ai.js 不许进首屏');
+});
+
+test('额外：explore/topic-ai.js 不许自己发网络（无 fetch(）', function () {
+  const src = fs.readFileSync(MODULE_PATH, 'utf8');
+  assert.strictEqual(src.indexOf('fetch('), -1, '网只走 DiagLLMGateway，模块里不许出现 fetch(');
+});
+
+Promise.all(ASYNC).then(function () {
+  console.log('\n' + passed + ' passed, ' + failed + ' failed');
+  if (failed) process.exit(1);
+});

@@ -52,6 +52,10 @@
    * 逐学科核 gzip 预算（≤80KB，8-10KB/s 链路约 8s）。{subject} 保留为字面量，
    * 物理额外还要一份数学的 lite 行做 mathLinks 的名字，见 load()。 */
   var BOOT_FILES = ['../data/topics-lite/{subject}.json', '../data/dependencies/{subject}.json', '../data/id-aliases.json'];
+  /* O4 卡B：知识点 AI 讲解的懒加载清单（顺序固定：后一个依赖前一个）。
+   * 入口按钮必须在 topic-ai.js 加载前就存在，所以这段「按钮 → Lazy.load」留在首屏。 */
+  var AI_SCRIPTS = ['../diagnose/textfmt.js', '../diagnose/topic-explain.js',
+    '../diagnose/llm-config.js', '../diagnose/llm-gateway.js', 'topic-ai.js'];
 
   function $(id) { return document.getElementById(id); }
 
@@ -558,6 +562,41 @@
     return el('div', { class: wide ? 'span-2' : '' }, el('dt', { text: label }), el('dd', { text: value || '—' }));
   }
 
+  /* O4 卡B：知识点 AI 讲解入口。模块已加载过就直接交给它渲染（状态在模块里，切回来不重发请求）；
+   * 没加载过就先出按钮，点下去才按序加载 5 个脚本，加载失败给可点重试的错误行（不静默）。 */
+  function mountTopicAI(box, topic) {
+    var ctx = {
+      topic: topic,
+      questions: questionsByTopic.get(topic.id) || [],
+      deps: deps,
+      topics: topics
+    };
+    if (window.CnmTopicAI && typeof window.CnmTopicAI.mount === 'function') {
+      window.CnmTopicAI.mount(box, ctx);
+      return;
+    }
+    var btn = el('button', { type: 'button', class: 'tai-btn' }, '让 AI 讲一遍');
+    var hint = el('p', { class: 'tai-hint', text: 'AI 生成，仅供参考' });
+    var line = el('p', { class: 'tai-line' });
+    box.append(btn, hint);
+    btn.addEventListener('click', function () {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      hint.hidden = true;
+      box.append(line);
+      line.textContent = '正在准备讲解…';
+      Lazy.load(AI_SCRIPTS).then(function () {
+        line.remove();
+        ctx.autostart = true;
+        window.CnmTopicAI.mount(box, ctx);
+      }).catch(function () {
+        btn.disabled = false;
+        hint.hidden = false;
+        line.textContent = '讲解模块没加载下来，点按钮重试';
+      });
+    });
+  }
+
   function renderDetail(skipDetailLoad) {
     var box = $('detail');
     if (!selected || !byId.has(selected)) {
@@ -649,6 +688,10 @@
       posts.length ? posts.map(relButton) : el('p', { text: '还没有后续知识点依赖它。' })));
 
     box.replaceChildren.apply(box, parts);
+    /* O4 卡B：详情面板底部的 AI 讲解入口（样题之后）。 */
+    var aiBox = el('div', { class: 'tai' });
+    box.append(aiBox);
+    mountTopicAI(aiBox, topic);
     document.title = topic.name + ' · 知识图谱';
     if (topic && !topic.__detail && !skipDetailLoad) ensureDetail(topic);
   }
