@@ -136,7 +136,7 @@ function mockLLM(stepsContent, answerText) {
   return { restore: function () { globalThis.fetch = real; }, calls: calls };
 }
 
-testAsync('generate：讲解请求 max_tokens=2048，且带画板时 user 消息含画板行', async () => {
+testAsync('generate：讲解请求 max_tokens=4096，且带画板时 user 消息含画板行', async () => {
   const X = loadExplain();
   X._cache.clear();
   const reveal = '去括号得2x-6=4-x-1，移项合并得3x=9，所以x=3。答案：x = 3';
@@ -145,7 +145,7 @@ testAsync('generate：讲解请求 max_tokens=2048，且带画板时 user 消息
     await X.generate(T, Q, '1', DESC);
     assert.strictEqual(m.calls.length, 1, '应恰好发起一次讲解请求');
     const req = m.calls[0];
-    assert.strictEqual(req.max_tokens, 2048, '讲解 max_tokens 应为 2048');
+    assert.strictEqual(req.max_tokens, 4096, '讲解 max_tokens 应为 4096（与 followup 同档：网关把 reasoning_content 计入 max_tokens，2048 会被吃光）');
     assert.strictEqual(req.messages[0].role, 'system');
     assert.ok(req.messages[1].content.indexOf('画板：' + DESC) >= 0, 'user 消息应含画板行');
     assert.ok(req.messages[1].content.indexOf('画板：') < req.messages[1].content.indexOf('学生答案：'), '画板行应在学生答案之前');
