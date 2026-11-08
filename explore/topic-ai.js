@@ -95,6 +95,8 @@
       variant: 0,           /* 只用于「换个说法重讲」的缓存键后缀 */
       segs: null,
       history: [],          /* 只有成功轮 {q, a} */
+      suggests: [],         /* 「你可能想问」—— 已过 api.checkSuggest 的 3 条以内；缺/坏一律 [] */
+      suggestUsed: {},      /* 点过的 chip 下标 → 置灰、不可再点 */
       chatPending: false,
       pendingQuestion: null, /* 已发出、还没回包的提问（先渲染学生气泡） */
       chatError: null        /* 最近一条追问的失败提示（不写 history） */
@@ -178,10 +180,22 @@
     if (ctx.autostart === true && st.status === 'idle') generate(st, false);
   }
 
-  function apply(st, segs, key) {
+  /* chips 的软校验出口（卡 t_1ff271ac）：缺失 / 类型错 / 条目全被剔 / 函数抛错，
+   * 一律回落 []。它只影响 chip 行有没有，不许冒泡成讲解的失败。 */
+  function suggestList(api, v) {
+    if (!api || typeof api.checkSuggest !== 'function') return [];
+    try {
+      var r = api.checkSuggest(v);
+      return (r && r.ok && Array.isArray(r.list)) ? r.list.slice(0, 3) : [];
+    } catch (e) { return []; }
+  }
+
+  function apply(st, segs, key, suggests) {
     st.segs = segs;
     st.status = 'ready';
     st.explainKey = key;
+    st.suggests = Array.isArray(suggests) ? suggests.slice(0, 3) : [];
+    st.suggestUsed = {};
     render(st);
   }
 
@@ -222,7 +236,8 @@
     if (!force) {
       var hit = api.readCache(storage(), key);
       if (hit && hit.segs && api.checkExplain(hit.segs).ok) {
-        apply(st, hit.segs, key);   /* 零网络 */
+        /* 老缓存条目没有 suggests 字段 → 正常出 5 段、chips 为空；不补请求、不改 cacheKey。 */
+        apply(st, hit.segs, key, suggestList(api, hit.suggests));   /* 零网络 */
         return;
       }
     }
@@ -263,14 +278,17 @@
         st.status = 'gate';   /* 不写缓存、不写 history */
         return render(st);
       }
+      /* chips 走软校验：这里算好后同时进缓存与 state，缺/坏就是空数组，不影响上面 5 段的成败。 */
+      var suggests = suggestList(api, parsed.suggests);
       api.writeCache(storage(), force ? key + '@' + (++st.variant) : key, {
         segs: parsed.segs,
+        suggests: suggests,
         at: Date.now(),
         model: model,
         topicId: st.id
       });
       api.pruneCache(storage(), api.MAX_ENTRIES);
-      apply(st, parsed.segs, key);
+      apply(st, parsed.segs, key, suggests);
     }
 
     /* 网关错误体（卡 E）：HTTP 200 里的业务错误包，不是模型输出 —— 不按「格式」处理，
@@ -319,8 +337,10 @@
    * 5. 追问
    * ================================================================ */
 
-  function sendQuestion(st, input) {
-    var q = trim(input && input.value);
+  /* 追问发送：入参是**问题文本**（卡 t_1ff271ac 起 chip 也走这条路 —— 只有一个发送链路、
+   * 同一份 cfg.maxTokens.tutor、同样计 MAX_ROUNDS）。chatPending 是并发闸：连点 / 连发都只发一次。 */
+  function sendQuestion(st, text) {
+    var q = trim(text);
     if (!q || st.chatPending || st.status !== 'ready') return;
     var api = T();
     var cfg = CFG();
@@ -526,8 +546,11 @@
     var send = el('button', 'tai-send', '发送');
     send.setAttribute('type', 'button');
     send.disabled = full;
-    send.addEventListener('click', function () { sendQuestion(st, input); });
+    send.addEventListener('click', function () { sendQuestion(st, input.value); });
     ask.append(input, send);
+
+    /* 「你可能想问」：5 段下方、追问输入框上方；只在还没聊过时给（一旦有历史就收起）。 */
+    if (!st.history.length && st.suggests.length) chat.append(suggestsRow(st));
     chat.append(ask);
 
     if (full) {
@@ -540,6 +563,31 @@
     }
 
     box.append(chat);
+  }
+
+  /* 点 chip = 直接发问（复用 sendQuestion）：点过的那条置灰且不可再点；
+   * 发送中（chatPending）连点不重发；已经聊过就收起（问句已进入对话，不需要再留一排）。 */
+  function askSuggest(st, index) {
+    if (!st.suggests || typeof st.suggests[index] !== 'string') return;
+    if (st.history.length || st.suggestUsed[index] || st.chatPending) return;
+    st.suggestUsed[index] = true;
+    sendQuestion(st, st.suggests[index]);
+  }
+
+  function suggestsRow(st) {
+    var row = el('div', 'tai-suggests');
+    row.append(el('span', 'tai-suggests-label', '你可能想问：'));
+    st.suggests.forEach(function (q, index) {
+      var chip = el('button', 'tai-suggest', q);
+      chip.setAttribute('type', 'button');
+      if (st.suggestUsed[index]) {
+        chip.disabled = true;
+        chip.className = 'tai-suggest tai-suggest-used';
+      }
+      chip.addEventListener('click', function () { askSuggest(st, index); });
+      row.append(chip);
+    });
+    return row;
   }
 
   function studentBubble(text) {

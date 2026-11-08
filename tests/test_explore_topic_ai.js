@@ -986,6 +986,199 @@ testAsync('卡I-4. 首点竞态（app.js 级）：点击后重绘换盒子，加
   assert.strictEqual(mountCalls[0].ctx.questions.length, 1, '必须用最新一次的 ctx（含补进来的题）');
 });
 
+/* ================================================================ 卡S（t_1ff271ac）：你可能想问 chips
+ * 口径：suggests 与 5 段同一次响应（第 6 键）；软校验只决定「有没有 chips」，
+ * 不许影响 5 段渲染 / 不许报错 / 不许补请求；点一条 = 走同一条追问链路。 */
+
+const SUG3 = ['这是什么意思？', '第二步为什么要进位？', '如果减不够怎么办？'];
+
+function segJsonWith(suggests) {
+  const obj = Object.assign({}, SEG);
+  obj.suggests = suggests;
+  return JSON.stringify(obj);
+}
+
+function cacheEntryOf(storage) {
+  for (let i = 0; i < storage.length; i++) {
+    const k = storage.key(i);
+    if (k && k.indexOf('cnmDiagnose.topicExplain.v1:') === 0) {
+      return { key: k, value: JSON.parse(storage.getItem(k)) };
+    }
+  }
+  return null;
+}
+
+testAsync('卡S-1. 响应没有 suggests → 无 chips、5 段照常、零报错（软校验不连坐）', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function () { return dataOf(SEG_JSON); });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_s1', '加法')));
+
+  assert.strictEqual(byClass(box, 'tai-suggests').length, 0, '返回前不该有 chips 行');
+  await flush();
+
+  assert.strictEqual(gateway.calls.length, 1, '只发一次讲解请求');
+  assert.strictEqual(byClass(box, 'tai-seg').length, 5, '5 段照常');
+  assert.strictEqual(byClass(box, 'tai-suggests').length, 0, '没有 suggests 就不出 chips 行');
+  assert.strictEqual(byClass(box, 'tai-suggest').length, 0);
+  assert.strictEqual(byClass(box, 'tai-gate').length, 0, 'chips 缺失不许落 gate');
+  assert.strictEqual(byClass(box, 'tai-error').length, 0, 'chips 缺失不许报错');
+});
+
+testAsync('卡S-2. 3 条合格 → 3 个 chip、文案逐字一致、位置在输入框上方；并随讲解进缓存', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function () { return dataOf(segJsonWith(SUG3)); });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_s2', '加法')));
+  await flush();
+
+  const rows = byClass(box, 'tai-suggests');
+  assert.strictEqual(rows.length, 1, '应有一行 chips');
+  assert.strictEqual(byClass(rows[0], 'tai-suggests-label').length, 1, '行首应带「你可能想问：」标签');
+  assert.strictEqual(textOf(byClass(rows[0], 'tai-suggests-label')[0]), '你可能想问：');
+
+  const chips = byClass(box, 'tai-suggest');
+  assert.strictEqual(chips.length, 3, '3 条合格就该 3 个 chip');
+  assert.deepStrictEqual(chips.map(textOf), SUG3, 'chip 文案必须与响应逐字一致、原序');
+
+  /* 位置：同一 .tai-chat 里，chips 行在 .tai-ask 之前、5 段之后 */
+  const chat = byClass(box, 'tai-chat')[0];
+  assert.ok(chat, '应有对话容器');
+  assert.ok(chat.children.indexOf(rows[0]) < chat.children.indexOf(byClass(box, 'tai-ask')[0]),
+    'chips 必须在追问输入框上方');
+
+  const hit = cacheEntryOf(storage);
+  assert.ok(hit, '讲解应已写缓存');
+  assert.deepStrictEqual(hit.value.suggests, SUG3, 'chips 与讲解同份缓存一起落盘（cacheKey 未变）');
+});
+
+testAsync('卡S-3. 点 chip → 该问题作为一条追问发出、chip 置灰不可再点、飞行中连点不重发', async function () {
+  const storage = makeStorage();
+  const gateway = makeManualGateway();
+  const mod = loadModule(storage, makeConfig(true), gateway);
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_s3', '加法')));
+  gateway.resolveAll(dataOf(segJsonWith(SUG3)));
+  await flush();
+
+  assert.strictEqual(byClass(box, 'tai-suggest').length, 3);
+
+  const chips = byClass(box, 'tai-suggest');
+  chips[0].click();
+  await flush();
+
+  assert.strictEqual(gateway.calls.length, 2, '点 chip 应恰好多发一次追问请求');
+  const asked = gateway.calls[1];
+  assert.strictEqual(asked.max_tokens, 222, 'chip 追问必须复用 cfg.maxTokens.tutor');
+  const contents = asked.messages.map(function (m) { return m.content; });
+  assert.strictEqual(contents[contents.length - 1], SUG3[0], '本轮提问必须是点的那条');
+  assert.strictEqual(contents.filter(function (c) { return c === SUG3[0]; }).length, 1, '同一问题只许出现一条');
+
+  const after = byClass(box, 'tai-suggest');
+  assert.strictEqual(after[0].disabled, true, '点过的那条应置灰（disabled）');
+  assert.ok(after[0].className.indexOf('tai-suggest-used') >= 0, '点过的那条应带 tai-suggest-used');
+  assert.strictEqual(after[1].disabled, false, '没点的那条不该被连坐');
+
+  after[0].click();
+  after[1].click();
+  await flush();
+  assert.strictEqual(gateway.calls.length, 2, '发送中连点 / 连点另一条都不许重发');
+
+  gateway.resolveAll(dataOf(REPLY));
+  await flush();
+  assert.strictEqual(byClass(box, 'tai-bubble-student').length, 1, '应有 1 个学生气泡');
+  assert.strictEqual(byClass(box, 'tai-bubble-teacher').length, 1, '应有 1 个老师气泡');
+  assert.strictEqual(textOf(byClass(box, 'tai-bubble-student')[0]), SUG3[0], '气泡里就是点的那条');
+  assert.strictEqual(byClass(box, 'tai-suggest').length, 0, '聊过一轮后 chips 收起');
+});
+
+testAsync('卡S-4. 已有 1 轮历史 → chips 不显示（5 段照常）', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function (body, n) {
+    return n === 1 ? dataOf(segJsonWith(SUG3)) : dataOf(REPLY);
+  });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_s4', '加法')));
+  await flush();
+  assert.strictEqual(byClass(box, 'tai-suggest').length, 3, '开讲时先给 chips');
+
+  const input = byClass(box, 'tai-input')[0];
+  input.value = '我自己问的？';
+  byClass(box, 'tai-send')[0].click();
+  await flush();
+
+  assert.strictEqual(byClass(box, 'tai-seg').length, 5, '聊过之后 5 段还在');
+  assert.strictEqual(byClass(box, 'tai-suggests').length, 0, '有历史就不再给 chips 行');
+  assert.strictEqual(byClass(box, 'tai-suggest').length, 0);
+});
+
+testAsync('卡S-5. 老缓存条目（无 suggests 字段）→ 5 段正常、零请求、无 chips', async function () {
+  const storage = makeStorage();
+  const m1 = loadModule(storage, makeConfig(true), makeGateway(function () { return dataOf(SEG_JSON); }));
+  const t = topic('cnm_s5', '老缓存');
+  m1.CnmTopicAI.mount(makeNode('div'), autoCtx(t));
+  await flush();
+
+  /* 手工抹掉 suggests，模拟「改版前写下的缓存条目」 */
+  const hit = cacheEntryOf(storage);
+  assert.ok(hit, '前提：缓存已写');
+  delete hit.value.suggests;
+  storage.setItem(hit.key, JSON.stringify(hit.value));
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(JSON.parse(storage.getItem(hit.key)), 'suggests'), false);
+
+  const g2 = makeGateway(function () { return dataOf(SEG_JSON); });
+  const m2 = loadModule(storage, makeConfig(true), g2);
+  const box2 = makeNode('div');
+  m2.CnmTopicAI.mount(box2, ctxOf(t));
+  byClass(box2, 'tai-btn')[0].click();
+  await flush();
+
+  assert.strictEqual(g2.calls.length, 0, '老缓存命中：零请求、不补一次要 chips');
+  assert.strictEqual(byClass(box2, 'tai-seg').length, 5, '5 段正常');
+  assert.strictEqual(byClass(box2, 'tai-suggest').length, 0, '没有 suggests 就不出 chips');
+  assert.strictEqual(byClass(box2, 'tai-gate').length, 0);
+  assert.strictEqual(byClass(box2, 'tai-error').length, 0);
+});
+
+testAsync('卡S-5b. 新缓存条目带 suggests → 零请求直接出 chips（不重发讲解）', async function () {
+  const storage = makeStorage();
+  const m1 = loadModule(storage, makeConfig(true), makeGateway(function () { return dataOf(segJsonWith(SUG3)); }));
+  const t = topic('cnm_s5b', '新缓存');
+  m1.CnmTopicAI.mount(makeNode('div'), autoCtx(t));
+  await flush();
+
+  const g2 = makeGateway(function () { return dataOf(SEG_JSON); });
+  const m2 = loadModule(storage, makeConfig(true), g2);
+  const box2 = makeNode('div');
+  m2.CnmTopicAI.mount(box2, ctxOf(t));
+  byClass(box2, 'tai-btn')[0].click();
+  await flush();
+
+  assert.strictEqual(g2.calls.length, 0, '缓存命中不许重发');
+  assert.strictEqual(byClass(box2, 'tai-seg').length, 5);
+  assert.deepStrictEqual(byClass(box2, 'tai-suggest').map(textOf), SUG3, '缓存里的 chips 也要照原样出来');
+});
+
+testAsync('卡S-6. suggests 全是垃圾（非数组 / 空问 / 标题 / 超长）→ 无 chips、5 段照常、不落 gate', async function () {
+  const bads = ['这不是数组', ['你想知道什么？'], ['这是什么'], ['一'.repeat(21)]];
+  for (let i = 0; i < bads.length; i++) {
+    const storage = makeStorage();
+    const gateway = makeGateway(function () { return dataOf(segJsonWith(bads[i])); });
+    const mod = loadModule(storage, makeConfig(true), gateway);
+    const box = makeNode('div');
+    mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_s6_' + i, '垃圾 chips')));
+    await flush();
+
+    assert.strictEqual(byClass(box, 'tai-seg').length, 5, '第 ' + i + ' 组：5 段必须照常');
+    assert.strictEqual(byClass(box, 'tai-suggest').length, 0, '第 ' + i + ' 组：垃圾条目不该出 chip');
+    assert.strictEqual(byClass(box, 'tai-gate').length, 0, '第 ' + i + ' 组：软校验不许落 gate');
+    assert.strictEqual(gateway.calls.length, 1, '第 ' + i + ' 组：不许为 chips 重发');
+  }
+});
+
 /* ================================================================ 8. 红线 */
 
 test('8. 红线：topic-ai.js 无 innerHTML 一干；CSS 的 .tai- 选择器成规模', function () {

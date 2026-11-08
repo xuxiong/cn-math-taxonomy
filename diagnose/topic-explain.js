@@ -340,7 +340,8 @@
     lines.push('【可以提到的知识点】' + whitelistLine(inputs));
     lines.push('【举例子】必须用下面素材里的例题；例子里的数必须来自那道题的题面；算出来的结果必须等于那道题的答案。');
     lines.push('【不许引用课标】不要出现 `cms-2022` 之类的编号，也不要复述课标原文或课标要求。');
-    lines.push('【输出格式】只输出一个 JSON 对象，不要别的话，恰好 5 个键：what（是什么）、why（为什么要学）、how（怎么做）、demo（看个例子）、trap（容易错的地方）；每个值都是中文字符串，段内换行写成 \\n（JSON 转义）。');
+    lines.push('【输出格式】只输出一个 JSON 对象，不要别的话，恰好 6 个键：what（是什么）、why（为什么要学）、how（怎么做）、demo（看个例子）、trap（容易错的地方）、suggests（你可能想问）；前 5 个值都是中文字符串，段内换行写成 \\n（JSON 转义）；suggests 是字符串数组，恰好 3 条，每条 ≤ 20 字，每条都是一个学生能直接问出口的具体问题。');
+    lines.push('【suggests 怎么写】贴住本题讲解来问，不许问「你想知道什么」「还有什么不懂」「需要我讲什么」这类空问；不许重复上面 5 段标题；问法要符合学段（低年级用日常话，不出现术语和公式）。');
     lines.push('【排版】每段用分点或分步写，一点一行；不要写成一大段；例子先出题面，再分步解答，最后一行写「答案：」；不要出现课标编号或课标原文。');
     lines.push('【每段形状】是什么 / 为什么要学 / 容易错的地方：写 1–3 个分点，一点一行。怎么做：写成分步，每步一行，以 1. 2. 3. 开头，不许写成「先做什么、然后做什么、最后做什么」一整句。看个例子：第一行写题面（必须是问句），中间分步解答，最后一行以「答案：」开头。');
     lines.push('【文字要求】短句，不要 Markdown（星号、井号、反引号），不要 LaTeX 反斜杠命令，不要代码块，不要省略号。');
@@ -510,11 +511,15 @@
     return m ? unescapeJsonString(m[1]) : null;
   }
 
+  /* 卡 t_1ff271ac：suggests（「你可能想问」）也顺手带出来 —— 与 5 段同一次响应、
+   * 同一个 JSON.parse，页面层不用再解一遍。这是**附加字段**：返回结构里 segs 的
+   * 语义与缺键判定一个字节都没动，checkExplain 也只吃 segs。
+   * 半截 JSON 逐键抠那一步拿不到数组（pickKey 只认字符串），suggests 就是 undefined。 */
   function parseExplain(raw) {
     if (raw && typeof raw === 'object') {
       var direct = segsFromObject(raw);
-      if (direct && direct.segs) return { segs: direct.segs };
-      return { segs: null, why: '结构不全：缺 ' + (direct ? direct.missing.join('/') : '全部') };
+      if (direct && direct.segs) return { segs: direct.segs, suggests: raw.suggests };
+      return { segs: null, why: '结构不全：缺 ' + (direct ? direct.missing.join('/') : '全部'), suggests: raw.suggests };
     }
     var text = stripFence(raw);
     if (!text) return { segs: null, why: '空返回' };
@@ -523,7 +528,7 @@
     try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
     if (parsed && typeof parsed === 'object') {
       var fromJson = segsFromObject(parsed);
-      if (fromJson && fromJson.segs) return { segs: fromJson.segs };
+      if (fromJson && fromJson.segs) return { segs: fromJson.segs, suggests: parsed.suggests };
     }
 
     /* JSON 解析失败（截断 / 尾逗号 / 夹了说明文字）→ 逐键抠；少一个键就整份作废 */
@@ -674,6 +679,64 @@
   }
 
   /* ================================================================
+   * 9b. suggests（「你可能想问」）—— 软校验，不是闸门
+   *
+   * 红线（卡 t_1ff271ac）：本函数只被页面层（explore/topic-ai.js）调用，**绝不进
+   * checkExplain / gateStructure** —— chips 的好坏不许给讲解加任何一条 reasons，
+   * 也不许把讲解打成 gate 状态。讲解的 5 段合格与否只由 §9 的两道闸决定。
+   *
+   * 返回 { ok, list, reasons }：
+   *   - list：通过校验的条目，按原顺序，最多 3 条；
+   *   - ok：list 非空（至少一条能用；调用方据此决定「无 chips」）；
+   *   - reasons：恒为 []（软校验不产出闸门理由，免得下游把它当 gate 用）。
+   *
+   * 判据全部确定性（字数口径与模块内 charLen 一致：Array.from(s).length，中文一字一码点）：
+   *   1) 入参必须是数组（缺失 / 类型不对 → 空 list，不报错）；
+   *   2) 每条 trim 后非空、≤ 20 字；
+   *   3) trim 后完全相同的算重复，只留第一次出现；
+   *   4) 空问黑名单命中即剔除；
+   *   5) 与 SEG_TITLES 的 5 个标题文本相同、或只差标点 → 剔除；
+   *   6) 通过后最多留前 3 条。
+   */
+  var SUGGEST_MAX = 3;
+  var SUGGEST_MAX_CHARS = 20;
+  var SUGGEST_BAN = ['你想知道什么', '还有什么不懂', '需要我讲什么', '还有什么问题', '要我讲'];
+  var SUGGEST_PUNCT_RE = /[\s，。、？！：；,\.\?!:;"'“”‘’「」『』（）()《》〈〉【】\[\]…—\-·．]/g;
+
+  function bareSuggestion(s) { return asText(s).replace(SUGGEST_PUNCT_RE, ''); }
+
+  function checkSuggest(v) {
+    var empty = { ok: false, list: [], reasons: [] };
+    if (!Array.isArray(v)) return empty;
+    var titles = SEG_KEYS.map(function (k) { return bareSuggestion(SEG_TITLES[k]); });
+    var seen = Object.create(null);
+    var list = [];
+    for (var i = 0; i < v.length; i++) {
+      if (typeof v[i] !== 'string') continue;
+      var s = trimText(v[i]);
+      if (!s) continue;
+      if (charLen(s) > SUGGEST_MAX_CHARS) continue;
+      if (seen[s]) continue;
+      var banned = false;
+      for (var b = 0; b < SUGGEST_BAN.length; b++) {
+        if (s.indexOf(SUGGEST_BAN[b]) >= 0) { banned = true; break; }
+      }
+      if (banned) continue;
+      var bare = bareSuggestion(s);
+      if (!bare) continue;
+      var isTitle = false;
+      for (var t = 0; t < titles.length; t++) {
+        if (bare === titles[t]) { isTitle = true; break; }
+      }
+      if (isTitle) continue;
+      seen[s] = true;
+      list.push(s);
+      if (list.length >= SUGGEST_MAX) break;
+    }
+    return { ok: list.length > 0, list: list, reasons: [] };
+  }
+
+  /* ================================================================
    * 10. 缓存（key = topicId + 素材版本 + 模型；storage 由调用方注入）
    * ================================================================ */
 
@@ -776,6 +839,7 @@
     checkExplain: checkExplain,
     chatMessages: chatMessages,
     checkReply: checkReply,
+    checkSuggest: checkSuggest,
     cacheKey: cacheKey,
     readCache: readCache,
     writeCache: writeCache,
