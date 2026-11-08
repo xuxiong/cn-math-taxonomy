@@ -412,6 +412,94 @@ testAsync('3. 成功：5 段齐全；how 有 ol 且去双序号；demo 有题面
   assert.ok(byClass(box, 'tai-again').length === 1, '应有「换个说法重讲」按钮');
 });
 
+/* ================================================================ 3b. demo 步骤列表：容器不出 marker / 模型序号原样保留
+ *
+ * 卡 t_ae6eeac0：真浏览器里 <ol class="tai-steps"> 自己画 1./2./3.，模型在 demo 段也写
+ * 「1. 」，屏幕上成了「1. 1. 看清条件」。口径是「容器渲染不出序号、模型序号原样保留」，
+ * 不是「砍模型序号」。textContent 看不到容器 marker（marker 不是文本节点），所以这里既断言
+ * li 文本逐字等于原文，也断言步骤容器带了 tai-steps-plain（真机 list-style 在 §5 验）。 */
+
+function mountDemo(segObj) {
+  const storage = makeStorage();
+  const gateway = makeGateway(function () { return dataOf(JSON.stringify(segObj)); });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_demo_plain', '示例')));
+  return { box: box, flushIt: flush() };
+}
+
+function demoSegOf(box) {
+  const demo = byClass(box, 'tai-seg-demo')[0];
+  assert.ok(demo, '应有 .tai-seg-demo 段');
+  return demo;
+}
+
+testAsync('3b-1. demo：step 原文带「1. 」→ li textContent 逐字等于原文（前缀保留，不被砍）', async function () {
+  const STEP = '1. 看清条件：容器是密闭的，氧气也在容器内';
+  const m = mountDemo({ what: '甲', why: '乙', how: '1. 第一步\n2. 第二步',
+    demo: '盘子里一共有几个苹果？\n' + STEP + '\n答案：3 个', trap: '丁' });
+  await m.flushIt;
+
+  const demo = demoSegOf(m.box);
+  const ol = byTag(demo, 'ol')[0];
+  assert.ok(ol, 'demo 段应有 ol 步骤列表');
+  const lis = byTag(ol, 'li');
+  assert.strictEqual(lis.length, 1, 'demo 段应只有 1 个步骤 li（答案行不进步骤列表）');
+  assert.strictEqual(textOf(lis[0]), STEP, '模型手写的「1. 」必须原样保留');
+});
+
+testAsync('3b-2. demo：`2、` / `3)` / `（4）` 三种写法各自逐字保留（证明没走 stripOrder）', async function () {
+  const ROWS = ['2、先看总数', '3) 再减去用掉的', '（4）最后核对'];
+  const m = mountDemo({ what: '甲', why: '乙', how: '1. 第一步',
+    demo: '他有几支笔？\n' + ROWS.join('\n') + '\n答案：3 支', trap: '丁' });
+  await m.flushIt;
+
+  const lis = byTag(byTag(demoSegOf(m.box), 'ol')[0], 'li');
+  assert.deepStrictEqual(lis.map(textOf), ROWS, '三种手写序号都逐字保留');
+});
+
+testAsync('3b-3. demo：步骤容器带 tai-steps-plain（且保留 tai-steps）；how 段不带这个类', async function () {
+  const m = mountDemo({ what: '甲', why: '乙', how: '1. 第一步\n2. 第二步',
+    demo: '一共有几个？\n先数一数\n答案：3 个', trap: '丁' });
+  await m.flushIt;
+
+  const demoOl = byTag(demoSegOf(m.box), 'ol')[0];
+  const cls = ' ' + String(demoOl.className) + ' ';
+  assert.ok(cls.indexOf(' tai-steps ') >= 0, 'demo 步骤容器仍须带 tai-steps（保住间距/行高）');
+  assert.ok(cls.indexOf(' tai-steps-plain ') >= 0, 'demo 步骤容器须带 tai-steps-plain（容器不出 marker）');
+
+  const howOl = byTag(byClass(m.box, 'tai-seg-how')[0], 'ol')[0];
+  assert.ok(howOl, 'how 段应有 ol');
+  assert.ok((' ' + String(howOl.className) + ' ').indexOf(' tai-steps-plain ') < 0,
+    'how 段不许带 tai-steps-plain（它还要靠 <ol> 画 1./2./3.）');
+});
+
+testAsync('3b-4. demo：「查看答案」仍在 details 里，答案行不进步骤列表', async function () {
+  const m = mountDemo({ what: '甲', why: '乙', how: '1. 第一步',
+    demo: '一共有几个？\n1. 先数一数\n答案：3 个', trap: '丁' });
+  await m.flushIt;
+
+  const demo = demoSegOf(m.box);
+  const details = byTag(demo, 'details')[0];
+  assert.ok(details, 'demo 段应有 details 折叠答案');
+  assert.strictEqual(textOf(byTag(details, 'summary')[0]), '查看答案');
+  assert.ok(textOf(details).indexOf('答案：3 个') >= 0, '答案正文应在 details 里');
+  const lis = byTag(byTag(demo, 'ol')[0], 'li');
+  assert.deepStrictEqual(lis.map(textOf), ['1. 先数一数'], '答案行不许混进步骤列表');
+});
+
+testAsync('3b-5. 回归：how 段 4 行仍是 4 个 li，且 li 文本不带行首手写序号（stripOrder 未带偏）', async function () {
+  const m = mountDemo({ what: '甲', why: '乙',
+    how: '1. 先看题目\n2. 找到已知\n3. 列式计算\n4. 回头检查',
+    demo: '一共有几个？\n先数一数\n答案：3 个', trap: '丁' });
+  await m.flushIt;
+
+  const lis = byTag(byTag(byClass(m.box, 'tai-seg-how')[0], 'ol')[0], 'li');
+  assert.strictEqual(lis.length, 4, 'how 段 4 行应仍是 4 个 li');
+  assert.deepStrictEqual(lis.map(textOf), ['先看题目', '找到已知', '列式计算', '回头检查'],
+    'how 段的行首序号仍必须被 stripOrder 去掉');
+});
+
 /* ================================================================ 4. 闸门拒绝 + 重试 */
 
 testAsync('4. 被闸门拒：可见失败文案 + 重试；失败轮不写讲解缓存 / 对话', async function () {
