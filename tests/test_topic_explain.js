@@ -5,7 +5,7 @@
  *   - 零网络：开头把 global.fetch 换成会抛错的计数桩，末尾断言调用次数为 0；
  *   - 零 DOM：不引 jsdom，模块本身也不许碰 document / localStorage / innerHTML；
  *   - 真 require 模块（不是复制一份实现）。
- * 口径来源：docs/o4-topic-explain.md（§4 语言四档 / §5 闸门 / §8 多轮）。
+ * 口径：闸门只剩 G1 结构 / G5 文本卫生。
  */
 'use strict';
 
@@ -64,35 +64,34 @@ function buildFor(topic, opts) {
   return T.buildInputs({
     topic,
     questions: questionsFor(topic),
-    standardsById: STD,
     deps: DEPS,
     topics: TOPICS,
     opts
   });
 }
 
-/* 一份能过全部 5 道闸门的讲解（1-2 年级档：每句 ≤12 字，各段 ≤40/40/60/70/40） */
+/* 一份能过两道闸的讲解：demo 有问句、有以「答案」开头的行。 */
 const GOOD = {
   what: '加法就是把两部分合起来。',
   why: '买东西算钱要用加法。',
-  how: '先数第一堆。再数第二堆。从第一个数接着数。',
-  demo: '2+1=3。一共 3 朵。',
+  how: '1. 先数第一堆。\n2. 再数第二堆。\n3. 从第一个数接着数。',
+  demo: '妈妈买了 2 个苹果，又买了 1 个，一共有几个？\n1. 先数 2 个。\n2. 再数 1 个。\n答案：3 个。',
   trap: '别把两堆数丢了。'
 };
 function segsWith(patch) {
   return Object.assign({}, GOOD, patch);
 }
 
-/* 合成知识点：G1 边界在初中档（sentenceMax === null）上更好控制 */
+/* 合成知识点：无课标、无题 */
 const MID_TOPIC = {
   id: 'cnm_test_mid', name: '测试知识点乙', grade: 7, semester: '上', chapter: '测试章节',
   description: '用于测试的合成知识点。', mastery_criteria: ['测试标准一'], standards: [], type: 'conceptual'
 };
 const MID_INPUTS = T.buildInputs({
-  topic: MID_TOPIC, questions: [], standardsById: {}, deps: [], topics: [MID_TOPIC]
+  topic: MID_TOPIC, questions: [], deps: [], topics: [MID_TOPIC]
 });
 
-/* 合成知识点：没有课标、题目没有解析（真实数据里 94.8% 有解析，那 5.2% 也要能组装） */
+/* 合成知识点：题目没有解析（真实数据里也有这种题） */
 const PLAIN_TOPIC = {
   id: 'cnm_test_plain', name: '测试知识点丙', grade: 4, semester: '下', chapter: '测试章节二',
   description: '另一个用于测试的合成知识点。', mastery_criteria: ['测试标准二'], standards: [], type: 'conceptual'
@@ -103,19 +102,8 @@ const PLAIN_INPUTS = T.buildInputs({
     { id: 'q1', topicId: PLAIN_TOPIC.id, difficulty: 'basic', type: 'numeric', prompt: '1 加 1 是几？', answer: '2' },
     { id: 'q2', topicId: PLAIN_TOPIC.id, difficulty: 'standard', type: 'numeric', prompt: '2 加 3 是几？', answer: '5' }
   ],
-  standardsById: {},
   deps: [],
   topics: [PLAIN_TOPIC]
-});
-
-/* 合成知识点：带 1 条课标、初中档（无句长限制）——G4 正负例用，避免 early 档 12 字句长把编号本身判超 */
-const STD_TOPIC = {
-  id: 'cnm_test_std', name: '测试知识点戊', grade: 7, semester: '上', chapter: '测试章节三',
-  description: '带课标的合成知识点。', mastery_criteria: ['测试标准三'], type: 'conceptual',
-  standards: [{ id: 'cms-2022:1.NA.04', confidence: 'exact' }]
-};
-const STD_INPUTS = T.buildInputs({
-  topic: STD_TOPIC, questions: [], standardsById: STD, deps: [], topics: [STD_TOPIC]
 });
 
 /* ------------------------------------------------ 内存版 localStorage-like */
@@ -131,7 +119,7 @@ function memStorage() {
 }
 
 /* ================================================================
- * 1. 结构约束：模块必须真「纯」（零网络 / 零 DOM / 零存储直连 / 无 Function 求值）
+ * 1. 结构约束：模块必须真「纯」（零网络 / 零 DOM / 零存储直连 / 本模块不做求值）
  * ================================================================ */
 
 /* 剥掉注释后的源码：说明性注释里提到 localStorage / document 不算命中 */
@@ -162,27 +150,41 @@ test('topic-explain.js 无 innerHTML / insertAdjacentHTML / document.write', () 
   assert.ok(!/document\.write/.test(MODULE_CODE), '发现 document.write');
 });
 
-test('topic-explain.js 无 Function 求值（求值只走 llm-eval 的出口）', () => {
+test('topic-explain.js 不做求值（本模块不做求值）', () => {
   assert.ok(!/\bnew\s+Function\b/.test(MODULE_CODE), '发现 new Function');
   assert.ok(!/\bFunction\s*\(/.test(MODULE_CODE), '发现 Function(');
 });
 
 test('卡面 §3 的 API 名一个不少（卡 B 照着调）', () => {
-  ['levelOf', 'limitsOf', 'subjectTone', 'prereqsOf', 'buildInputs', 'explainMessages',
+  ['levelOf', 'subjectTone', 'prereqsOf', 'buildInputs', 'explainMessages',
     'parseExplain', 'checkExplain', 'chatMessages', 'checkReply', 'cacheKey',
-    'readCache', 'writeCache', 'pruneCache'].forEach((name) => {
+    'readCache', 'writeCache', 'pruneCache', 'subjectOf', 'materialText', 'segsToText'].forEach((name) => {
     assert.strictEqual(typeof T[name], 'function', '缺函数 ' + name);
   });
   assert.strictEqual(T.MAX_ROUNDS, 10);
   assert.strictEqual(T.WINDOW_ROUNDS, 6);
   assert.strictEqual(T.WINDOW_CHARS, 4000);
+  assert.strictEqual(T.MAX_ENTRIES, 200);
+  assert.deepStrictEqual(T.SEG_KEYS, ['what', 'why', 'how', 'demo', 'trap']);
+});
+
+test('导出表已删干净（旧闸门的常量 / 函数一个不留）', () => {
+  ['limitsOf', 'EARLY_FORBID_SYMBOLS', 'LIFE_SCENE_WORDS', 'LIFE_SCENE_MEASURES',
+    'LIFE_SCENE_ACTIONS', 'COMMON_SMALL_DIGITS'].forEach((name) => {
+    assert.strictEqual(T[name], undefined, '不该再导出 ' + name);
+  });
+});
+
+test('源码不再引用 llm-eval / LLMEval', () => {
+  assert.strictEqual(MODULE_SRC.indexOf('llm-eval'), -1, '仍出现 llm-eval');
+  assert.strictEqual(MODULE_SRC.indexOf('LLMEval'), -1, '仍出现 LLMEval');
 });
 
 /* ================================================================
- * 2. levelOf / limitsOf（§4.2 语言四档）
+ * 2. levelOf（§4 语言四档）
  * ================================================================ */
 
-console.log('\n--- levelOf / limitsOf ---');
+console.log('\n--- levelOf ---');
 
 test('levelOf：1、2 → early', () => {
   assert.strictEqual(T.levelOf(1), 'early');
@@ -202,44 +204,6 @@ test('levelOf：7、9 → middle', () => {
 test('levelOf：10、16 → high', () => {
   assert.strictEqual(T.levelOf(10), 'high');
   assert.strictEqual(T.levelOf(16), 'high');
-});
-
-test('limitsOf：幼儿级 40/40/60/70/40，追问 60，每句 12', () => {
-  assert.deepStrictEqual(T.limitsOf('early'), {
-    segMax: { what: 40, why: 40, how: 60, demo: 70, trap: 40 },
-    replyMax: 60,
-    sentenceMax: 12
-  });
-});
-
-test('limitsOf：小学高年级 60/60/90/110/60，追问 120，每句 20', () => {
-  assert.deepStrictEqual(T.limitsOf('primary'), {
-    segMax: { what: 60, why: 60, how: 90, demo: 110, trap: 60 },
-    replyMax: 120,
-    sentenceMax: 20
-  });
-});
-
-test('limitsOf：初中 80/80/120/150/80，追问 150，无句长限制', () => {
-  assert.deepStrictEqual(T.limitsOf('middle'), {
-    segMax: { what: 80, why: 80, how: 120, demo: 150, trap: 80 },
-    replyMax: 150,
-    sentenceMax: null
-  });
-});
-
-test('limitsOf：高中 100/80/140/160/100，追问 180，无句长限制', () => {
-  assert.deepStrictEqual(T.limitsOf('high'), {
-    segMax: { what: 100, why: 80, how: 140, demo: 160, trap: 100 },
-    replyMax: 180,
-    sentenceMax: null
-  });
-});
-
-test('limitsOf 返回副本：改返回值不污染常量', () => {
-  const L = T.limitsOf('early');
-  L.segMax.what = 999;
-  assert.strictEqual(T.limitsOf('early').segMax.what, 40);
 });
 
 /* ================================================================
@@ -328,7 +292,7 @@ test('prereqsOf：max 生效且去重', () => {
 });
 
 /* ================================================================
- * 5. buildInputs（§3 素材八项）
+ * 5. buildInputs（素材组装）
  * ================================================================ */
 
 console.log('\n--- buildInputs ---');
@@ -338,19 +302,17 @@ const P006 = buildFor(topicById('cnm_p006'));
 test('buildInputs：基本字段与学段档（cnm_p006 / 1 年级 → early）', () => {
   assert.strictEqual(P006.topicId, 'cnm_p006');
   assert.strictEqual(P006.level, 'early');
-  assert.deepStrictEqual(P006.limits, T.limitsOf('early'));
   assert.strictEqual(P006.tone.key, 'math');
+  assert.strictEqual(P006.subject, 'math');
   assert.ok(P006.desc.length > 0);
   assert.ok(P006.criteria.length >= 1 && P006.criteria.length <= 3);
 });
 
-test('buildInputs：课标原文按 id 解析出来（standardsById 传整份课标库）', () => {
-  assert.ok(P006.standards.length >= 1);
-  P006.standards.forEach((s) => {
-    assert.ok(/^cms-2022:/.test(s.id), '课标 id 形态不对：' + s.id);
-    assert.ok(s.text.length > 5, '课标原文没解析出来：' + s.id);
+test('buildInputs：不再产出课标与已删闸门的产物', () => {
+  ['standards', 'noStandard', 'limits', 'namePool', 'answerValues', 'questionText'].forEach((k) => {
+    assert.strictEqual(P006[k], undefined, '不该再产出 ' + k);
+    assert.ok(Object.keys(P006).indexOf(k) < 0, 'Object.keys 里不该有 ' + k);
   });
-  assert.strictEqual(P006.noStandard, false);
 });
 
 test('buildInputs：例题 ≤3 道，按难度升序，带题面/答案/解析', () => {
@@ -373,21 +335,6 @@ test('buildInputs：先修名进 whitelist，白名单 = 本点 ∪ 直接先修
   assert.strictEqual(P006.whitelist.length, 1 + P006.prereqs.length);
 });
 
-test('buildInputs：题面拼接文本与题库答案集合可用于 G3', () => {
-  assert.ok(P006.questionText.indexOf('2 朵花') >= 0);
-  assert.deepStrictEqual(P006.answerValues.slice().sort(), [3, 4]);
-});
-
-test('buildInputs：cnm_130 无课标 → noStandard=true 且 standards 为空', () => {
-  const inputs = buildFor(topicById('cnm_130'));
-  assert.strictEqual(inputs.noStandard, true);
-  assert.deepStrictEqual(inputs.standards, []);
-});
-
-test('buildInputs：cnm_192 无课标 → noStandard=true', () => {
-  assert.strictEqual(buildFor(topicById('cnm_192')).noStandard, true);
-});
-
 test('buildInputs：无先修点 → prereqs 为空，白名单只有自己', () => {
   const inputs = buildFor(topicById('cnm_p001'));
   assert.deepStrictEqual(inputs.prereqs, []);
@@ -400,20 +347,27 @@ test('buildInputs：无解析题只留题面与答案，不编造解析', () => 
     assert.ok(e.prompt.length > 0);
     assert.strictEqual(e.explanation, '');
   });
-  assert.strictEqual(PLAIN_INPUTS.noStandard, true);
 });
 
-test('buildInputs：没有题也能组装（examples 空、answerValues 空）', () => {
-  const inputs = T.buildInputs({
-    topic: MID_TOPIC, questions: [], standardsById: {}, deps: [], topics: [MID_TOPIC]
-  });
-  assert.deepStrictEqual(inputs.examples, []);
-  assert.deepStrictEqual(inputs.answerValues, []);
-  assert.strictEqual(inputs.questionText, '');
+test('buildInputs：没有题也能组装（examples 空）', () => {
+  assert.deepStrictEqual(MID_INPUTS.examples, []);
 });
 
 test('buildInputs：缺 topic 直接抛错（不静默产出半份素材）', () => {
   assert.throws(() => T.buildInputs({}), /缺少 topic/);
+});
+
+test('materialText：素材块零课标（无标题、无编号、无课标原文）', () => {
+  const text = T.materialText(P006);
+  assert.ok(text.indexOf('【课标') < 0, '仍有课标小节');
+  assert.ok(text.indexOf('cms-2022') < 0, '仍有课标编号');
+  const stdText = STD.items.find((s) => s.id === 'cms-2022:1.NA.04').text;
+  assert.ok(stdText && stdText.length > 5);
+  assert.ok(text.indexOf(stdText) < 0, '仍复述了课标原文');
+  assert.ok(text.indexOf('【知识点】') >= 0);
+  assert.ok(text.indexOf('【例题】') >= 0);
+  assert.ok(text.indexOf('【直接先修】') >= 0);
+  assert.ok(text.indexOf('【学科语气】') >= 0);
 });
 
 /* ================================================================
@@ -429,29 +383,21 @@ test('explainMessages：system + user 两条，角色固定', () => {
   assert.strictEqual(msgs[1].role, 'user');
 });
 
-test('explainMessages：system 带学科语气 + 学段语言档 + 5 键要求', () => {
+test('explainMessages：system 带学科语气 + 5 键要求', () => {
   const sys = T.explainMessages(P006)[0].content;
   assert.ok(sys.indexOf(P006.tone.tone) >= 0, '缺学科语气');
-  assert.ok(sys.indexOf('12 字') >= 0, '缺句长档');
-  assert.ok(sys.indexOf('40 字') >= 0, '缺段长档');
   ['what', 'why', 'how', 'demo', 'trap'].forEach((k) => {
     assert.ok(sys.indexOf(k) >= 0, 'system 没点名 JSON 键 ' + k);
   });
 });
 
-test('explainMessages：user 素材块含名称/介绍/掌握标准/课标原文/例题/先修', () => {
+test('explainMessages：user 素材块含名称/介绍/掌握标准/例题/先修', () => {
   const user = T.explainMessages(P006)[1].content;
   assert.ok(user.indexOf(P006.name) >= 0, '缺知识点名');
   assert.ok(user.indexOf(P006.desc) >= 0, '缺一句话介绍');
   assert.ok(user.indexOf(P006.criteria[0]) >= 0, '缺掌握标准');
-  assert.ok(user.indexOf(P006.standards[0].id) >= 0, '缺课标编号');
   assert.ok(user.indexOf(P006.examples[0].prompt) >= 0, '缺例题题面');
   assert.ok(user.indexOf(P006.prereqs[0].name) >= 0, '缺先修名');
-});
-
-test('explainMessages：无课标点明说「暂无对应课标条目」', () => {
-  const user = T.explainMessages(buildFor(topicById('cnm_130')))[1].content;
-  assert.ok(user.indexOf('暂无对应课标条目') >= 0);
 });
 
 test('explainMessages：同样入参逐字节可复现（多轮锚点靠它稳定）', () => {
@@ -464,6 +410,16 @@ test('explainMessages：红线条目到位（只用素材数字 / 只用白名�
   assert.ok(sys.indexOf('可以提到的知识点') >= 0, '缺白名单行');
   assert.ok(sys.indexOf('算出来的结果必须等于那道题的答案') >= 0, '缺示例一致性要求');
   assert.ok(sys.indexOf('人设') < 0 && sys.indexOf('人教版') < 0, '不许沿用 explain.js 的人设');
+});
+
+test('prompt：含四句排版要求 + 不许引用课标，且不再出现旧课标编号说法', () => {
+  const sys = T.explainMessages(P006)[0].content;
+  assert.ok(sys.indexOf('每段用分点或分步写，一点一行；不要写成一大段；例子先出题面，再分步解答，最后一行写「答案：」；不要出现课标编号或课标原文。') >= 0,
+    '缺四句排版要求');
+  assert.ok(sys.indexOf('不许引用课标') >= 0, '缺【不许引用课标】');
+  assert.strictEqual(sys.indexOf('cms-2022 编号'), -1, '旧课标编号说法还在');
+  assert.ok(sys.indexOf('段内换行写成 \\n（JSON 转义）') >= 0, '缺「段内换行写成 \\n」说明：' + JSON.stringify(sys));
+  assert.strictEqual(sys.indexOf('\\\\n'), -1, '不许让模型看到两个反斜杠的 \\\\n');
 });
 
 /* ================================================================
@@ -486,14 +442,14 @@ test('parseExplain：带 ```json 围栏也能解析', () => {
 });
 
 test('parseExplain：半截 JSON（尾逗号 + 截断空白）逐键抠出来', () => {
-  const raw = '{"what":"甲。","why":"乙。","how":"丙。","demo":"2+1=3。","trap":"丁。",}';
+  const raw = '{"what":"甲。","why":"乙。","how":"丙。","demo":"2+1=3？\\n答案：3。","trap":"丁。",}';
   const r = T.parseExplain(raw);
   assert.ok(r.segs, '应当逐键抠出来');
   assert.strictEqual(r.segs.how, '丙。');
 });
 
 test('parseExplain：少一个键 → segs=null 并说明缺哪个（不猜）', () => {
-  const raw = '{"what":"甲。","why":"乙。","how":"丙。","demo":"2+1=3。"';
+  const raw = '{"what":"甲。","why":"乙。","how":"丙。","demo":"2+1=3？"';
   const r = T.parseExplain(raw);
   assert.strictEqual(r.segs, null);
   assert.ok(/trap/.test(r.why), 'why 里要点名缺的键：' + r.why);
@@ -505,225 +461,175 @@ test('parseExplain：空返回 → segs=null', () => {
 });
 
 test('parseExplain：转义字符还原（引号与换行）', () => {
-  const raw = '{"what":"他说\\"好\\"","why":"两行\\n第二行","how":"丙。","demo":"2+1=3。","trap":"丁。"}';
+  const raw = '{"what":"他说\\"好\\"","why":"两行\\n第二行","how":"丙。","demo":"2+1=3？\\n答案：3。","trap":"丁。"}';
   const r = T.parseExplain(raw);
   assert.strictEqual(r.segs.what, '他说"好"');
   assert.strictEqual(r.segs.why, '两行\n第二行');
 });
 
 /* ================================================================
- * 8. checkExplain（讲解 5 闸：每条正负例）
+ * 8. checkExplain（G1 结构 / G5 文本卫生）
  * ================================================================ */
 
 console.log('\n--- checkExplain ---');
 
 function gates(result) { return result.reasons.map((r) => r.gate); }
 
-test('G1 正例：5 段齐全、字数与句长都在 early 档内 → 全闸通过', () => {
-  const r = T.checkExplain(GOOD, P006);
+test('G1：5 段齐全 → 通过', () => {
+  const r = T.checkExplain(GOOD);
   assert.deepStrictEqual(r.reasons, []);
   assert.strictEqual(r.ok, true);
 });
 
-test('G1 负例：缺一段 → 拒', () => {
-  const segs = segsWith({});
-  delete segs.trap;
-  const r = T.checkExplain(segs, P006);
-  assert.strictEqual(r.ok, false);
-  assert.ok(gates(r).indexOf('G1') >= 0);
-});
-
-test('G1 负例：某段只有空白 → 拒', () => {
-  const r = T.checkExplain(segsWith({ why: '   \n ' }), P006);
-  assert.strictEqual(r.ok, false);
-  assert.ok(gates(r).indexOf('G1') >= 0);
-});
-
-test('G1 负例：单句超过 12 字（early 档）→ 拒', () => {
-  const r = T.checkExplain(segsWith({ what: '加法就是把两部分合起来然后从第一个数开始往后数。' }), P006);
-  assert.strictEqual(r.ok, false);
-  assert.ok(gates(r).indexOf('G1') >= 0);
-  assert.ok(r.reasons.some((x) => /超过 12 字/.test(x.why)), '要报句长超限');
-});
-
-test('G1 负例：段字数超过 40 字（early 档，句中仍合规）→ 拒', () => {
-  const longWhat = '一二三四五六七八九十一。'.repeat(4); /* 48 字，每句 12 字 */
-  const r = T.checkExplain(segsWith({ what: longWhat }), P006);
-  assert.strictEqual(r.ok, false);
-  assert.ok(r.reasons.some((x) => /太长/.test(x.why)), '要报段长超限');
-});
-
-test('G1 正例：正好 80 字（middle 档上限）→ 通过', () => {
-  const r = T.checkExplain(segsWith({ what: '甲'.repeat(79) + '。' }), MID_INPUTS);
-  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
-});
-
-test('G1 负例：81 字（middle 档上限 +1）→ 拒', () => {
-  const r = T.checkExplain(segsWith({ what: '甲'.repeat(80) + '。' }), MID_INPUTS);
-  assert.strictEqual(r.ok, false);
-  assert.ok(gates(r).indexOf('G1') >= 0);
-});
-
-test('G2 正例：只提本点与直接先修 → 通过', () => {
-  const r = T.checkExplain(segsWith({ how: '先想5以内数的分与合。再数第一堆。' }), P006);
-  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
-});
-
-test('G2 负例：提到白名单外的知识点 → 拒', () => {
-  const r = T.checkExplain(segsWith({ trap: '学完三角形的面积就懂了。' }), P006);
-  assert.strictEqual(r.ok, false);
-  assert.ok(gates(r).indexOf('G2') >= 0);
-  assert.ok(/三角形的面积/.test(r.reasons.find((x) => x.gate === 'G2').why));
-});
-
-test('G2：长度 < 4 字的知识点名不参与匹配（不误伤）', () => {
-  const topic = { id: 'cnm_test_short', name: '测试知识点丁', grade: 4, chapter: 'x', description: '描述', mastery_criteria: ['标准'], standards: [] };
-  const other = { id: 'cnm_other', name: '比例' };
-  const inputs = T.buildInputs({
-    topic, questions: [], standardsById: {}, deps: [], topics: [topic, other]
+test('G1：缺任一段 → 拒（5 个变体逐个跑）', () => {
+  T.SEG_KEYS.forEach((k) => {
+    const segs = Object.assign({}, GOOD);
+    delete segs[k];
+    const r = T.checkExplain(segs);
+    assert.strictEqual(r.ok, false, '删掉 ' + k + ' 应当被拒');
+    assert.ok(r.reasons.some((x) => x.gate === 'G1' && /缺少段落/.test(x.why)),
+      '缺 ' + k + ' 要报「缺少段落」：' + JSON.stringify(r.reasons));
   });
-  const r = T.checkExplain(segsWith({ what: '比例是两数相除。' }), inputs);
-  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
 });
 
-test('G3 正例：算式操作数来自题面、结果等于题库答案 → 通过', () => {
-  const r = T.checkExplain(segsWith({ demo: '2+1=3。一共 3 朵。' }), P006);
-  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
+test('G1：任一段只有空白 → 拒（5 个变体逐个跑）', () => {
+  T.SEG_KEYS.forEach((k) => {
+    const r = T.checkExplain(segsWith({ [k]: '   \n ' }));
+    assert.strictEqual(r.ok, false, k + ' 只有空白应当被拒');
+    assert.ok(gates(r).indexOf('G1') >= 0, JSON.stringify(r.reasons));
+  });
 });
 
-test('G3 正例：讲解里完全没有算式 → 通过（卡面明写不是拒）', () => {
-  const r = T.checkExplain(segsWith({ demo: '把两堆合起来数一遍。' }), P006);
-  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
-});
-
-test('G3 负例：算式操作数不在题面里 → 拒', () => {
-  const r = T.checkExplain(segsWith({ demo: '9+1=10。一共 10 个。' }), P006);
+test('G1：demo 无问号 → 拒，why 提到问句', () => {
+  const r = T.checkExplain(segsWith({ demo: '妈妈买了 2 个苹果。\n1. 先数 2 个。\n答案：2 个。' }));
   assert.strictEqual(r.ok, false);
-  assert.ok(gates(r).indexOf('G3') >= 0);
-  assert.ok(r.reasons.some((x) => /没出现在本点题面/.test(x.why)));
+  assert.ok(r.reasons.some((x) => x.gate === 'G1' && x.why.indexOf('问句') >= 0),
+    JSON.stringify(r.reasons));
 });
 
-test('G3 负例：算式本身不成立（2+1=4）→ 拒', () => {
-  const r = T.checkExplain(segsWith({ demo: '2+1=4。一共 4 朵。' }), P006);
+test('G1：问句必须在 demo 段（what 里有问句不算）', () => {
+  const r = T.checkExplain(segsWith({ what: '加法是什么？', demo: '妈妈买了 2 个苹果。\n答案：2 个。' }));
   assert.strictEqual(r.ok, false);
-  assert.ok(r.reasons.some((x) => /算式与结果对不上/.test(x.why)), JSON.stringify(r.reasons));
+  assert.ok(r.reasons.some((x) => x.gate === 'G1' && x.why.indexOf('问句') >= 0),
+    JSON.stringify(r.reasons));
 });
 
-test('G3 负例：结果数字不是题库答案（2+1=7）→ 拒', () => {
-  const r = T.checkExplain(segsWith({ demo: '2+1=7。' }), P006);
+test('G1：demo 无「答案」行 → 拒', () => {
+  const r = T.checkExplain(segsWith({ demo: '妈妈买了 2 个苹果，一共有几个？\n1. 先数 2 个。' }));
   assert.strictEqual(r.ok, false);
-  assert.ok(gates(r).indexOf('G3') >= 0);
+  assert.ok(r.reasons.some((x) => x.gate === 'G1' && x.why.indexOf('答案') >= 0),
+    JSON.stringify(r.reasons));
 });
 
-test('G4 正例：引用本点课标编号 → 通过', () => {
-  const r = T.checkExplain(segsWith({ why: '课标 cms-2022:1.NA.04 要求这样。' }), STD_INPUTS);
+test('G1：合规样例（题面问句 + 1. 2. 分步 + 末行答案）→ 通过', () => {
+  const segs = segsWith({
+    how: '1. 先数第一堆。\n2. 再数第二堆。\n3. 接着数。',
+    demo: '妈妈买了 2 个苹果，又买了 1 个，一共有几个？\n1. 先数 2 个。\n2. 再数 1 个。\n答案：3 个。'
+  });
+  assert.strictEqual(T.checkExplain(segs).ok, true, JSON.stringify(T.checkExplain(segs).reasons));
+});
+
+test('G1：「答案」行不在末行也通过（只查有没有，不查第几行）', () => {
+  const r = T.checkExplain(segsWith({ demo: '一共有几个？\n答案：3 个。\n1. 先数 2 个。' }));
   assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
 });
 
-test('G4 负例：引用本点没有的课标编号 → 拒', () => {
-  const r = T.checkExplain(segsWith({ why: '课标 cms-2022:9.XX.99 要求这样。' }), STD_INPUTS);
-  assert.strictEqual(r.ok, false);
-  assert.ok(gates(r).indexOf('G4') >= 0);
-});
-
-test('G4：无课标点跳过本闸（乱写编号也不拒）', () => {
-  const inputs = buildFor(topicById('cnm_130'));
-  const segs = segsWith({ why: '课标 cms-2022:9.XX.99 要求这样。', demo: '把两堆合起来数一遍。' });
-  const r = T.checkExplain(segs, inputs);
-  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
-});
-
-test('G5 负例：** 加粗 / 反引号 / 反斜杠命令 / 省略号 各自都拒', () => {
+test('G5：** 加粗 / 反引号 / 反斜杠命令 / 井号标题 / 省略号 各自都拒', () => {
   [
     { how: '**先数第一堆**。' },
     { how: '先数第一堆，记作 `a`。' },
     { how: '先算 \\frac{1}{2}。' },
+    { how: '# 第一步\n先数第一堆。' },
     { how: '先数 1、2、3…' }
   ].forEach((patch) => {
-    const r = T.checkExplain(segsWith(patch), P006);
+    const r = T.checkExplain(segsWith(patch));
     assert.strictEqual(r.ok, false, JSON.stringify(patch) + ' 应当被拒');
     assert.ok(gates(r).indexOf('G5') >= 0, JSON.stringify(patch) + ' 应命中 G5');
   });
 });
 
-test('G5 正例：干净文本不被误伤', () => {
-  const r = T.checkExplain(segsWith({ how: '先数第一堆。再数第二堆。' }), P006);
+test('G5 不误伤：1. 2. 分点、答案：行、全角问号 → 通过', () => {
+  const segs = segsWith({ demo: '桌上有 2 个苹果，一共有几个？\n1. 先数 2 个。\n2. 再看一眼。\n答案：2 个。' });
+  const r = T.checkExplain(segs);
   assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
+  assert.ok(segs.demo.indexOf('？') >= 0);
+  assert.ok(segs.demo.indexOf('答案：') >= 0);
 });
 
-test('多因并列：G2 与 G5 同时命中时两条都要报（不许只报第一条）', () => {
-  const r = T.checkExplain(segsWith({ trap: '**三角形的面积**要记住。' }), P006);
+test('多因并列：G1 与 G5 同时命中时两条都要报', () => {
+  const segs = segsWith({ how: '**先数第一堆**。' });
+  delete segs.trap;
+  const r = T.checkExplain(segs);
   assert.strictEqual(r.ok, false);
-  assert.ok(gates(r).indexOf('G2') >= 0, '缺 G2');
+  assert.ok(gates(r).indexOf('G1') >= 0, '缺 G1');
   assert.ok(gates(r).indexOf('G5') >= 0, '缺 G5');
   assert.ok(r.reasons.length >= 2);
 });
 
 test('checkExplain：segs 为 null 时不炸，报 G1', () => {
-  const r = T.checkExplain(null, P006);
+  const r = T.checkExplain(null);
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.reasons[0].gate, 'G1');
 });
 
 /* ================================================================
- * 9. checkReply（追问 5 闸：G2r / G3r / G4 / G5 / G6）
+ * 9. 新契约：不计数、不看数字、不看符号、不看字数 —— 全部放行
+ * ================================================================ */
+
+console.log('\n--- 新契约：全部放行 ---');
+
+test('新契约：算错也能过（3 + 1 = 2）', () => {
+  const r = T.checkExplain(segsWith({ demo: '1 加 1 等于几？\n答案：3 + 1 = 2。' }));
+  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
+});
+
+test('新契约：全角算式也放行（３＋２＝５）', () => {
+  const r = T.checkExplain(segsWith({ demo: '一加二等于几？\n答案：３＋２＝５。' }));
+  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
+});
+
+test('新契约：素材里没有的数字 9 也放行', () => {
+  const r = T.checkExplain(segsWith({ demo: '桌上有 9 个苹果，一共有几个？\n答案：9 个。' }));
+  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
+});
+
+test('新契约：grade 1 正文写出 3 + 2 = 5 也放行', () => {
+  const r = T.checkExplain(segsWith({ what: '加法就是把两部分合起来，比如 3 + 2 = 5。' }));
+  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
+});
+
+test('新契约：500 字长回答放行（没有字数上限）', () => {
+  assert.strictEqual(T.checkReply('数'.repeat(500)).ok, true);
+});
+
+/* ================================================================
+ * 10. checkReply（只剩 G5 文本卫生）
  * ================================================================ */
 
 console.log('\n--- checkReply ---');
 
-test('G6 正例：60 字以内（early 档）→ 通过', () => {
-  const r = T.checkReply('把两堆合起来数一数就得到结果了。', P006);
+test('checkReply：空答 → ok === true（旧长度闸已删，如实钉住）', () => {
+  assert.strictEqual(T.checkReply('').ok, true);
+  assert.strictEqual(T.checkReply('   ').ok, true);
+});
+
+test('checkReply：普通回答通过', () => {
+  const r = T.checkReply('把两堆合起来数一数就得到结果了。');
   assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
 });
 
-test('G6 负例：超过 60 字（early 档）→ 拒', () => {
-  const r = T.checkReply('数'.repeat(61), P006);
-  assert.strictEqual(r.ok, false);
-  assert.ok(gates(r).indexOf('G6') >= 0);
+test('checkReply：G5 同样生效（** 加粗 / 反引号）', () => {
+  assert.ok(gates(T.checkReply('**就是这样**。')).indexOf('G5') >= 0);
+  assert.ok(gates(T.checkReply('记作 `a`。')).indexOf('G5') >= 0);
 });
 
-test('G6 负例：空回答 → 拒', () => {
-  assert.strictEqual(T.checkReply('', P006).ok, false);
-  assert.strictEqual(T.checkReply('   ', P006).ok, false);
-});
-
-test('G2r 负例：追问回答引入白名单外知识点 → 拒', () => {
-  const r = T.checkReply('你先去学三角形的面积。', P006);
-  assert.strictEqual(r.ok, false);
-  assert.ok(gates(r).indexOf('G2r') >= 0);
-});
-
-test('G3r 正例：允许引用学生自己给的数，算式成立 → 通过', () => {
-  const r = T.checkReply('你说的 4+5=9 是对的。', P006);
-  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
-});
-
-test('G3r 负例：算式与结果对不上 → 拒', () => {
-  const r = T.checkReply('4+5=11，所以是 11。', P006);
-  assert.strictEqual(r.ok, false);
-  assert.ok(gates(r).indexOf('G3r') >= 0);
-});
-
-test('G3r：追问轮不做「操作数必须在题面」的检查（学生自带的数允许）', () => {
-  const r = T.checkReply('9+1=10。', P006);
-  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
-});
-
-test('G4 / G5 在追问轮同样生效', () => {
-  const badStd = T.checkReply('课标 cms-2022:9.XX.99 这么说。', P006);
-  assert.ok(gates(badStd).indexOf('G4') >= 0);
-  const badFmt = T.checkReply('**就是这样**。', P006);
-  assert.ok(gates(badFmt).indexOf('G5') >= 0);
-});
-
-test('checkReply：多因并列（太长 + 超纲）两条都报', () => {
-  const r = T.checkReply('三角形的面积' + '数'.repeat(70), P006);
-  assert.ok(gates(r).indexOf('G6') >= 0, '缺 G6');
-  assert.ok(gates(r).indexOf('G2r') >= 0, '缺 G2r');
+test('checkReply：算式与数字一律不管（3 + 1 = 2 通过）', () => {
+  assert.strictEqual(T.checkReply('3 + 1 = 2').ok, true);
+  assert.strictEqual(T.checkReply('３＋１＝２').ok, true);
 });
 
 /* ================================================================
- * 10. chatMessages（多轮：锚点不裁 / 窗口 6 轮 / 字符预算 / 失败轮过滤）
+ * 11. chatMessages（多轮：锚点不裁 / 窗口 6 轮 / 字符预算 / 失败轮过滤）
  * ================================================================ */
 
 console.log('\n--- chatMessages ---');
@@ -743,13 +649,12 @@ test('第 1 轮：system + 素材 + 5 段讲解 + 本轮提问 = 4 条，顺序�
   assert.ok(msgs[2].content.indexOf(GOOD.trap) >= 0);
 });
 
-test('追问轮 system：带回答长度档 + 只用白名单知识点 + 不直接给答案', () => {
-  const sys = T.chatMessages(P006, GOOD, [], '问').at(0).content;
-  assert.strictEqual(sys.role, undefined);
-  assert.ok(sys.indexOf('不超过 60 字') >= 0, '缺追问长度档（early 60）');
-  assert.ok(sys.indexOf('每句不超过 12 字') >= 0, '缺句长档');
+test('追问轮 system：只用白名单知识点 + 不直接给答案 + 无回答长度档', () => {
+  const sys = T.chatMessages(P006, GOOD, [], '问')[0].content;
   assert.ok(sys.indexOf('一次只答一个问题') >= 0);
   assert.ok(sys.indexOf('可以提到的知识点') >= 0);
+  assert.ok(sys.indexOf('不许引用课标') >= 0);
+  assert.strictEqual(sys.indexOf('回答长度'), -1, '回答长度档应当已删除');
 });
 
 test('追问轮 system 与讲解轮 system 不同一条（锚点 [0] 是讲解轮的人设）', () => {
@@ -832,7 +737,7 @@ test('本轮提问永远在最后，且不参与裁剪', () => {
 });
 
 /* ================================================================
- * 11. 缓存（cacheKey / readCache / writeCache / pruneCache）
+ * 12. 缓存（cacheKey / readCache / writeCache / pruneCache）
  * ================================================================ */
 
 console.log('\n--- 缓存 ---');
@@ -904,7 +809,7 @@ test('pruneCache：没到上限 → 一条不删', () => {
 });
 
 /* ================================================================
- * 12. 零网络收尾
+ * 13. 零网络收尾
  * ================================================================ */
 
 console.log('\n--- 零网络收尾 ---');

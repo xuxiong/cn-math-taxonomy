@@ -1,29 +1,22 @@
-/* O4 卡 A：知识点讲解纯模块（素材组装 + 学科×学段 prompt + 5 段解析 + 讲解 5 闸 + 多轮追问 + 缓存读写）。
+/* O4 卡 A：知识点讲解纯模块（素材组装 + 学科×学段 prompt + 5 段解析 + 两道闸 + 多轮追问 + 缓存读写）。
  *
- * 口径来源：docs/o4-topic-explain.md（D1–D23 / §3 素材 / §4 语言四档 / §5 闸门 / §6 学科语气 / §8 多轮）。
+ * 口径：用户裁定闸门只留两道 —— G1 结构 / G5 文本卫生，全部布尔判据。
  * 本文件是**纯模块**：零 DOM、零 fetch、零 localStorage 直连、零 Date.now。
  *   - storage 由调用方注入（localStorage-like：getItem/setItem/removeItem/key/length）；
  *   - 模型由调用方注入（卡 B 负责真发送；本文件只产出 messages）；
- *   - 依赖复用：文本规范化走 textfmt.js 的 normalize，数值比对走 llm-eval.js 的 evaluateExpression，
- *     本文件没有第二份实现（这是卡面 §2 的硬要求）。
+ *   - 文本规范化复用 textfmt.js 的 normalize，本文件不写第二份清洗实现。
  *
  * UMD 与 diagnose/llm-gates.js 同款：浏览器 root.CnmTopicExplain，Node require() 直接拿到对象。
- * 浏览器侧必须在 textfmt.js、llm-eval.js 之后加载（卡 B 接线时注意脚本顺序）。
- *
- * 与卡面的两处如实披露（细节见交卡评论）：
- *   1) 卡面 §1 说收尾「与 textfmt.js 同款 module.exports = factory()」；本文件与 llm-gates.js 一致，
- *      写成 factory(require('./textfmt.js'), require('./llm-eval.js'))，把两个依赖显式注入 ——
- *      这样浏览器与 Node 走同一份依赖，不必再写第二套解析/求值。
- *   2) G5 同时查**原始文本**与 normalize 之后的文本：textfmt.normalize 会把 `**`、反引号洗掉，
- *      只查清洗后文本等于给 Markdown 泄漏开后门；两处都查才是「清洗后仍不过 → 拒」的严格版。
+ * 浏览器侧必须在 textfmt.js 之后加载（卡 B 接线时注意脚本顺序）。
  */
+
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require('./textfmt.js'), require('./llm-eval.js'));
+    module.exports = factory(require('./textfmt.js'));
   } else {
-    root.CnmTopicExplain = factory(root.CnmTextFmt, root.DiagLLMEval);
+    root.CnmTopicExplain = factory(root.CnmTextFmt);
   }
-})(typeof self !== 'undefined' ? self : this, function (TextFmt, LLMEval) {
+})(typeof self !== 'undefined' ? self : this, function (TextFmt) {
   'use strict';
 
   /* ================================================================
@@ -45,8 +38,6 @@
   var MAX_ENTRIES = 200;    /* §8.4：讲解缓存 200 条 LRU */
 
   var CACHE_PREFIX = 'cnmDiagnose.topicExplain.v1:';
-  var MIN_NAME_LEN = 4;     /* G2：长度 < 4 字的知识点名不参与匹配（避免「数」「比」误命中） */
-  var NUM_EPS = 1e-6;
 
   var LEVEL_LABELS = {
     early: '幼儿级（1-2 年级）',
@@ -66,10 +57,6 @@
 
   function trimText(s) { return asText(s).trim(); }
 
-  function isFiniteNum(n) { return typeof n === 'number' && isFinite(n); }
-
-  function byLengthDesc(a, b) { return charLen(b) - charLen(a); }
-
   function gradeNumber(grade) {
     if (typeof grade === 'number' && isFinite(grade)) return grade;
     var m = /-?\d+(?:\.\d+)?/.exec(asText(grade));
@@ -82,56 +69,17 @@
     try { return asText(TextFmt.normalize(asText(text))); } catch (e) { return asText(text); }
   }
 
-  /* 复用 llm-eval.js 的求值器（白名单 + new Function 在那边，本文件不新增求值实现） */
-  function evalNum(expr) {
-    if (!LLMEval || typeof LLMEval.evaluateExpression !== 'function') return null;
-    var v = LLMEval.evaluateExpression(asText(expr), [0]);
-    if (v && v.length && isFiniteNum(v[0])) return v[0];
-    return null;
-  }
-
   /* ================================================================
-   * 2. 学段 / 语言四档（§4.2）
+   * 2. 学段 / 语言四档（档位只决定 prompt 措辞，不再有字数上限）
    * ================================================================ */
 
   function levelOf(grade) {
     var g = gradeNumber(grade);
-    if (g === null) return 'primary';   /* 缺年级：按小学档兜底（档位决定长度，not 决定内容） */
+    if (g === null) return 'primary';   /* 缺年级：按小学档兜底 */
     if (g <= 2) return 'early';
     if (g <= 6) return 'primary';
     if (g <= 9) return 'middle';
     return 'high';
-  }
-
-  var LEVEL_LIMITS = {
-    early: {
-      segMax: { what: 40, why: 40, how: 60, demo: 70, trap: 40 },
-      replyMax: 60, sentenceMax: 12
-    },
-    primary: {
-      segMax: { what: 60, why: 60, how: 90, demo: 110, trap: 60 },
-      replyMax: 120, sentenceMax: 20
-    },
-    middle: {
-      segMax: { what: 80, why: 80, how: 120, demo: 150, trap: 80 },
-      replyMax: 150, sentenceMax: null
-    },
-    high: {
-      segMax: { what: 100, why: 80, how: 140, demo: 160, trap: 100 },
-      replyMax: 180, sentenceMax: null
-    }
-  };
-
-  function limitsOf(level) {
-    var L = LEVEL_LIMITS[level] || LEVEL_LIMITS.primary;
-    return {
-      segMax: {
-        what: L.segMax.what, why: L.segMax.why, how: L.segMax.how,
-        demo: L.segMax.demo, trap: L.segMax.trap
-      },
-      replyMax: L.replyMax,
-      sentenceMax: L.sentenceMax
-    };
   }
 
   /* ================================================================
@@ -281,27 +229,10 @@
   }
 
   /* ================================================================
-   * 5. 素材组装（buildInputs）—— §3 的八项
+   * 5. 素材组装（buildInputs）—— §3 的素材
    * ================================================================ */
 
   var DIFF_RANK = { basic: 0, standard: 1, challenge: 2, advanced: 3 };
-
-  /* standardsById 允许三种形状：{id: text} / {id: {id,text}} / {items:{...}}（课标库原样） */
-  function standardsMap(standardsById) {
-    var out = {};
-    if (!standardsById || typeof standardsById !== 'object') return out;
-    var items = (standardsById.items && typeof standardsById.items === 'object')
-      ? standardsById.items : standardsById;
-    Object.keys(items).forEach(function (k) {
-      var v = items[k];
-      if (v === null || v === undefined) return;
-      if (typeof v === 'string') { out[k] = v; return; }
-      if (typeof v !== 'object') return;
-      if (v.id) out[asText(v.id)] = asText(v.text);
-      else out[k] = asText(v.text);
-    });
-    return out;
-  }
 
   function normalizeQuestion(q) {
     var out = {
@@ -325,27 +256,6 @@
     return out;
   }
 
-  /* 题库答案 → 可比较的数值集合（复用 llm-eval 求值；纯文字答案不进集合） */
-  function answerValuesOf(questions) {
-    var vals = [];
-    questions.forEach(function (q) {
-      var cands = [q.answer];
-      var at = q.answerText;
-      if (at) cands.push(at);
-      cands.forEach(function (raw) {
-        asText(raw).split(/[,，、;；]/).forEach(function (piece) {
-          var s = piece.replace(/\s+/g, '');
-          if (!s) return;
-          var v = evalNum(s);
-          var m = /^[a-zA-Z]=(.+)$/.exec(s);   /* x=3 / y=1/2 */
-          if (v === null && m) v = evalNum(m[1]);
-          if (v !== null && vals.indexOf(v) < 0) vals.push(v);
-        });
-      });
-    });
-    return vals;
-  }
-
   function buildInputs(arg) {
     var o = arg || {};
     var topic = o.topic;
@@ -357,18 +267,8 @@
       .map(normalizeQuestion);
 
     var level = levelOf(topic.grade);
-    var limits = limitsOf(level);
     var subject = asText(opts.subject || subjectOf(topic));
     var tone = subjectTone(subject);
-
-    var stdMap = standardsMap(o.standardsById);
-    var standards = (Array.isArray(topic.standards) ? topic.standards : [])
-      .filter(function (s) { return s && s.id; })
-      .map(function (s) {
-        var id = asText(s.id);
-        return { id: id, confidence: asText(s.confidence), text: stdMap[id] || '' };
-      });
-    var noStandard = standards.length === 0;
 
     var prereqs = prereqsOf(topic.id, o.deps, o.topics, opts.maxPrereqs);
 
@@ -392,54 +292,25 @@
         if (n && whitelist.indexOf(n) < 0) whitelist.push(n);
       });
 
-    var namePool = [];
-    var idx = topicIndex(o.topics);
-    Object.keys(idx).forEach(function (k) {
-      var n = trimText(idx[k].name);
-      if (n && namePool.indexOf(n) < 0) namePool.push(n);
-    });
-
-    var questionText = allQuestions.map(function (q) { return q.prompt; }).join('\n');
-
     return {
       topicId: asText(topic.id),
       name: asText(topic.name),
       grade: topic.grade,
       level: level,
-      limits: limits,
       subject: subject,
       tone: tone,
       desc: normalize(asText(topic.description)).trim(),
       criteria: (Array.isArray(topic.mastery_criteria) ? topic.mastery_criteria : [])
         .slice(0, 3).map(function (c) { return trimText(c); }).filter(Boolean),
-      standards: standards,
       examples: examples,
       prereqs: prereqs,
-      whitelist: whitelist,
-      namePool: namePool,
-      questionText: questionText,
-      answerValues: answerValuesOf(allQuestions),
-      noStandard: noStandard
+      whitelist: whitelist
     };
   }
 
   /* ================================================================
    * 6. prompt（学科 × 学段）
    * ================================================================ */
-
-  function levelRuleText(inputs) {
-    var L = (inputs && inputs.limits) || limitsOf(inputs && inputs.level);
-    var parts = [
-      '每段字数上限：是什么 ' + L.segMax.what + ' 字、为什么要学 ' + L.segMax.why +
-      ' 字、怎么做 ' + L.segMax.how + ' 字、看个例子 ' + L.segMax.demo +
-      ' 字、容易错的地方 ' + L.segMax.trap + ' 字'
-    ];
-    if (L.sentenceMax !== null && L.sentenceMax !== undefined) {
-      parts.push('每句话不超过 ' + L.sentenceMax + ' 字（用句号、问号、感叹号、分号断句）');
-    }
-    parts.push('追问的回答不超过 ' + L.replyMax + ' 字');
-    return parts.join('；');
-  }
 
   function subjectLabel(key) {
     var t = TONES[key];
@@ -466,11 +337,12 @@
     lines.push(teacherLine(inputs));
     lines.push('【讲课语气】' + tone.tone + '。');
     lines.push('【不许做的事】' + tone.forbid.join('；') + '；数字只用素材里出现过的，素材里没有的人名、年份、作品名、实验数据一律不许编。');
-    lines.push('【语言档】' + (LEVEL_LABELS[inputs.level] || '') + '：' + levelRuleText(inputs) + '。');
     lines.push('【可以提到的知识点】' + whitelistLine(inputs));
     lines.push('【举例子】必须用下面素材里的例题；例子里的数必须来自那道题的题面；算出来的结果必须等于那道题的答案。');
-    lines.push('【课标】引用课标原句时必须带上它的 cms-2022 编号，编号只能是素材里给出的；素材没有课标就不要引课标。');
-    lines.push('【输出格式】只输出一个 JSON 对象，不要别的话，恰好 5 个键：what（是什么）、why（为什么要学）、how（怎么做，最多三步）、demo（看个例子）、trap（容易错的地方）；每个值都是纯中文字符串。');
+    lines.push('【不许引用课标】不要出现 `cms-2022` 之类的编号，也不要复述课标原文或课标要求。');
+    lines.push('【输出格式】只输出一个 JSON 对象，不要别的话，恰好 5 个键：what（是什么）、why（为什么要学）、how（怎么做）、demo（看个例子）、trap（容易错的地方）；每个值都是中文字符串，段内换行写成 \\n（JSON 转义）。');
+    lines.push('【排版】每段用分点或分步写，一点一行；不要写成一大段；例子先出题面，再分步解答，最后一行写「答案：」；不要出现课标编号或课标原文。');
+    lines.push('【每段形状】是什么 / 为什么要学 / 容易错的地方：写 1–3 个分点，一点一行。怎么做：写成分步，每步一行，以 1. 2. 3. 开头，不许写成「先做什么、然后做什么、最后做什么」一整句。看个例子：第一行写题面（必须是问句），中间分步解答，最后一行以「答案：」开头。');
     lines.push('【文字要求】短句，不要 Markdown（星号、井号、反引号），不要 LaTeX 反斜杠命令，不要代码块，不要省略号。');
     return { role: 'system', content: lines.join('\n') };
   }
@@ -483,14 +355,6 @@
     if (inputs.criteria && inputs.criteria.length) {
       L.push('【掌握标准】');
       inputs.criteria.forEach(function (c, i) { L.push((i + 1) + '. ' + c); });
-    }
-    L.push('【课标原文】');
-    if (inputs.noStandard) {
-      L.push('本点暂无对应课标条目。');
-    } else {
-      (inputs.standards || []).forEach(function (s) {
-        L.push('- ' + s.id + '：' + (s.text || '（课标原文缺失）'));
-      });
     }
     L.push('【例题】');
     if (!inputs.examples || !inputs.examples.length) {
@@ -506,7 +370,6 @@
       ? inputs.prereqs.map(function (p) { return p.name || p.id; }).join('、')
       : '这是起点，没有更早的先修知识点'));
     L.push('【学科语气】' + (inputs.tone ? inputs.tone.tone : ''));
-    L.push('【语言档】' + levelRuleText(inputs));
     return L.join('\n');
   }
 
@@ -532,18 +395,15 @@
 
   function chatSystem(inputs) {
     var tone = inputs.tone || subjectTone('');
-    var L = inputs.limits || limitsOf(inputs.level);
     var lines = [];
     lines.push(teacherLine(inputs));
     lines.push('学生刚听完你讲这个知识点，现在开始提问。');
     lines.push('【讲课语气】' + tone.tone + '。');
     lines.push('【不许做的事】' + tone.forbid.join('；') + '；数字只用素材里出现过的，素材里没有的人名、年份、作品名、实验数据一律不许编。');
-    lines.push('【回答长度】每次回答不超过 ' + L.replyMax + ' 字' +
-      (L.sentenceMax !== null && L.sentenceMax !== undefined ? '，每句不超过 ' + L.sentenceMax + ' 字' : '') + '。');
     lines.push('【一次只答一个问题】只回答与「' + inputs.name + '」有关的问题；学生问到别的知识点，先用一句话把话拉回本知识点。');
     lines.push('【不替学生做题】学生直接要答案时，让他自己算，问清卡在哪一步再帮他看。');
     lines.push('【可以提到的知识点】' + whitelistLine(inputs));
-    lines.push('【课标】引用课标原句必须带上素材里给出的 cms-2022 编号。');
+    lines.push('【不许引用课标】不要出现 `cms-2022` 之类的编号，也不要复述课标原文或课标要求。');
     lines.push('【输出格式】直接给纯文本回答，不要 JSON、不要小标题、不要 Markdown（星号、井号、反引号）、不要 LaTeX 反斜杠命令、不要代码块、不要省略号。');
     return { role: 'system', content: lines.join('\n') };
   }
@@ -672,14 +532,8 @@
   }
 
   /* ================================================================
-   * 9. 闸门（§5）
+   * 9. 闸门（只剩两道：G1 结构 / G5 文本卫生）
    * ================================================================ */
-
-  function sentencesOf(text) {
-    return asText(text).split(/[。？！;；]/)
-      .map(function (s) { return s.trim(); })
-      .filter(function (s) { return s.length > 0; });
-  }
 
   function textOfSegs(segs) {
     var parts = [];
@@ -689,9 +543,12 @@
     return parts.join('\n');
   }
 
-  /* G1 结构：5 键齐全 + 非空 + 每段字数 + 每句字数（sentenceMax 非 null 的档） */
-  function gateStructure(segs, inputs, reasons) {
-    var L = (inputs && inputs.limits) || limitsOf(inputs && inputs.level);
+  /* G1 结构（全布尔）：
+   *   1) 5 段齐全且都是字符串；
+   *   2) 每段 trim 后非空；
+   *   3) demo 必含问句（？或 ?）；
+   *   4) demo 必有一行以「答案」开头（只查有没有，不查第几行）。 */
+  function gateStructure(segs, reasons) {
     var missing = [];
     SEG_KEYS.forEach(function (k) {
       if (!segs || typeof segs[k] !== 'string') missing.push(SEG_TITLES[k]);
@@ -701,149 +558,19 @@
       return;
     }
     SEG_KEYS.forEach(function (k) {
-      var t = trimText(segs[k]);
-      if (!t) {
+      if (!trimText(segs[k])) {
         reasons.push({ gate: 'G1', why: SEG_TITLES[k] + '为空' });
-        return;
-      }
-      var n = charLen(t);
-      if (n > L.segMax[k]) {
-        reasons.push({ gate: 'G1', why: SEG_TITLES[k] + '太长（' + n + ' 字，上限 ' + L.segMax[k] + ' 字）' });
-      }
-      if (L.sentenceMax !== null && L.sentenceMax !== undefined && L.sentenceMax > 0) {
-        var bad = sentencesOf(t).filter(function (s) { return charLen(s) > L.sentenceMax; });
-        if (bad.length) {
-          reasons.push({ gate: 'G1', why: SEG_TITLES[k] + '有 ' + bad.length + ' 句超过 ' + L.sentenceMax + ' 字' });
-        }
       }
     });
-  }
-
-  /* G2 / G2r 不超纲：白名单外的知识点名一处都不许出现 */
-  function gateWhitelist(text, inputs, reasons, gate) {
-    var wl = (inputs && Array.isArray(inputs.whitelist)) ? inputs.whitelist.filter(Boolean) : [];
-    var pool = (inputs && Array.isArray(inputs.namePool)) ? inputs.namePool : [];
-    var masked = asText(text);
-    wl.slice().sort(byLengthDesc).forEach(function (n) {
-      if (n) masked = masked.split(n).join('\u0001');
+    var demo = asText(segs.demo);
+    if (!/[？?]/.test(demo)) {
+      reasons.push({ gate: 'G1', why: SEG_TITLES.demo + '缺少问句' });
+    }
+    var hasAnswer = demo.split('\n').some(function (line) {
+      return line.trim().indexOf('答案') === 0;
     });
-    var hits = [];
-    pool.slice().sort(byLengthDesc).forEach(function (n) {
-      if (!n || charLen(n) < MIN_NAME_LEN) return;
-      if (wl.indexOf(n) >= 0) return;
-      if (masked.indexOf(n) >= 0 && hits.indexOf(n) < 0) hits.push(n);
-    });
-    if (hits.length) {
-      reasons.push({ gate: gate || 'G2', why: '提到了白名单外的知识点：' + hits.join('、') });
-    }
-  }
-
-  var NUM_SRC = '-?\\d+(?:\\.\\d+)?';
-  var FRAC_SRC = NUM_SRC + '(?:\\s*[\\/／]\\s*' + NUM_SRC + ')?';
-  var OP_SRC = '\\+\\-−＋×÷*·⋅';
-  var EXPR_SRC = '(' + FRAC_SRC + ')\\s*([' + OP_SRC + '])\\s*(' + FRAC_SRC + ')';
-  var EQ_SRC = '(' + FRAC_SRC + '\\s*[' + OP_SRC + ']\\s*' + FRAC_SRC + ')\\s*[=＝]\\s*(' + FRAC_SRC + ')';
-
-  function firstNumInRe(text, re) {
-    var m, out = [];
-    while ((m = re.exec(asText(text))) !== null) {
-      out.push(m);
-      if (m.index === re.lastIndex) re.lastIndex++;
-    }
-    return out;
-  }
-
-  /* 一个数（或分数）是否作为独立的数出现在文本里（13 里不算有 3） */
-  function containsNumber(text, literal) {
-    var s = asText(text).replace(/\s+/g, '');
-    var l = asText(literal).replace(/\s+/g, '');
-    if (!l) return false;
-    var esc = l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp('(^|[^0-9.])' + esc + '(?![0-9])').test(s);
-  }
-
-  function operandPresent(text, op) {
-    if (containsNumber(text, op)) return true;
-    if (/^[-\d.]+\s*[\/／]\s*[-\d.]+$/.test(op)) {
-      var parts = op.split(/[\/／]/);
-      return containsNumber(text, parts[0]) && containsNumber(text, parts[1]);
-    }
-    return false;
-  }
-
-  /* G3 引用一致 / G3r 算式不矛盾
-   *  - 讲解轮（gate === 'G3'）：算式操作数必须出现在本点题面拼接文本里；demo 的结论数字必须是本点某道题的答案；
-   *  - 追问轮（gate === 'G3r'）：允许引用学生自己给的数，只核对「算式本身成立」；
-   *  - 两轮都做：`a 运算 b = c` 必须真的成立（含未知数的等式跳过，不做算术核对）；
-   *  - 讲解里没有任何算式 → 通过（卡面明写「不是拒」）。
-   *   注：按卡面口径「形如 a 运算 b」一律当算式，因此「1-2 年级」这类区间写法也会被当作算式核对
-   *   （prompt 已要求只用素材里的数）；宁可多拦一次让模型重试，也不放过编造的算式。 */
-  function gateNumbers(text, demoText, inputs, reasons, gate) {
-    var isExplain = gate === 'G3';
-    var qtext = asText(inputs && inputs.questionText);
-
-    if (isExplain && qtext) {
-      var missing = [];
-      firstNumInRe(text, new RegExp(EXPR_SRC, 'g')).forEach(function (m) {
-        [m[1], m[3]].forEach(function (raw) {
-          var op = asText(raw).replace(/\s+/g, '');
-          if (op && !operandPresent(qtext, op) && missing.indexOf(op) < 0) missing.push(op);
-        });
-      });
-      if (missing.length) {
-        reasons.push({ gate: gate, why: '算式里的数没出现在本点题面：' + missing.join('、') });
-      }
-    }
-
-    var bad = [];
-    firstNumInRe(text, new RegExp(EQ_SRC, 'g')).forEach(function (m) {
-      var lhs = asText(m[1]).replace(/\s+/g, '');
-      var rhs = asText(m[2]).replace(/\s+/g, '');
-      if (/[a-zA-Z]/.test(lhs)) return;          /* 含未知数：不做算术核对 */
-      var lv = evalNum(lhs), rv = evalNum(rhs);
-      if (lv !== null && rv !== null && Math.abs(lv - rv) > NUM_EPS && bad.indexOf(m[0]) < 0) {
-        bad.push(m[0]);
-      }
-    });
-    if (bad.length) {
-      reasons.push({ gate: gate, why: '算式与结果对不上：' + bad.join('，') });
-    }
-
-    if (isExplain) {
-      var answers = (inputs && Array.isArray(inputs.answerValues)) ? inputs.answerValues : [];
-      if (answers.length) {
-        var results = [];
-        firstNumInRe(asText(demoText),
-          new RegExp('(?:[=＝]|答案[是为：:])\\s*(' + FRAC_SRC + ')', 'g')).forEach(function (m) {
-          var v = evalNum(asText(m[1]).replace(/\s+/g, ''));
-          if (v !== null) results.push(v);
-        });
-        if (results.length) {
-          var hit = false;
-          results.forEach(function (r) {
-            answers.forEach(function (a) {
-              if (Math.abs(a - r) <= NUM_EPS) hit = true;
-            });
-          });
-          if (!hit) {
-            reasons.push({ gate: 'G3', why: '例子给出的结果不是本点题库里的答案' });
-          }
-        }
-      }
-    }
-  }
-
-  /* G4 课标忠实：出现 cms-2022: 就必须是本点 standards 里的 id；无课标点跳过 */
-  function gateStandards(text, inputs, reasons) {
-    if (!inputs || inputs.noStandard === true) return;
-    var ids = (inputs.standards || []).map(function (s) { return asText(s.id); });
-    var bad = [];
-    firstNumInRe(text, /cms-2022:[0-9A-Za-z._\-]+/g).forEach(function (m) {
-      var id = asText(m[0]).replace(/[.。,，;；、）)]+$/, '');
-      if (ids.indexOf(id) < 0 && bad.indexOf(id) < 0) bad.push(id);
-    });
-    if (bad.length) {
-      reasons.push({ gate: 'G4', why: '引用了本点没有的课标编号：' + bad.join('、') });
+    if (!hasAnswer) {
+      reasons.push({ gate: 'G1', why: SEG_TITLES.demo + '缺少以「答案」开头的行' });
     }
   }
 
@@ -862,39 +589,20 @@
     }
   }
 
-  function checkExplain(segs, inputs) {
+  function checkExplain(segs) {
     var reasons = [];
-    var ins = inputs || {};
     if (!segs || typeof segs !== 'object') {
       reasons.push({ gate: 'G1', why: '讲解结构缺失' });
       return { ok: false, reasons: reasons };
     }
-    var raw = textOfSegs(segs);
-    var norm = normalize(raw);
-    gateStructure(segs, ins, reasons);
-    gateWhitelist(norm, ins, reasons, 'G2');
-    gateNumbers(norm, normalize(asText(segs.demo)), ins, reasons, 'G3');
-    gateStandards(norm, ins, reasons);
-    gateHygiene(raw, reasons);
+    gateStructure(segs, reasons);
+    gateHygiene(textOfSegs(segs), reasons);
     return { ok: reasons.length === 0, reasons: reasons };
   }
 
-  function checkReply(text, inputs) {
+  function checkReply(text) {
     var reasons = [];
-    var ins = inputs || {};
-    var raw = asText(text);
-    var norm = normalize(raw);
-    var L = ins.limits || limitsOf(ins.level);
-
-    if (!raw.trim()) {
-      reasons.push({ gate: 'G6', why: '回复为空' });
-    } else if (charLen(raw.trim()) > L.replyMax) {
-      reasons.push({ gate: 'G6', why: '回复太长（' + charLen(raw.trim()) + ' 字，上限 ' + L.replyMax + ' 字）' });
-    }
-    gateWhitelist(norm, ins, reasons, 'G2r');
-    gateNumbers(norm, norm, ins, reasons, 'G3r');
-    gateStandards(norm, ins, reasons);
-    gateHygiene(raw, reasons);
+    gateHygiene(asText(text), reasons);
     return { ok: reasons.length === 0, reasons: reasons };
   }
 
@@ -921,7 +629,6 @@
       asText(h.level),
       asText(h.desc),
       (h.criteria || []).join('|'),
-      (h.standards || []).map(function (s) { return asText(s.id) + '=' + asText(s.text); }).join('|'),
       (h.examples || []).map(function (e) {
         return [asText(e.id), asText(e.prompt), asText(e.answer), asText(e.explanation)].join('~');
       }).join('|'),
@@ -986,13 +693,12 @@
   }
 
   /* ================================================================
-   * 11. 导出（名字固定；末尾几个是给卡 B 的便利出口，不改上面任何一个）
+   * 11. 导出（名字固定；末尾几个是给卡 B 的便利出口）
    * ================================================================ */
 
   return {
     /* 卡面 §3 固定 API */
     levelOf: levelOf,
-    limitsOf: limitsOf,
     subjectTone: subjectTone,
     prereqsOf: prereqsOf,
     buildInputs: buildInputs,
