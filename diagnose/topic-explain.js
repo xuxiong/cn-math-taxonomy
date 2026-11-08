@@ -234,6 +234,9 @@
 
   var DIFF_RANK = { basic: 0, standard: 1, challenge: 2, advanced: 3 };
 
+  /* 卡 t_8f63df21：素材只收「能完整回填」的那一道题的字段。
+   * 题面 / 选项 / 答案 / 答案原文 / 解析 由页面直出，模型只写分步解答 —— 素材照旧全给，
+   * 但 choices 只留 key/text 两个字符串字段（figure 等重字段会爆炸，不进素材）。 */
   function normalizeQuestion(q) {
     var out = {
       id: asText(q.id),
@@ -242,18 +245,38 @@
       prompt: normalize(asText(q.prompt)).trim(),
       answer: normalize(asText(q.answer)).trim(),
       explanation: normalize(asText(q.explanation)).trim(),
-      answerText: ''
+      answerText: '',
+      choices: []
     };
     if (out.type === 'choice' && Array.isArray(q.choices)) {
       for (var i = 0; i < q.choices.length; i++) {
         var c = q.choices[i];
-        if (c && asText(c.key) === out.answer) {
-          out.answerText = normalize(asText(c.text)).trim();
-          break;
+        if (!c) continue;
+        out.choices.push({ key: asText(c.key), text: normalize(asText(c.text)).trim() });
+        if (!out.answerText && asText(c.key) === out.answer) {
+          out.answerText = out.choices[out.choices.length - 1].text;
         }
       }
     }
     return out;
+  }
+
+  /* 选题（纯函数）：ordered 是已按难度升序的 [{q, i}]。页面只用 examples[0] 回填题面 / 选项 /
+   * 答案 / 解析，所以优先挑「五块能填满」的那道：选择题（≥2 选项）且有解析 > 有解析 > 排第一的那道。
+   * 返回题目对象，没有题返回 null。 */
+  function pickExample(ordered) {
+    var rows = Array.isArray(ordered) ? ordered : [];
+    if (!rows.length) return null;
+    var i, q;
+    for (i = 0; i < rows.length; i++) {
+      q = rows[i] && rows[i].q;
+      if (q && q.type === 'choice' && q.choices && q.choices.length >= 2 && trimText(q.explanation)) return q;
+    }
+    for (i = 0; i < rows.length; i++) {
+      q = rows[i] && rows[i].q;
+      if (q && trimText(q.explanation)) return q;
+    }
+    return rows[0].q;
   }
 
   function buildInputs(arg) {
@@ -272,8 +295,10 @@
 
     var prereqs = prereqsOf(topic.id, o.deps, o.topics, opts.maxPrereqs);
 
+    /* 卡 t_8f63df21：默认只挑 1 道 —— 渲染层靠 examples[0] 回填，多塞的题只会拉长素材并
+     * 把长尾推近 max_tokens。显式传 exampleCount 仍尊重（上限 5），第一道始终是 pickExample 挑的那道。 */
     var cap = (opts.exampleCount === null || opts.exampleCount === undefined)
-      ? 3 : Math.max(1, Math.min(5, Math.floor(Number(opts.exampleCount) || 3)));
+      ? 1 : Math.max(1, Math.min(5, Math.floor(Number(opts.exampleCount) || 1)));
     var ordered = allQuestions.map(function (q, i) { return { q: q, i: i }; });
     ordered.sort(function (a, b) {
       var ra = DIFF_RANK[a.q.difficulty];
@@ -283,7 +308,16 @@
       if (ra !== rb) return ra - rb;
       return a.i - b.i;
     });
-    var examples = ordered.slice(0, cap).map(function (row) { return row.q; });
+    var examples = [];
+    if (ordered.length) {
+      var picked = pickExample(ordered);
+      examples.push(picked);
+      if (cap > 1) {
+        ordered.forEach(function (row) {
+          if (examples.length < cap && row.q !== picked) examples.push(row.q);
+        });
+      }
+    }
 
     var whitelist = [];
     [asText(topic.name)].concat(prereqs.map(function (p) { return p.name; }))
@@ -342,8 +376,10 @@
     lines.push('【不许引用课标】不要出现 `cms-2022` 之类的编号，也不要复述课标原文或课标要求。');
     lines.push('【输出格式】只输出一个 JSON 对象，不要别的话，恰好 6 个键：what（是什么）、why（为什么要学）、how（怎么做）、demo（看个例子）、trap（容易错的地方）、suggests（你可能想问）；前 5 个值都是中文字符串，段内换行写成 \\n（JSON 转义）；suggests 是字符串数组，恰好 3 条，每条 ≤ 20 字，每条都是一个学生能直接问出口的具体问题。');
     lines.push('【suggests 怎么写】贴住本题讲解来问，不许问「你想知道什么」「还有什么不懂」「需要我讲什么」这类空问；不许重复上面 5 段标题；问法要符合学段（低年级用日常话，不出现术语和公式）。');
-    lines.push('【排版】每段用分点或分步写，一点一行；不要写成一大段；例子先出题面，再分步解答，最后一行写「答案：」；不要出现课标编号或课标原文。');
-    lines.push('【每段形状】是什么 / 为什么要学 / 容易错的地方：写 1–3 个分点，一点一行。怎么做：写成分步，每步一行，以 1. 2. 3. 开头，不许写成「先做什么、然后做什么、最后做什么」一整句。看个例子：第一行写题面（必须是问句），中间分步解答，最后一行以「答案：」开头。');
+    /* 卡 t_8f63df21：题面 / 选项 / 答案 / 解析由页面从题库直出，模型只写「看个例子」的分步解答 ——
+     * 排版与每段形状都不再要求它抄题面、抄答案行。 */
+    lines.push('【排版】每段用分点或分步写，一点一行；不要写成一大段；不要出现课标编号或课标原文。');
+    lines.push('【每段形状】是什么 / 为什么要学 / 容易错的地方：写 1–3 个分点，一点一行。怎么做：写成分步，每步一行，以 1. 2. 3. 开头，不许写成「先做什么、然后做什么、最后做什么」一整句。看个例子：只写分步解答，一步一行，写 2–5 行；不要写题面、不要写选项字母、不要写答案、不要写解析（页面会显示）。');
     lines.push('【文字要求】短句，不要 Markdown（星号、井号、反引号），不要 LaTeX 反斜杠命令，不要代码块，不要省略号。');
     /* 卡 H 作答纪律：这是给模型的写作纪律，不是闸门 —— 代码里不许因它新增任何判定。
      * 实测（DeepSeek-V4.1-Flash，cnm_p031 口算加法，同一 prompt、max_tokens=4096）：
@@ -368,6 +404,12 @@
     } else {
       inputs.examples.forEach(function (e, i) {
         L.push((i + 1) + '. 题面：' + e.prompt);
+        if (e.type === 'choice' && e.choices && e.choices.length) {
+          /* 选项进素材：模型才知道答案字母指的是哪个选项（页面也照这份直出）。 */
+          L.push('   选项：' + e.choices.map(function (c) {
+            return asText(c.key) + '. ' + asText(c.text);
+          }).join('｜'));
+        }
         L.push('   答案：' + e.answer + (e.answerText ? '（' + e.answerText + '）' : ''));
         if (e.explanation) L.push('   解析：' + e.explanation);
       });
@@ -618,8 +660,8 @@
   /* G1 结构（全布尔）：
    *   1) 5 段齐全且都是字符串；
    *   2) 每段 trim 后非空；
-   *   3) demo 必含问句（？或 ?）；
-   *   4) demo 必有一行以「答案」开头（只查有没有，不查第几行）。 */
+   *   3) demo（看个例子）只剩模型的「分步解答」，有效行数 < 2 视为没写分步。
+   * 题面 / 选项 / 答案 / 解析由页面从题库回填，既不进模型输出、也不进闸门判据。 */
   function gateStructure(segs, reasons) {
     var missing = [];
     SEG_KEYS.forEach(function (k) {
@@ -634,15 +676,9 @@
         reasons.push({ gate: 'G1', why: SEG_TITLES[k] + '为空' });
       }
     });
-    var demo = asText(segs.demo);
-    if (!/[？?]/.test(demo)) {
-      reasons.push({ gate: 'G1', why: SEG_TITLES.demo + '缺少问句' });
-    }
-    var hasAnswer = demo.split('\n').some(function (line) {
-      return line.trim().indexOf('答案') === 0;
-    });
-    if (!hasAnswer) {
-      reasons.push({ gate: 'G1', why: SEG_TITLES.demo + '缺少以「答案」开头的行' });
+    var demoRows = asText(segs.demo).split('\n').filter(function (row) { return trimText(row); });
+    if (demoRows.length < 2) {
+      reasons.push({ gate: 'G1', why: SEG_TITLES.demo + '缺少分步' });
     }
   }
 
@@ -752,7 +788,8 @@
   function cacheKey(inputs, model) {
     var h = inputs || {};
     var parts = [
-      'v1',
+      /* 卡 t_8f63df21：v1 → v2（demo 结构变成「页面回填 + 模型分步」，旧条目必须自然不命中）。 */
+      'v2',
       asText(h.topicId),
       asText(h.name),
       asText(h.grade),
@@ -855,6 +892,7 @@
     MAX_ENTRIES: MAX_ENTRIES,
     subjectOf: subjectOf,
     materialText: materialText,
+    pickExample: pickExample,
     segsToText: segsToText
   };
 });
