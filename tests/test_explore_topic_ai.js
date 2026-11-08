@@ -563,6 +563,61 @@ testAsync('7. 缓存命中：新模块实例 + 同一 storage，点击后零 pos
   assert.strictEqual(byClass(box2, 'tai-seg').length, 5, '缓存命中应直接渲染 5 段');
 });
 
+/* ================================================================ 7b. 截断自动重发（卡 D） */
+
+/* 截断响应：网关把 reasoning 计入 max_tokens，推理久的那些次正文一个字都没有。 */
+const TRUNCATED = { choices: [{ finish_reason: 'length', message: { content: '' } }] };
+
+function explainCacheKeys(storage) {
+  let n = 0;
+  for (let i = 0; i < storage.length; i++) {
+    if (storage.key(i).indexOf('cnmDiagnose.topicExplain.v1:') === 0) n++;
+  }
+  return n;
+}
+
+testAsync('7b. 首次 finish=length、第二次合规 → 恰好 2 次请求（同 messages 同 max_tokens）、5 段上屏、缓存已写', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function (body, n) {
+    return n === 1 ? TRUNCATED : dataOf(SEG_JSON);
+  });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_refetch_ok', '截断重发')));
+  await flush();
+
+  assert.strictEqual(gateway.calls.length, 2, '首次被截断 → 只重发 1 次（共 2 次请求）');
+  assert.deepStrictEqual(gateway.calls[1].messages, gateway.calls[0].messages, '重发必须用同样的 messages');
+  assert.strictEqual(gateway.calls[1].max_tokens, gateway.calls[0].max_tokens, '重发必须用同样的 max_tokens');
+  assert.strictEqual(gateway.calls[0].max_tokens, 111, 'max_tokens 取自配置的 maxTokens.explain');
+  assert.strictEqual(gateway.calls[1].model, gateway.calls[0].model, '重发沿用同一个 model');
+
+  assert.strictEqual(byClass(box, 'tai-seg').length, 5, '重发成功后讲解应正常上屏');
+  assert.strictEqual(byClass(box, 'tai-gate').length, 0, '重发成功不该出现「格式没成形」');
+  assert.strictEqual(byClass(box, 'tai-error').length, 0, '重发成功不该出现取不到讲解');
+  assert.strictEqual(explainCacheKeys(storage), 1, '拿到合规 5 段后应写入讲解缓存');
+});
+
+testAsync('7c. 两次都 finish=length → 恰好 2 次请求（不是 3 次）、显示「格式没成形」、缓存未写', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function () { return TRUNCATED; });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_refetch_bad', '两次都截断')));
+  await flush();
+
+  assert.strictEqual(gateway.calls.length, 2, '最多重发 1 次：两次都截断也只能是 2 次请求（不许 while 循环）');
+  assert.strictEqual(byClass(box, 'tai-seg').length, 0, '两次都截断不能出现 5 段');
+  const gate = byClass(box, 'tai-gate')[0];
+  assert.ok(gate, '应渲染 .tai-gate');
+  assert.strictEqual(textOf(gate), '这条没通过自动校验（格式没成形），换一次试试', '页面文案不变');
+  assert.ok(byClass(box, 'tai-retry').length === 1, '应给可见重试按钮');
+  assert.strictEqual(textOf(box).indexOf('正在重试'), -1, '不许给用户加「正在重试」的技术噪音');
+  assert.strictEqual(explainCacheKeys(storage), 0, '重发失败不写缓存');
+});
+
 /* ================================================================ 8. 红线 */
 
 test('8. 红线：topic-ai.js 无 innerHTML 一干；CSS 的 .tai- 选择器成规模', function () {
@@ -592,9 +647,12 @@ test('9. explore/index.html 首屏脚本恰好 5 个且不含 topic-ai.js', func
   assert.strictEqual(srcs.indexOf('topic-ai.js'), -1, 'topic-ai.js 不许进首屏');
 });
 
-test('额外：explore/topic-ai.js 不许自己发网络（无 fetch(）', function () {
+test('额外：explore/topic-ai.js 不许自己发网络（无 fetch( 调用）', function () {
   const src = fs.readFileSync(MODULE_PATH, 'utf8');
-  assert.strictEqual(src.indexOf('fetch('), -1, '网只走 DiagLLMGateway，模块里不许出现 fetch(');
+  /* 用词边界而不是裸 indexOf：卡 D 新增的 needsRefetch(...) 名字里含 "fetch(" 子串，
+   * 纯字符串匹配会误报；这条正则反而更强（`fetch (` 带空格也算命中）。 */
+  const hits = src.match(/(^|[^A-Za-z0-9_$])fetch\s*\(/g) || [];
+  assert.strictEqual(hits.length, 0, '网只走 DiagLLMGateway，模块里不许出现 fetch( 调用：' + hits.join(','));
 });
 
 Promise.all(ASYNC).then(function () {

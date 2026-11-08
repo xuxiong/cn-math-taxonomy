@@ -78,7 +78,73 @@
 
 本次验收只验证**格式是否成形**与**文本卫生**；概念正确性、可读性、是否适合该年级**未经验证**。
 
-## 7. 原始返回
+## 7. 卡 D 修后重跑
+
+运行时间：2026-11-08T01:40:53.209Z
+
+本节是**卡 D**（`explain` 预算 2048→4096 + 截断自动重发一次）改完之后，用**同一个脚本、同一套采样规则**的重跑读数。
+§0–§6 是卡 C 的原始读数（讲解 12/20 那一批），原样保留、未被本节覆盖；两节数字可直接对照。
+
+### 7.1 本次运行参数
+
+- 网关：http://127.0.0.1:3000/v1/chat/completions
+- model：`default`，temperature：0
+- max_tokens：讲解 **4096**（卡 C 为 2048，见 §0）/ 追问 2048（`tutor` 未动）
+- 超时：讲解 30000ms / 追问 30000ms（未动）
+- 截断重发：**2 次**（判据 = `diagnose/topic-explain.js` 的 `needsRefetch`：`finish_reason=length` 或正文 trim 后为空；同一 messages、同一 max_tokens，每点最多重发 1 次）
+- 请求次数：82（讲解 20 + 追问 60 + 截断重发 2），HTTP 200：82；HTTP 失败重试：1 次
+
+### 7.2 合规率（对照卡 C §2）
+
+| 项 | 卡 C | 卡 D 修后 | 变化 |
+|---|---|---|---|
+| 讲解合规 | 12/20 | **19/20** | +7 |
+| 追问合规 | 60/60 | **60/60** | +0 |
+
+判定口径与卡 C 完全相同：`checkExplain(segs)` / `checkReply(text)` 的 `ok` 与 `reasons[].gate`；`parseExplain` 切不出 5 段也记 G1。
+
+### 7.3 拒因计数（gate × why）
+
+| gate | why | 出现次数 | 出现在 |
+|---|---|---|---|
+| G1 | parseExplain 无法切出 5 段：空返回 | 1 | 讲解 |
+
+### 7.4 截断与耗时（对照卡 C §4 / §5）
+
+| 项 | 卡 C | 卡 D 修后 |
+|---|---|---|
+| 讲解 `finish_reason=length` | 8/20 | 0/20 |
+| 讲解响应内容为空串 | 5/20 | 1/20 |
+| 讲解 `completion_tokens` 撞满 `maxTokens.explain` | 8/8（length 条全撞满，上限 2048） | 0/0（上限 4096；本批没有 length 条） |
+| 讲解首答命中 `needsRefetch` | —（该机制卡 D 才有） | 2/20 |
+| 截断重发 | — | 2 次 |
+| 重发后恢复 / 重发后仍截断 | — | 2 / 0 |
+| 讲解平均耗时 | 9177ms（单次响应） | 12928ms（含重发，共 20 点） |
+| 追问平均耗时 | 3947ms | 3830ms（共 60 次） |
+
+耗时口径：卡 C 记单次响应；卡 D 的讲解耗时把重发那一次也算进去（重发本身要等一次完整生成），因此两者不是严格同口径，重发次数见上一行。
+
+### 7.5 重发过的点
+
+| # | 学科 | topicId | 首答 finish | 首答正文 | 重发后 finish | 重发后合规 |
+|---|---|---|---|---|---|---|
+| 1 | math | cnm_001 | length | 空 | stop | 合规 |
+| 4 | english | cne_h002 | length | 有（截断） | stop | 合规 |
+
+### 7.6 仍不合规的点（如实记录，不修饰）
+
+| # | 学科 | topicId | http | attempts | finish | 首答需重发 | 原始返回片段 | 拒因 |
+|---|---|---|---|---|---|---|---|---|
+| 17 | biology | cnb_j001 | 200 | 2 | (空) | 否 | `{"retCode":9} ` | G1 parseExplain 无法切出 5 段：空返回 |
+
+判读：`finish_reason` 为空、原始返回是网关自己的错误体（不是模型输出）时，**不属于**卡 D 的截断判据 —— `needsRefetch` 对缺 `choices` 的响应明确返回 false，交由既有的「网关失败 / 格式没成形」分支，因此不重发，如实记 G1。
+
+### 7.7 原始返回
+
+- 逐条：`tmp/o4-live-raw/<topicId>.json`（20 个文件，新增字段 `explain.firstFinish` / `explain.firstEmpty` / `explain.firstNeedsRefetch` / `explain.refetched`）
+- `tmp/` 在 `.gitignore` 内，不入库。
+
+## 8. 原始返回
 
 - 目录：`tmp/o4-live-raw/`（20 个文件，文件名 `<topicId>.json`，含每条请求的 messages 判定结果、HTTP 码、耗时、模型原始返回文本）
 - `tmp/` 在 `.gitignore` 内，不入库。

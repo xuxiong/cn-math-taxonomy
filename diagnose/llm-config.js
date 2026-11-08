@@ -67,10 +67,16 @@
 
   var maxTokens = {
     /* O3-6：max_tokens 单一出处。
-     * 讲解输出实测 300-800 token 足够 —— 2048 留足余量且不放大计费（追问的预算见下，另行说明）；
+     * 预算按输出形态分档：讲解 / 追问的 JSON 要带 reasoning 长尾，出题的 JSON 最长（见下）。
      * 不写裸数字，避免「改一处漏一处」（O3-4 探测漏改 max_tokens:100 即此类事故）。
      * 改这两个值之前先看 tests/test_engine.js 的 max_tokens 契约断言。 */
-    explain: 2048,    /* 三步讲解（prompt/hint/reveal 的 JSON） */
+    /* 三步讲解（prompt/hint/reveal 的 JSON）。卡 C 真机实测（20 点各 1 次，DeepSeek-V4.1-Flash，
+     * 数字见 docs/o4-live-acceptance.md §0/§4/§5）：2048 下 8/20 次 finish_reason=length，正文空串 5 条、
+     * JSON 被截断 3 条，completion_tokens 8/8 正好撞满 2048 —— 网关把 reasoning_content 计入
+     * max_tokens，讲解要吐 5 段中文，2048 不够。取 4096，与下面的 followup 同档（followup 同一结论：
+     * 2048 仍有 3/10 被 reasoning 吃光，4096：37/37 finish=stop）。max_tokens 只是上限、按实际用量计费，
+     * 抬高上限不额外花钱；<= 4096 是 test_engine.js 既有的防过度放大红线，别改成 8192。 */
+    explain: 4096,
     /* 讲解中追问：单轮，但输出是 JSON 对象 {text, graph|null}（不是纯文本）。
      * JSON 比纯文本多吃 token（键名、引号、转义 + graph 结构化参数），且推理模型的
      * reasoning 会先吃预算 —— 正文可能一个字都吐不出来（finish_reason=length、content 空串
