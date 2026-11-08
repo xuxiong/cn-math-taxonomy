@@ -71,6 +71,88 @@ const RAW = path.join(OUT, 'raw');
 fs.mkdirSync(RAW, { recursive: true });
 
 /* ================================================================
+ * 0b. 文档落点与「卡 H 只 upsert 本节」的约定
+ *    §1–§8 是卡 G 那一批的原始读数，脚本当年是整份覆盖写的；从卡 H 起只维护 §9。
+ * ================================================================ */
+
+const DOC_SMOKE = path.join(ROOT, 'docs', 'o4-browser-smoke.md');
+const CARD_H_HEADING = '## 9. 卡 H 修后重跑：作答纪律 + 截断重发升档';
+
+/** 有则整段替换、无则追加到文末（与 scripts/o4-live-acceptance.mjs 的同名函数同款）。 */
+function upsertSection(docPath, heading, sectionText) {
+  let cur = '';
+  try { cur = fs.readFileSync(docPath, 'utf8'); } catch (e) { cur = ''; }
+  const block = sectionText.replace(/\s*$/, '\n\n');
+  const at = cur.indexOf(heading);
+  if (at >= 0) {
+    const rest = cur.slice(at + heading.length);
+    const m = /\n## /.exec(rest);
+    const end = m ? at + heading.length + m.index + 1 : cur.length;
+    fs.writeFileSync(docPath, cur.slice(0, at) + block + cur.slice(end));
+    return 'replaced';
+  }
+  fs.mkdirSync(path.dirname(docPath), { recursive: true });
+  fs.writeFileSync(docPath, cur.replace(/\s*$/, '\n\n') + block);
+  return 'appended';
+}
+
+/** 卡 H 一节：只写本次运行的事实与计数（3 个一年级点 + 请求数 + 耗时），不做质量判断。 */
+function cardHSection(f) {
+  const sec = [];
+  const rows = f.topics || [];
+  const msAvg = rows.length ? Math.round(rows.reduce((s, t) => s + t.ms, 0) / rows.length) : 0;
+  const explainReqs = rows.reduce((s, t) => s + (t.requests ? t.requests.explainChat : 0), 0);
+  sec.push(CARD_H_HEADING);
+  sec.push('');
+  sec.push('> 本节由 `scripts/o4-browser-smoke.mjs` 在**改完卡 H（讲解作答纪律 + 截断重发升档 `explainRetry` + `timeouts.chat` 45s）之后**重跑写入。§1–§8 是卡 G 那一批的历史读数，原样保留、未被覆盖。');
+  sec.push('');
+  sec.push('- 本次运行：`' + f.runId + '`（' + f.at + '）');
+  sec.push('- 运行环境：node `' + f.node + '`；Chrome `' + f.chromePath + '`');
+  sec.push('- 页面：`' + f.pageBase + '/explore/?t=<n>#<topicId>`（serve.js 端口 ' + f.servePort + '），模型配置注入与 §1 相同');
+  sec.push('- 请求计数口径与 §1 相同：页面内包 `window.fetch`，只数「点按钮 → 5 段上屏」期间的增量');
+  sec.push('');
+  sec.push('### 9.1 三个知识点结果（对照 §1 卡 G 那一批）');
+  sec.push('');
+  sec.push('| topicId | 名称 | 5 段出齐 | demo 有问句 | demo 有答案行 | 请求数（讲解 / 全部 fetch） | 耗时 | 面板状态 |');
+  sec.push('|---|---|---|---|---|---|---|---|');
+  for (const t of rows) {
+    sec.push('| `' + t.topicId + '` | ' + (t.note || '') + ' | ' + (t.allFive ? '是（' + t.segCount + ' 段）' : '否（' + t.segCount + ' 段）') +
+      ' | ' + (t.demoHasQuestion ? '是' : '否') + ' | ' + (t.demoHasAnswerLine ? '是' : '否') +
+      ' | ' + (t.requests ? t.requests.explainChat : '?') + ' / ' + (t.requests ? t.requests.allTotal : '?') +
+      ' | ' + (t.ms / 1000).toFixed(1) + 's | `' + t.status + '` |');
+  }
+  sec.push('');
+  sec.push('- 三个点讲解耗时合计 ' + (rows.reduce((s, t) => s + t.ms, 0) / 1000).toFixed(1) + 's，**平均 ' + (msAvg / 1000).toFixed(1) + 's**');
+  sec.push('- 讲解请求合计 ' + explainReqs + ' 次（3 个点各 1 次为下限；多出来的那次就是页面按 `needsRefetch` 重发，重发那一次 `max_tokens` 用 `explainRetry`）');
+  sec.push('- 卡 G 那一批（§1，runId `20261108024031`）：`cnm_p006` 16.0s / `cnm_p019` 10.2s / `cnm_p031` 55.3s（2 次请求、0 段、面板 `gate`）—— 两批数字可直接对照。');
+  sec.push('');
+  sec.push('### 9.2 逐点请求数（重发发生点）');
+  sec.push('');
+  sec.push('| topicId | 讲解请求数 | 是否发生重发 | 全部 fetch | 耗时 |');
+  sec.push('|---|---|---|---|---|');
+  for (const t of rows) {
+    const n = t.requests ? t.requests.explainChat : 0;
+    sec.push('| `' + t.topicId + '` | ' + n + ' | ' + (n > 1 ? '是（首答命中 `needsRefetch`）' : '否') + ' | ' + (t.requests ? t.requests.allTotal : '?') + ' | ' + (t.ms / 1000).toFixed(1) + 's |');
+  }
+  sec.push('');
+  sec.push('### 9.3 其他取证（同一脚本，口径与 §2 / §5 相同）');
+  sec.push('');
+  if (f.p006 && f.p006.checks) {
+    sec.push('- `cnm_p006` 七条取证：' + f.p006.checks.filter((c) => c.pass).length + '/' + f.p006.checks.length + ' 通过' +
+      (f.p006.checks.filter((c) => !c.pass).length ? '（不通过：' + f.p006.checks.filter((c) => !c.pass).map((c) => '第 ' + c.no + ' 条').join('、') + '）' : ''));
+  }
+  sec.push('- 页面 console.error / uncaught exception：' + f.errors.consoleError.length + ' / ' + f.errors.exception.length);
+  if (f.cleanup) {
+    sec.push('- 收尾：本次自己的 Chrome 进程 ' + f.cleanup.ourProcsAfter + ' 个、主 pid 存活=' + f.cleanup.mainPidAliveAfter + '、serve 端口已释放=' + f.cleanup.servePortReleased);
+  }
+  sec.push('- 截图与原始报文：`tmp/o4-smoke/`（`tmp/` 在 `.gitignore` 内，不入库）');
+  sec.push('');
+  sec.push('本节同样不含任何「孩子能听懂 / 讲得清楚 / 质量好」类判断；只有 DOM 读数、布尔结论与请求计数。');
+  sec.push('');
+  return sec.join('\n');
+}
+
+/* ================================================================
  * 1. 极小 CDP 客户端（与 tests/test_children_browser.js 同款，无依赖）
  * ================================================================ */
 
@@ -1226,8 +1308,14 @@ function writeRawAndDoc() {
   L.push('本文件不含任何「孩子能听懂 / 讲得清楚 / 质量好」类判断；只有 DOM 读数、布尔结论与请求计数。');
   L.push('');
 
-  fs.writeFileSync(path.join(ROOT, 'docs', 'o4-browser-smoke.md'), L.join('\n'));
-  console.log('[o4-smoke] 报告：docs/o4-browser-smoke.md');
+  const fullText = L.join('\n');
+  fs.mkdirSync(OUT, { recursive: true });
+  fs.writeFileSync(path.join(OUT, 'report-' + facts.runId + '.md'), fullText);
+  /* 卡 H：docs/o4-browser-smoke.md 里 §1–§8 是卡 G 的原始读数（本脚本当年是整份写），
+   * 重跑不许整份覆盖 —— 从卡 H 起只 upsert 本节，整份报告落 tmp/ 留底。 */
+  const mode = upsertSection(DOC_SMOKE, CARD_H_HEADING, cardHSection(facts));
+  console.log('[o4-smoke] 报告：docs/o4-browser-smoke.md（' + (mode === 'replaced' ? '§9 已整段替换，§1–§8 未动' : '§9 已追加，§1–§8 未动') + '）');
+  console.log('[o4-smoke] 整份报告留底：' + path.relative(ROOT, path.join(OUT, 'report-' + facts.runId + '.md')));
   console.log('[o4-smoke] 截图与原始报文：' + path.relative(ROOT, OUT));
 }
 
