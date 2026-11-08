@@ -1246,6 +1246,181 @@ testAsync('卡S-6. suggests 全是垃圾（非数组 / 空问 / 标题 / 超长�
   }
 });
 
+/* ================================================================ 卡AI（t_66f641d9）：讲解内容明示「AI 生成」
+ * 口径：横幅是渲染层的装饰 —— 不进缓存条目、不改 cacheKey；loading 与 ready（含缓存命中）
+ * 都要在，且必须是 5 段之前的第一位。「AI 建议」标只在真有 chip 时出现（有标就要有 chip）。 */
+
+const BANNER = '本页讲解由 AI 生成，未经人工审核（题面、答案来自题库）';
+const CHIP_LABEL = 'AI 建议';
+
+/** 唯一一条 .tai-banner（不是每段各挂一条）。 */
+function bannerOf(box) {
+  const list = byClass(box, 'tai-banner');
+  assert.strictEqual(list.length, 1, '应恰好有 1 条 .tai-banner，实际 ' + list.length);
+  return list[0];
+}
+
+/** 横幅相对第一个 .tai-seg 的 DOM 顺序（比 node 在 children 里的下标，不比字符串）。 */
+function assertBannerBeforeSegs(box, where) {
+  const banner = bannerOf(box);
+  assert.strictEqual(textOf(banner), BANNER, where + '：横幅文本必须逐字一致');
+  const segs = byClass(box, 'tai-seg');
+  assert.strictEqual(segs.length, 5, where + '：5 段应在');
+  const bi = box.children.indexOf(banner);
+  const si = box.children.indexOf(segs[0]);
+  assert.ok(bi >= 0 && si >= 0, where + '：横幅与第一个 .tai-seg 都必须是面板的直接子节点');
+  assert.ok(bi < si, where + '：横幅必须在第一个 .tai-seg 之前（DOM 顺序 banner=' + bi + ' seg=' + si + '）');
+  assert.strictEqual(bi, 0, where + '：横幅应是面板首个子节点，实际下标 ' + bi);
+  assert.strictEqual(byClass(segs[0], 'tai-banner').length, 0, where + '：横幅不许挂进段里');
+  return banner;
+}
+
+testAsync('卡AI-1. ready：.tai-banner 文本逐字，且在 5 段之前（DOM 顺序，且为面板首位）；底部 badge 仍在', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function () { return dataOf(SEG_JSON); });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_banner_ready', '加法')));
+
+  /* loading 阶段已经有一条（下面卡AI-2 专测），这里只判 ready 的最终形态。 */
+  await flush();
+
+  assert.strictEqual(gateway.calls.length, 1, '只发一次讲解请求');
+  assertBannerBeforeSegs(box, 'ready');
+  /* 卡面 §1③：底部 footer 的 BADGE 保留，不因为加了横幅就删。 */
+  assert.strictEqual(textOf(byClass(box, 'tai-badge')[0]), BADGE, '底部 badge 必须保留原文案');
+});
+
+testAsync('卡AI-2. loading：点击后、响应回来前 .tai-banner 已存在且在面板首位；回包后仍在 5 段之前', async function () {
+  const storage = makeStorage();
+  const gateway = makeManualGateway();
+  const mod = loadModule(storage, makeConfig(true), gateway);
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_banner_loading', '加法')));
+
+  /* 手动网关：此刻请求已发出、还没回包 —— 就是「讲解正在准备」的那一屏。 */
+  assert.strictEqual(gateway.calls.length, 1, '前提：讲解请求已发出');
+  assert.strictEqual(byClass(box, 'tai-seg').length, 0, '前提：此刻 5 段还没上屏');
+  const loadingBanner = bannerOf(box);
+  assert.strictEqual(textOf(loadingBanner), BANNER, 'loading 态横幅文本必须逐字一致');
+  assert.strictEqual(box.children.indexOf(loadingBanner), 0, 'loading 态横幅必须是面板首个子节点');
+
+  gateway.resolveAll(dataOf(SEG_JSON));
+  await flush();
+  assertBannerBeforeSegs(box, 'loading → ready');
+});
+
+testAsync('卡AI-3. 缓存命中：预置缓存 → 零请求上屏，横幅仍在且仍在 5 段之前；横幅不进缓存条目', async function () {
+  const storage = makeStorage();
+  const m1 = loadModule(storage, makeConfig(true), makeGateway(function () { return dataOf(segJsonWith(SUG3)); }));
+  const t = topic('cnm_banner_cache', '缓存');
+  m1.CnmTopicAI.mount(makeNode('div'), autoCtx(t));
+  await flush();
+
+  const hit = cacheEntryOf(storage);
+  assert.ok(hit, '前提：缓存已写');
+  assert.strictEqual(hit.key.indexOf('cnmDiagnose.topicExplain.v1:'), 0, '缓存键命名空间不变（cacheKey 版本没被本卡动过）');
+  assert.strictEqual(JSON.stringify(hit.value).indexOf('本页讲解由'), -1, '横幅不许塞进缓存数据（老缓存命中时也得出现）');
+
+  const g2 = makeGateway(function () { return dataOf(SEG_JSON); });
+  const m2 = loadModule(storage, makeConfig(true), g2);
+  const box2 = makeNode('div');
+  m2.CnmTopicAI.mount(box2, ctxOf(t));
+  byClass(box2, 'tai-btn')[0].click();
+  await flush();
+
+  assert.strictEqual(g2.calls.length, 0, '缓存命中：零请求');
+  assertBannerBeforeSegs(box2, '缓存命中');
+});
+
+testAsync('卡AI-4. chips 标：有 suggests → 行内有「AI 建议」标（与 chips 同行、在第一条 chip 之前）', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function () { return dataOf(segJsonWith(SUG3)); });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_banner_chip', '加法')));
+  await flush();
+
+  const rows = byClass(box, 'tai-suggests');
+  assert.strictEqual(rows.length, 1, '应有一行 chips');
+  const labels = byClass(rows[0], 'tai-chip-label');
+  assert.strictEqual(labels.length, 1, 'chips 行应有且只有 1 个「AI 建议」标，实际 ' + labels.length);
+  assert.strictEqual(textOf(labels[0]), CHIP_LABEL, '标文案必须逐字为「AI 建议」');
+
+  const chips = byClass(box, 'tai-suggest');
+  assert.strictEqual(chips.length, 3, '3 条 chip 照旧');
+  assert.ok(rows[0].children.indexOf(labels[0]) < rows[0].children.indexOf(chips[0]),
+    '标必须在第一条 chip 之前（同一行前置，不是第二条横幅）');
+  assert.strictEqual(byClass(box, 'tai-suggests').length, 1, '标不许另开一行 / 另起一条横幅');
+});
+
+testAsync('卡AI-4b. 没有 chip 就不许有孤零零的「AI 建议」标（suggests 缺失 / 被软校验剔空 / 老缓存）', async function () {
+  /* (a) 响应里没有 suggests */
+  const s1 = makeStorage();
+  const g1 = makeGateway(function () { return dataOf(SEG_JSON); });
+  const m1 = loadModule(s1, makeConfig(true), g1);
+  const b1 = makeNode('div');
+  m1.CnmTopicAI.mount(b1, autoCtx(topic('cnm_banner_nochip', '加法')));
+  await flush();
+  assert.strictEqual(byClass(b1, 'tai-seg').length, 5, '前提：5 段照常');
+  assert.strictEqual(byClass(b1, 'tai-suggest').length, 0, '前提：没有 chip');
+  assert.strictEqual(byClass(b1, 'tai-chip-label').length, 0, '没有 chip 就不许出现「AI 建议」标');
+
+  /* (b) suggests 有但全被软校验剔空 */
+  const s2 = makeStorage();
+  const g2 = makeGateway(function () { return dataOf(segJsonWith(['你想知道什么？'])); });
+  const m2 = loadModule(s2, makeConfig(true), g2);
+  const b2 = makeNode('div');
+  m2.CnmTopicAI.mount(b2, autoCtx(topic('cnm_banner_garbage', '加法')));
+  await flush();
+  assert.strictEqual(byClass(b2, 'tai-seg').length, 5, '前提：5 段照常');
+  assert.strictEqual(byClass(b2, 'tai-suggest').length, 0, '前提：垃圾条目不出 chip');
+  assert.strictEqual(byClass(b2, 'tai-chip-label').length, 0, '被剔空后也不许留孤标');
+
+  /* (c) 老缓存（无 suggests 字段）命中 */
+  const s3 = makeStorage();
+  const m3 = loadModule(s3, makeConfig(true), makeGateway(function () { return dataOf(SEG_JSON); }));
+  const t3 = topic('cnm_banner_oldcache', '老缓存');
+  m3.CnmTopicAI.mount(makeNode('div'), autoCtx(t3));
+  await flush();
+  const hit = cacheEntryOf(s3);
+  assert.ok(hit, '前提：缓存已写');
+  delete hit.value.suggests;
+  s3.setItem(hit.key, JSON.stringify(hit.value));
+  const g4 = makeGateway(function () { return dataOf(SEG_JSON); });
+  const m4 = loadModule(s3, makeConfig(true), g4);
+  const b4 = makeNode('div');
+  m4.CnmTopicAI.mount(b4, ctxOf(t3));
+  byClass(b4, 'tai-btn')[0].click();
+  await flush();
+  assert.strictEqual(g4.calls.length, 0, '前提：老缓存命中零请求');
+  assert.strictEqual(byClass(b4, 'tai-suggest').length, 0, '前提：老缓存没有 chips');
+  assert.strictEqual(byClass(b4, 'tai-chip-label').length, 0, '老缓存命中也不许留孤标');
+});
+
+testAsync('卡AI-3b. 老缓存（无 suggests 字段）命中：横幅照样在、照样在 5 段之前，零请求', async function () {
+  const storage = makeStorage();
+  const m1 = loadModule(storage, makeConfig(true), makeGateway(function () { return dataOf(SEG_JSON); }));
+  const t = topic('cnm_banner_oldhit', '老缓存横幅');
+  m1.CnmTopicAI.mount(makeNode('div'), autoCtx(t));
+  await flush();
+
+  const hit = cacheEntryOf(storage);
+  assert.ok(hit, '前提：缓存已写');
+  delete hit.value.suggests;                       /* 改版前的条目：没有 chips 字段 */
+  storage.setItem(hit.key, JSON.stringify(hit.value));
+
+  const g2 = makeGateway(function () { return dataOf(SEG_JSON); });
+  const m2 = loadModule(storage, makeConfig(true), g2);
+  const box2 = makeNode('div');
+  m2.CnmTopicAI.mount(box2, ctxOf(t));
+  byClass(box2, 'tai-btn')[0].click();
+  await flush();
+
+  assert.strictEqual(g2.calls.length, 0, '老缓存命中：零请求');
+  assertBannerBeforeSegs(box2, '老缓存（无 suggests）命中');
+});
+
 /* ================================================================ 8. 红线 */
 
 test('8. 红线：topic-ai.js 无 innerHTML 一干；CSS 的 .tai- 选择器成规模', function () {
