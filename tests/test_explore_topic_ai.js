@@ -237,9 +237,23 @@ function autoCtx(t, questions, deps, topics) {
   return ctx;
 }
 
-const SEG = { what: '甲\n乙', why: '丙', how: '1. 第一步\n2. 第二步', demo: '一共有几个苹果？\n先数一数。\n答案：3 个', trap: '丁' };
+/* 卡 t_8f63df21：demo 段只剩模型的分步解答 —— 题面 / 选项 / 答案 / 解析由页面从题库回填。 */
+const SEG = { what: '甲\n乙', why: '丙', how: '1. 第一步\n2. 第二步', demo: '1. 先数一数。\n2. 再接着数。', trap: '丁' };
 const SEG_JSON = JSON.stringify(SEG);
 const REPLY = '好的，先说题意。';
+
+/* 回填用的题库原文（选择题：题面 + A–D 四条选项 + 字母答案 + 答案原文 + 解析）。 */
+const QS = [{
+  id: 'q_choice_1', topicId: 'cnm_demo', difficulty: 'basic', type: 'choice',
+  prompt: '盘子里有 2 个苹果，又放进 1 个，一共有几个苹果？',
+  choices: [{ key: 'A', text: '2 个' }, { key: 'B', text: '3 个' }, { key: 'C', text: '4 个' }, { key: 'D', text: '5 个' }],
+  answer: 'B', explanation: '2 加 1 等于 3，所以盘子里有 3 个苹果。'
+}];
+/* 非选择题（没有选项，答案行是纯答案）。 */
+const QS_PLAIN = [{
+  id: 'q_plain_1', topicId: 'cnm_demo', difficulty: 'basic', type: 'numeric',
+  prompt: '解方程 x² + 4x + 3 = 0。', answer: '-3，-1/2', explanation: '分解成 (x+3)(x+1)=0。'
+}];
 
 /* ================================================================ 源码提取（注释 / 字符串里的括号不算） */
 
@@ -402,14 +416,14 @@ testAsync('2. isConfigured() === false：postOnce / fetch 零调用，渲染「�
 
 /* ================================================================ 3. 成功路径 */
 
-testAsync('3. 成功：5 段齐全；how 有 ol 且去双序号；demo 有题面 / 分步 / 折叠答案；badge 文案严格', async function () {
+testAsync('3. 成功：5 段齐全；how 有 ol 且去双序号；demo 题面/选项/答案/解析全部来自题库（页面直出）；badge 文案严格', async function () {
   const storage = makeStorage();
   const gateway = makeGateway(function () { return dataOf(SEG_JSON); });
   const mod = loadModule(storage, makeConfig(true), gateway);
 
   const box = makeNode('div');
   const t = topic('cnm_ok', '加法');
-  mod.CnmTopicAI.mount(box, autoCtx(t));
+  mod.CnmTopicAI.mount(box, autoCtx(t, QS));
   await flush();
 
   const segs = byClass(box, 'tai-seg');
@@ -426,15 +440,66 @@ testAsync('3. 成功：5 段齐全；how 有 ol 且去双序号；demo 有题面
   assert.ok(textOf(lis[0]).indexOf('1.') < 0, 'how 的 li 文本不含 1.');
 
   const demo = segs[3];
-  assert.strictEqual(textOf(byClass(demo, 'tai-q')[0]), '一共有几个苹果？', 'demo 题面应是含问号的那行');
+  /* 题面：题库原文，模型文本里没有这句。 */
+  const q = byClass(demo, 'tai-q')[0];
+  assert.ok(q, 'demo 段应有 .tai-q');
+  assert.strictEqual(textOf(q), QS[0].prompt, '题面必须是题库原文（页面回填）');
+  /* 模型文本里没有题面 → 题面只出现 1 次（若两边都拼会重复）。 */
+  assert.strictEqual(textOf(demo).split(QS[0].prompt).length - 1, 1, '题面不许重复出现（模型不再抄）');
+
+  /* 选项：4 条，A. 原文 逐字。 */
+  const opts = byClass(demo, 'tai-opts')[0];
+  assert.ok(opts, '选择题应渲染 .tai-opts');
+  const optLis = byTag(opts, 'li');
+  assert.strictEqual(optLis.length, 4, '4 条选项都要在');
+  assert.deepStrictEqual(optLis.map(textOf), ['A. 2 个', 'B. 3 个', 'C. 4 个', 'D. 5 个']);
+
+  /* 折叠答案：字母 + 原文 + 解析，全部回填。 */
   const details = byTag(demo, 'details')[0];
   assert.ok(details, 'demo 段应有 details 折叠答案');
   assert.strictEqual(textOf(byTag(details, 'summary')[0]), '查看答案', 'summary 文字应为「查看答案」');
-  assert.ok(textOf(details).indexOf('答案：3 个') >= 0, '折叠块应含答案正文');
+  const dText = textOf(details);
+  assert.ok(dText.indexOf('答案：B 3 个') >= 0, '折叠块应含「答案：B 3 个」，实际：' + dText);
+  assert.ok(dText.indexOf(QS[0].explanation) >= 0, '折叠块应含题库解析原文，实际：' + dText);
 
   const badge = byClass(box, 'tai-badge')[0];
   assert.strictEqual(textOf(badge), BADGE, 'badge 文案必须严格为「AI 生成 · 未经人工审核」');
   assert.ok(byClass(box, 'tai-again').length === 1, '应有「换个说法重讲」按钮');
+});
+
+testAsync('3a. demo：非选择题 → 不出 .tai-opts，答案行是纯答案原文', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function () { return dataOf(SEG_JSON); });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_plain_q', '方程'), QS_PLAIN));
+  await flush();
+
+  const demo = byClass(box, 'tai-seg-demo')[0];
+  assert.strictEqual(textOf(byClass(demo, 'tai-q')[0]), QS_PLAIN[0].prompt);
+  assert.strictEqual(byClass(demo, 'tai-opts').length, 0, '非选择题不许渲染选项块');
+  const dText = textOf(byTag(demo, 'details')[0]);
+  assert.ok(dText.indexOf('答案：-3，-1/2') >= 0, '答案行应是「答案：<原文>」，实际：' + dText);
+  assert.ok(dText.indexOf(QS_PLAIN[0].explanation) >= 0, '解析也要在');
+});
+
+testAsync('3a-2. demo：题库没有例题（examples 空）→ 降级为只渲染模型文本，不抛错', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function () { return dataOf(SEG_JSON); });
+  const mod = loadModule(storage, makeConfig(true), gateway);
+
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_noex', '无例题')));   /* 不传 questions */
+  await flush();
+
+  const demo = byClass(box, 'tai-seg-demo')[0];
+  assert.ok(demo, '仍要渲染 demo 段');
+  assert.strictEqual(byClass(demo, 'tai-q').length, 0, '没例题就不出题面');
+  assert.strictEqual(byClass(demo, 'tai-opts').length, 0, '没例题就不出选项');
+  assert.strictEqual(byTag(demo, 'details').length, 0, '没例题就不出答案折叠块');
+  const lis = byTag(byTag(demo, 'ol')[0], 'li');
+  assert.deepStrictEqual(lis.map(textOf), ['1. 先数一数。', '2. 再接着数。'], '模型分步照旧渲染');
 });
 
 /* ================================================================ 3b. demo 步骤列表：容器不出 marker / 模型序号原样保留
@@ -444,12 +509,12 @@ testAsync('3. 成功：5 段齐全；how 有 ol 且去双序号；demo 有题面
  * 不是「砍模型序号」。textContent 看不到容器 marker（marker 不是文本节点），所以这里既断言
  * li 文本逐字等于原文，也断言步骤容器带了 tai-steps-plain（真机 list-style 在 §5 验）。 */
 
-function mountDemo(segObj) {
+function mountDemo(segObj, questions) {
   const storage = makeStorage();
   const gateway = makeGateway(function () { return dataOf(JSON.stringify(segObj)); });
   const mod = loadModule(storage, makeConfig(true), gateway);
   const box = makeNode('div');
-  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_demo_plain', '示例')));
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_demo_plain', '示例'), questions || QS));
   return { box: box, flushIt: flush() };
 }
 
@@ -462,21 +527,20 @@ function demoSegOf(box) {
 testAsync('3b-1. demo：step 原文带「1. 」→ li textContent 逐字等于原文（前缀保留，不被砍）', async function () {
   const STEP = '1. 看清条件：容器是密闭的，氧气也在容器内';
   const m = mountDemo({ what: '甲', why: '乙', how: '1. 第一步\n2. 第二步',
-    demo: '盘子里一共有几个苹果？\n' + STEP + '\n答案：3 个', trap: '丁' });
+    demo: STEP + '\n2. 再核对一遍内外气压', trap: '丁' });
   await m.flushIt;
 
   const demo = demoSegOf(m.box);
   const ol = byTag(demo, 'ol')[0];
   assert.ok(ol, 'demo 段应有 ol 步骤列表');
   const lis = byTag(ol, 'li');
-  assert.strictEqual(lis.length, 1, 'demo 段应只有 1 个步骤 li（答案行不进步骤列表）');
+  assert.strictEqual(lis.length, 2, 'demo 段两个步骤 → 两个 li（答案行不再混进来）');
   assert.strictEqual(textOf(lis[0]), STEP, '模型手写的「1. 」必须原样保留');
 });
 
 testAsync('3b-2. demo：`2、` / `3)` / `（4）` 三种写法各自逐字保留（证明没走 stripOrder）', async function () {
   const ROWS = ['2、先看总数', '3) 再减去用掉的', '（4）最后核对'];
-  const m = mountDemo({ what: '甲', why: '乙', how: '1. 第一步',
-    demo: '他有几支笔？\n' + ROWS.join('\n') + '\n答案：3 支', trap: '丁' });
+  const m = mountDemo({ what: '甲', why: '乙', how: '1. 第一步', demo: ROWS.join('\n'), trap: '丁' });
   await m.flushIt;
 
   const lis = byTag(byTag(demoSegOf(m.box), 'ol')[0], 'li');
@@ -485,7 +549,7 @@ testAsync('3b-2. demo：`2、` / `3)` / `（4）` 三种写法各自逐字保留
 
 testAsync('3b-3. demo：步骤容器带 tai-steps-plain（且保留 tai-steps）；how 段不带这个类', async function () {
   const m = mountDemo({ what: '甲', why: '乙', how: '1. 第一步\n2. 第二步',
-    demo: '一共有几个？\n先数一数\n答案：3 个', trap: '丁' });
+    demo: '先数一数\n再核对一遍', trap: '丁' });
   await m.flushIt;
 
   const demoOl = byTag(demoSegOf(m.box), 'ol')[0];
@@ -499,18 +563,21 @@ testAsync('3b-3. demo：步骤容器带 tai-steps-plain（且保留 tai-steps）
     'how 段不许带 tai-steps-plain（它还要靠 <ol> 画 1./2./3.）');
 });
 
-testAsync('3b-4. demo：「查看答案」仍在 details 里，答案行不进步骤列表', async function () {
+testAsync('3b-4. demo：答案来自题库回填 → 模型文本里写「答案是 C」也不影响（details 仍是 B）', async function () {
+  /* 模型越权抄答案：页面不采信，回填优先。 */
   const m = mountDemo({ what: '甲', why: '乙', how: '1. 第一步',
-    demo: '一共有几个？\n1. 先数一数\n答案：3 个', trap: '丁' });
+    demo: '1. 先数一数\n答案是 C，4 个', trap: '丁' });
   await m.flushIt;
 
   const demo = demoSegOf(m.box);
   const details = byTag(demo, 'details')[0];
   assert.ok(details, 'demo 段应有 details 折叠答案');
   assert.strictEqual(textOf(byTag(details, 'summary')[0]), '查看答案');
-  assert.ok(textOf(details).indexOf('答案：3 个') >= 0, '答案正文应在 details 里');
+  const dText = textOf(details);
+  assert.ok(dText.indexOf('答案：B 3 个') >= 0, 'details 的答案必须是题库那道（B），实际：' + dText);
+  assert.strictEqual(dText.indexOf('答案是 C'), -1, '模型写的答案不许进 details');
   const lis = byTag(byTag(demo, 'ol')[0], 'li');
-  assert.deepStrictEqual(lis.map(textOf), ['1. 先数一数'], '答案行不许混进步骤列表');
+  assert.ok(lis.map(textOf).indexOf('1. 先数一数') >= 0, '步骤列表照旧只放模型分步');
 });
 
 testAsync('3b-5. 回归：how 段 4 行仍是 4 个 li，且 li 文本不带行首手写序号（stripOrder 未带偏）', async function () {

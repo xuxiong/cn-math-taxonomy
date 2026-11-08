@@ -456,7 +456,7 @@
     var api = T();
     var keys = api.SEG_KEYS;
     keys.forEach(function (k) {
-      box.append(renderSeg(k, api.SEG_TITLES[k], st.segs ? st.segs[k] : ''));
+      box.append(renderSeg(k, api.SEG_TITLES[k], st.segs ? st.segs[k] : '', st));
     });
 
     var foot = el('div', 'tai-foot');
@@ -470,13 +470,13 @@
     renderChat(st, box);
   }
 
-  function renderSeg(key, title, text) {
+  function renderSeg(key, title, text, st) {
     var section = el('section', 'tai-seg tai-seg-' + key);
     section.append(el('h3', 'tai-seg-title', title));
     if (key === 'how') {
       renderList(section, text, 'ol', 'tai-steps', true);
     } else if (key === 'demo') {
-      renderDemo(section, text);
+      renderDemo(section, text, st);
     } else {
       renderList(section, text, 'ul', 'tai-list', false);
     }
@@ -493,34 +493,50 @@
     section.append(list);
   }
 
-  function renderDemo(section, text) {
-    var rows = linesOf(text);
-    var qIndex = -1;
-    for (var i = 0; i < rows.length; i++) {
-      if (/[？?]/.test(rows[i])) { qIndex = i; break; }
+  /* 「看个例子」只剩模型的分步解答：题面 / 选项 / 答案 / 解析全部由页面从题库
+   * （st.inputs.examples[0]，buildInputs 只挑 1 道）直出。确定性数据不进模型的笔。
+   * 全部 textContent 建 DOM；ex 缺失（题库没例题）时降级为只渲染模型文本，不抛错。 */
+  function demoExample(st) {
+    var inputs = st && st.inputs;
+    var list = inputs && inputs.examples;
+    return (list && list.length) ? list[0] : null;
+  }
+
+  function renderDemo(section, text, st) {
+    var ex = demoExample(st);
+
+    if (ex && trim(ex.prompt)) section.append(el('p', 'tai-q', trim(ex.prompt)));
+
+    if (ex && ex.type === 'choice' && ex.choices && ex.choices.length) {
+      var opts = el('ul', 'tai-opts tai-list');
+      ex.choices.forEach(function (c) {
+        var key = trim(c && c.key);
+        var val = trim(c && c.text);
+        opts.append(el('li', null, key ? key + '. ' + val : val));
+      });
+      section.append(opts);
     }
-    if (qIndex >= 0) section.append(el('p', 'tai-q', rows[qIndex]));
 
-    var steps = [];
-    var answers = [];
-    rows.forEach(function (row, index) {
-      if (index === qIndex) return;
-      if (row.indexOf('答案') === 0) answers.push(row);
-      else steps.push(row);
-    });
-
-    /* 「看个例子」的步骤列表：容器自己不出 marker（tai-steps-plain），模型写了序号就原样留着，
-     * 没写就是纯行。不调 stripOrder —— 砍模型序号不是本段的口径（见卡 t_ae6eeac0 §2）。 */
+    /* 分步解答：容器自己不出 marker（tai-steps-plain），模型写了序号就原样留着，
+     * 没写就是纯行。不调 stripOrder —— 见卡 t_ae6eeac0 §2。 */
+    var steps = linesOf(text);
     if (steps.length) {
       var ol = el('ol', 'tai-steps tai-steps-plain');
       steps.forEach(function (row) { ol.append(el('li', null, row)); });
       section.append(ol);
     }
 
-    if (answers.length) {
+    if (ex) {
       var details = el('details', 'tai-ans');
-      details.append(el('summary', null, '查看答案'), el('p', null, answers.join('\n')));
-      section.append(details);
+      details.append(el('summary', null, '查看答案'));
+      var ans = trim(ex.answer);
+      var ansText = trim(ex.answerText);
+      if (ans || ansText) {
+        /* 选择题写「答案：B 原文」，非选择题写「答案：-3，-1/2」这类纯答案。 */
+        details.append(el('p', null, '答案：' + ans + (ansText ? (ans ? ' ' : '') + ansText : '')));
+      }
+      if (trim(ex.explanation)) details.append(el('p', null, trim(ex.explanation)));
+      if (details.children.length > 1) section.append(details);
     }
   }
 

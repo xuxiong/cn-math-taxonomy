@@ -70,12 +70,12 @@ function buildFor(topic, opts) {
   });
 }
 
-/* 一份能过两道闸的讲解：demo 有问句、有以「答案」开头的行。 */
+/* 一份能过两道闸的讲解：demo 只剩分步解答（题面/选项/答案/解析由页面回填，模型不再抄）。 */
 const GOOD = {
   what: '加法就是把两部分合起来。',
   why: '买东西算钱要用加法。',
   how: '1. 先数第一堆。\n2. 再数第二堆。\n3. 从第一个数接着数。',
-  demo: '妈妈买了 2 个苹果，又买了 1 个，一共有几个？\n1. 先数 2 个。\n2. 再数 1 个。\n答案：3 个。',
+  demo: '1. 先数 2 个。\n2. 再数 1 个。\n3. 从第二个数接着数。',
   trap: '别把两堆数丢了。'
 };
 function segsWith(patch) {
@@ -158,7 +158,8 @@ test('topic-explain.js 不做求值（本模块不做求值）', () => {
 test('卡面 §3 的 API 名一个不少（卡 B 照着调）', () => {
   ['levelOf', 'subjectTone', 'prereqsOf', 'buildInputs', 'explainMessages',
     'parseExplain', 'checkExplain', 'chatMessages', 'checkReply', 'cacheKey',
-    'readCache', 'writeCache', 'pruneCache', 'subjectOf', 'materialText', 'segsToText'].forEach((name) => {
+    'readCache', 'writeCache', 'pruneCache', 'subjectOf', 'materialText', 'segsToText',
+    'pickExample'].forEach((name) => {
     assert.strictEqual(typeof T[name], 'function', '缺函数 ' + name);
   });
   assert.strictEqual(T.MAX_ROUNDS, 10);
@@ -315,18 +316,51 @@ test('buildInputs：不再产出课标与已删闸门的产物', () => {
   });
 });
 
-test('buildInputs：例题 ≤3 道，按难度升序，带题面/答案/解析', () => {
-  assert.ok(P006.examples.length >= 2 && P006.examples.length <= 3);
-  const rank = { basic: 0, standard: 1, challenge: 2, advanced: 3 };
-  for (let i = 1; i < P006.examples.length; i++) {
-    assert.ok(rank[P006.examples[i - 1].difficulty] <= rank[P006.examples[i].difficulty],
-      '例题没有按难度升序：' + P006.examples.map((e) => e.difficulty).join(','));
-  }
-  P006.examples.forEach((e) => {
-    assert.ok(e.prompt.length > 0);
-    assert.ok(e.answer.length > 0);
-  });
-  assert.ok(P006.examples[0].explanation.length > 0, '有解析的题要带上解析');
+test('buildInputs：默认只挑 1 道例题（渲染层靠 examples[0] 回填题面/选项/答案/解析）', () => {
+  assert.strictEqual(P006.examples.length, 1);
+  const e = P006.examples[0];
+  assert.ok(e.prompt.length > 0);
+  assert.ok(e.answer.length > 0);
+  assert.ok(e.explanation.length > 0, '有解析的题要带上解析');
+});
+
+test('buildInputs：显式 exampleCount 仍尊重（1 道起、上限 5）；第一道始终是 pickExample 挑的那道', () => {
+  assert.strictEqual(buildFor(topicById('cnm_p006'), { exampleCount: 3 }).examples.length, 3);
+  const many = buildFor(topicById('cnm_p006'), { exampleCount: 9 });
+  assert.ok(many.examples.length <= 5, '上限 5：' + many.examples.length);
+  const one = buildFor(topicById('cnm_p006'), { exampleCount: 1 });
+  assert.deepStrictEqual(one.examples.map((e) => e.id), P006.examples.map((e) => e.id));
+});
+
+test('buildInputs：选择题优先挑「选项齐全 + 有解析」的那道（cnc_j143 全选择题）', () => {
+  const inputs = buildFor(topicById('cnc_j143'));
+  assert.strictEqual(inputs.examples.length, 1);
+  const e = inputs.examples[0];
+  assert.strictEqual(e.type, 'choice');
+  assert.ok(e.choices.length >= 2, '选择题要带选项');
+  assert.ok(e.explanation.length > 0);
+  assert.ok(e.answerText.length > 0, '答案原文要能反查出来');
+});
+
+test('pickExample：选择（≥2 选项）+ 有解析 > 只挑难度最高的那道', () => {
+  const plain = { id: 'a', type: 'numeric', choices: [], explanation: '有解析。' };
+  const choice = { id: 'b', type: 'choice', choices: [{ key: 'A', text: '甲' }, { key: 'B', text: '乙' }], explanation: '有解析。' };
+  assert.strictEqual(T.pickExample([{ q: plain, i: 0 }, { q: choice, i: 1 }]).id, 'b');
+});
+
+test('pickExample：没有合格选择题 → 取第一个有解析的', () => {
+  const noExp = { id: 'a', type: 'numeric', choices: [], explanation: '' };
+  const oneChoice = { id: 'b', type: 'choice', choices: [{ key: 'A', text: '甲' }], explanation: '' };
+  const bare = { id: 'c', type: 'numeric', choices: [], explanation: '有解析。' };
+  assert.strictEqual(T.pickExample([{ q: noExp, i: 0 }, { q: oneChoice, i: 1 }, { q: bare, i: 2 }]).id, 'c');
+});
+
+test('pickExample：都没有解析 → 排第一的那道；没有题 → null', () => {
+  const a = { id: 'a', type: 'numeric', choices: [], explanation: '' };
+  const b = { id: 'b', type: 'numeric', choices: [], explanation: '' };
+  assert.strictEqual(T.pickExample([{ q: a, i: 0 }, { q: b, i: 1 }]).id, 'a');
+  assert.strictEqual(T.pickExample([]), null);
+  assert.strictEqual(T.pickExample(null), null);
 });
 
 test('buildInputs：先修名进 whitelist，白名单 = 本点 ∪ 直接先修', () => {
@@ -341,8 +375,8 @@ test('buildInputs：无先修点 → prereqs 为空，白名单只有自己', ()
   assert.deepStrictEqual(inputs.whitelist, [inputs.name]);
 });
 
-test('buildInputs：无解析题只留题面与答案，不编造解析', () => {
-  assert.strictEqual(PLAIN_INPUTS.examples.length, 2);
+test('buildInputs：无解析题只留题面与答案，不编造解析（1 道）', () => {
+  assert.strictEqual(PLAIN_INPUTS.examples.length, 1);
   PLAIN_INPUTS.examples.forEach((e) => {
     assert.ok(e.prompt.length > 0);
     assert.strictEqual(e.explanation, '');
@@ -355,6 +389,32 @@ test('buildInputs：没有题也能组装（examples 空）', () => {
 
 test('buildInputs：缺 topic 直接抛错（不静默产出半份素材）', () => {
   assert.throws(() => T.buildInputs({}), /缺少 topic/);
+});
+
+test('materialText：选择题在「题面」后带「选项：A. …｜B. …」一行（全角竖线、key 后一个空格）', () => {
+  const text = T.materialText(buildFor(topicById('cnc_j143')));
+  assert.ok(text.indexOf('   选项：A. 鲁迅｜B. 莫泊桑｜C. 曹文轩｜D. 刘绍棠') >= 0, text);
+});
+
+test('materialText：非选择题不出现「选项：」行', () => {
+  assert.strictEqual(T.materialText(P006).indexOf('选项：'), -1);
+});
+
+test('materialText：含且只含 1 道例题（不出现「2. 题面：」）', () => {
+  const text = T.materialText(T.buildInputs({
+    topic: topicById('cnm_p006'), questions: questionsFor(topicById('cnm_p006')),
+    deps: DEPS, topics: TOPICS, opts: { exampleCount: 3 }
+  }));
+  /* 显式 exampleCount=3 才有多道；默认那份（P006）只 1 道。 */
+  assert.ok(text.indexOf('2. 题面：') >= 0, '前提：显式传 3 道时素材仍可有 3 段');
+  const one = T.materialText(P006);
+  assert.ok(one.indexOf('1. 题面：') >= 0);
+  assert.strictEqual(one.indexOf('2. 题面：'), -1, '默认只投 1 道题');
+});
+
+test('materialText：默认素材比改前短（cnm_p006 改前 304 字符 / 3 道题）', () => {
+  const len = T.materialText(P006).length;
+  assert.ok(len < 304, '改前 304（3 道题），现在应当更短，实际 ' + len);
 });
 
 test('materialText：素材块零课标（无标题、无编号、无课标原文）', () => {
@@ -412,10 +472,15 @@ test('explainMessages：红线条目到位（只用素材数字 / 只用白名�
   assert.ok(sys.indexOf('人设') < 0 && sys.indexOf('人教版') < 0, '不许沿用 explain.js 的人设');
 });
 
-test('prompt：含四句排版要求 + 不许引用课标，且不再出现旧课标编号说法', () => {
+test('prompt：排版不再要求抄题面/抄答案行；看个例子只写分步；不许引用课标', () => {
   const sys = T.explainMessages(P006)[0].content;
-  assert.ok(sys.indexOf('每段用分点或分步写，一点一行；不要写成一大段；例子先出题面，再分步解答，最后一行写「答案：」；不要出现课标编号或课标原文。') >= 0,
-    '缺四句排版要求');
+  assert.ok(sys.indexOf('【排版】每段用分点或分步写，一点一行；不要写成一大段；不要出现课标编号或课标原文。') >= 0,
+    '缺新版【排版】');
+  assert.strictEqual(sys.indexOf('例子先出题面，再分步解答，最后一行写「答案：」'), -1,
+    '旧【排版】还在：答案行已由页面回填，不许再让模型写');
+  assert.strictEqual(sys.indexOf('答案行写成'), -1, '不许出现答案行写法约束（本卡方向是删约束）');
+  assert.ok(sys.indexOf('看个例子：只写分步解答，一步一行，写 2–5 行；不要写题面、不要写选项字母、不要写答案、不要写解析（页面会显示）。') >= 0,
+    '缺新版【每段形状】的看个例子口径');
   assert.ok(sys.indexOf('不许引用课标') >= 0, '缺【不许引用课标】');
   assert.strictEqual(sys.indexOf('cms-2022 编号'), -1, '旧课标编号说法还在');
   assert.ok(sys.indexOf('段内换行写成 \\n（JSON 转义）') >= 0, '缺「段内换行写成 \\n」说明：' + JSON.stringify(sys));
@@ -507,38 +572,32 @@ test('G1：任一段只有空白 → 拒（5 个变体逐个跑）', () => {
   });
 });
 
-test('G1：demo 无问号 → 拒，why 提到问句', () => {
-  const r = T.checkExplain(segsWith({ demo: '妈妈买了 2 个苹果。\n1. 先数 2 个。\n答案：2 个。' }));
+test('G1：demo 只有 1 行 → 拒，why 是「看个例子缺少分步」', () => {
+  const r = T.checkExplain(segsWith({ demo: '1. 先数 2 个。' }));
   assert.strictEqual(r.ok, false);
-  assert.ok(r.reasons.some((x) => x.gate === 'G1' && x.why.indexOf('问句') >= 0),
+  assert.ok(r.reasons.some((x) => x.gate === 'G1' && x.why === '看个例子缺少分步'),
     JSON.stringify(r.reasons));
 });
 
-test('G1：问句必须在 demo 段（what 里有问句不算）', () => {
-  const r = T.checkExplain(segsWith({ what: '加法是什么？', demo: '妈妈买了 2 个苹果。\n答案：2 个。' }));
+test('G1：demo 2 行 → 通过（旧的问句 / 答案行判据已删）', () => {
+  const r = T.checkExplain(segsWith({ demo: '先数 2 个。\n再数 1 个。' }));
+  assert.deepStrictEqual(r.reasons, []);
+  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
+});
+
+test('G1：demo 空白行不算有效行（3 行里只有 1 行正文 → 拒）', () => {
+  const r = T.checkExplain(segsWith({ demo: '1. 先数 2 个。\n   \n\n' }));
   assert.strictEqual(r.ok, false);
-  assert.ok(r.reasons.some((x) => x.gate === 'G1' && x.why.indexOf('问句') >= 0),
+  assert.ok(r.reasons.some((x) => x.gate === 'G1' && x.why === '看个例子缺少分步'),
     JSON.stringify(r.reasons));
 });
 
-test('G1：demo 无「答案」行 → 拒', () => {
-  const r = T.checkExplain(segsWith({ demo: '妈妈买了 2 个苹果，一共有几个？\n1. 先数 2 个。' }));
-  assert.strictEqual(r.ok, false);
-  assert.ok(r.reasons.some((x) => x.gate === 'G1' && x.why.indexOf('答案') >= 0),
-    JSON.stringify(r.reasons));
-});
-
-test('G1：合规样例（题面问句 + 1. 2. 分步 + 末行答案）→ 通过', () => {
+test('G1：合规样例（5 段 + 2 行分步，无题面/无答案行）→ 通过', () => {
   const segs = segsWith({
     how: '1. 先数第一堆。\n2. 再数第二堆。\n3. 接着数。',
-    demo: '妈妈买了 2 个苹果，又买了 1 个，一共有几个？\n1. 先数 2 个。\n2. 再数 1 个。\n答案：3 个。'
+    demo: '先把两堆各数一遍。\n再从第一个数接着数完第二个。'
   });
   assert.strictEqual(T.checkExplain(segs).ok, true, JSON.stringify(T.checkExplain(segs).reasons));
-});
-
-test('G1：「答案」行不在末行也通过（只查有没有，不查第几行）', () => {
-  const r = T.checkExplain(segsWith({ demo: '一共有几个？\n答案：3 个。\n1. 先数 2 个。' }));
-  assert.strictEqual(r.ok, true, JSON.stringify(r.reasons));
 });
 
 test('G5：** 加粗 / 反引号 / 反斜杠命令 / 井号标题 / 省略号 各自都拒', () => {
@@ -866,6 +925,13 @@ test('cacheKey：以固定前缀 + topicId 开头', () => {
   assert.ok(k.indexOf('cnm_p006') >= 0, k);
 });
 
+test('cacheKey：素材版本 v1 → v2（demo 结构变了，旧条目必须自然不命中）', () => {
+  const body = /function cacheKey\s*\([\s\S]*?\n  \}/.exec(MODULE_CODE);
+  assert.ok(body, '找不到 cacheKey 源码');
+  assert.ok(/parts\s*=\s*\[[^\]]*'v2'/.test(body[0]), 'cacheKey 的版本首段应为 v2');
+  assert.strictEqual(/'v1'/.test(body[0]), false, 'cacheKey 里不许再出现 v1');
+});
+
 test('cacheKey：同素材同模型 → 稳定', () => {
   assert.strictEqual(T.cacheKey(P006, 'm1'), T.cacheKey(P006, 'm1'));
 });
@@ -879,8 +945,8 @@ test('cacheKey：素材变（介绍改一个字）→ key 变', () => {
   assert.notStrictEqual(T.cacheKey(P006, 'm1'), T.cacheKey(changed, 'm1'));
 });
 
-test('cacheKey：题库变（例题换一道）→ key 变', () => {
-  const changed = Object.assign({}, P006, { examples: P006.examples.slice(0, 1) });
+test('cacheKey：题库变（例题去掉）→ key 变', () => {
+  const changed = Object.assign({}, P006, { examples: [] });
   assert.notStrictEqual(T.cacheKey(P006, 'm1'), T.cacheKey(changed, 'm1'));
 });
 
