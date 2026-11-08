@@ -2692,7 +2692,7 @@ function captureExplainFetch(content) {
   return { bodies: bodies, restore: function () { globalThis.fetch = real; } };
 }
 
-testAsync('Explain.generate：讲解请求 max_tokens = 2048 且 <= 4096（防 16384 过度放大）', async () => {
+testAsync('Explain.generate：讲解请求 max_tokens = 4096 且 <= 4096（防 16384 过度放大）', async () => {
   const X = loadExplain();
   X._cache.clear();
   const q = { id: 'mt-1', type: 'numeric', prompt: '解方程 2(x-3)=4-(x+1)。', answer: '3' };
@@ -2701,7 +2701,7 @@ testAsync('Explain.generate：讲解请求 max_tokens = 2048 且 <= 4096（防 1
     const r = await X.generate(T_A, q, '1');
     assert.strictEqual(r.from, 'llm');
     assert.strictEqual(cap.bodies.length, 1, '应捕获 1 个讲解请求体');
-    assert.strictEqual(cap.bodies[0].max_tokens, 2048, '讲解 max_tokens 应为 2048: ' + cap.bodies[0].max_tokens);
+    assert.strictEqual(cap.bodies[0].max_tokens, 4096, '讲解 max_tokens 应为 4096: ' + cap.bodies[0].max_tokens);
     assert.ok(cap.bodies[0].max_tokens <= 4096, '讲解 max_tokens 不得超过 4096: ' + cap.bodies[0].max_tokens);
   } finally { cap.restore(); }
 });
@@ -2734,10 +2734,10 @@ test('单一出处：explain.js 内 max_tokens 字面量只出现在常量定义
   assert.deepStrictEqual(offenders, [], '存在裸数字 max_tokens 字面量:\n' + offenders.join('\n'));
 });
 
-test('单一出处：llm-config.js 定义 explain=2048 / followup=4096，explain.js 从配置取值', () => {
+test('单一出处：llm-config.js 定义 explain=4096 / followup=4096，explain.js 从配置取值', () => {
   /* 配置唯一真源搬到 llm-config.js，所以断言从扫字面量改成读配置值，防漂移目的不变。 */
   const cfg = require('../diagnose/llm-config.js');
-  assert.strictEqual(cfg.maxTokens.explain, 2048, 'llm-config.js 的 maxTokens.explain 应为 2048');
+  assert.strictEqual(cfg.maxTokens.explain, 4096, 'llm-config.js 的 maxTokens.explain 应为 4096（2048 实测被 reasoning 吃光：finish=length、content 空）');
   assert.strictEqual(cfg.maxTokens.followup, 4096, 'llm-config.js 的 maxTokens.followup 应为 4096（防止回落到 1024 —— 实测 content 为空）');
   const src = fsExplain.readFileSync(path.join(__dirname, '..', 'diagnose', 'explain.js'), 'utf8');
   assert.ok(/EXPLAIN_MAX_TOKENS\s*=\s*CFG\s*\?\s*CFG\.maxTokens\.explain/.test(src),

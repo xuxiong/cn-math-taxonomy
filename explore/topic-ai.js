@@ -236,12 +236,21 @@
       return render(st);
     }
 
-    gateway.postOnce({
-      model: model,
-      messages: api.explainMessages(st.inputs),
-      max_tokens: cfg.maxTokens.explain
-    }).then(function (data) {
-      if (!data) { st.status = 'error'; return render(st); }   /* 网关失败/超时 resolve null，不是格式问题 */
+    var messages = api.explainMessages(st.inputs);
+    var maxTokens = cfg.maxTokens.explain;
+
+    /* 一次发送：重发复用同一份 messages 与同一个 max_tokens，不换请求通道、不改 URL。 */
+    function send() {
+      return gateway.postOnce({ model: model, messages: messages, max_tokens: maxTokens });
+    }
+
+    function fail() {
+      st.status = 'error';
+      render(st);
+    }
+
+    function finish(data) {
+      if (!data) return fail();   /* 网关失败/超时 resolve null，不是格式问题 */
       var raw = data && data.choices && data.choices[0] && data.choices[0].message
         ? data.choices[0].message.content : '';
       var parsed = api.parseExplain(raw);
@@ -257,10 +266,15 @@
       });
       api.pruneCache(storage(), api.MAX_ENTRIES);
       apply(st, parsed.segs, key);
-    }).catch(function () {
-      st.status = 'error';
-      render(st);
-    });
+    }
+
+    /* 截断重发（卡 D）：首次响应满足 needsRefetch（finish_reason=length 或正文 trim 后为空）时，
+     * 原样再要一次 —— 最多 1 次。重发后再截断就走上面的「格式没成形」文案，不递归、不循环；
+     * 页面文案不变，不给用户加「正在重试」的技术噪音。 */
+    send().then(function (data) {
+      if (!data || typeof api.needsRefetch !== 'function' || !api.needsRefetch(data)) return finish(data);
+      return send().then(finish);
+    }).catch(fail);
   }
 
   /* ================================================================

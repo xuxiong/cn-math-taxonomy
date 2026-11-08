@@ -531,6 +531,30 @@
     return { segs: segs };
   }
 
+  /* 截断判定：网关把 reasoning 计入 max_tokens，推理长的那些次会
+   * finish_reason=length 且正文可能一个字都没有。这不是格式问题，是没拿到东西，
+   * 值得原样再要一次（同预算即可：推理长度是抖动的，重发常用的一次就够）。
+   *
+   * 判据只有两条：finish_reason === 'length'，或 message.content trim 后为空。
+   * 空 body / 缺 choices / 取不到字符串 content 一律 false —— 那些走上层的「网关失败」分支，
+   * 不当截断。纯函数，无副作用，不判断内容质量。 */
+  function needsRefetch(body) {
+    try {
+      var ch = body && body.choices;
+      if (!ch || !ch.length) return false;
+      var c0 = ch[0];
+      if (!c0 || typeof c0 !== 'object') return false;
+      if (c0.finish_reason === 'length') return true;
+      var msg = c0.message;
+      if (!msg || typeof msg !== 'object') return false;
+      var content = msg.content;
+      if (typeof content !== 'string') return false;
+      return !trimText(content);
+    } catch (e) {
+      return false;
+    }
+  }
+
   /* ================================================================
    * 9. 闸门（只剩两道：G1 结构 / G5 文本卫生）
    * ================================================================ */
@@ -704,6 +728,7 @@
     buildInputs: buildInputs,
     explainMessages: explainMessages,
     parseExplain: parseExplain,
+    needsRefetch: needsRefetch,
     checkExplain: checkExplain,
     chatMessages: chatMessages,
     checkReply: checkReply,

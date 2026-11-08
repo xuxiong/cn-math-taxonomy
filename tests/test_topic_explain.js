@@ -809,7 +809,51 @@ test('pruneCache：没到上限 → 一条不删', () => {
 });
 
 /* ================================================================
- * 13. 零网络收尾
+ * 13. 截断判定 needsRefetch（卡 D：只判「有没有拿到东西」，不判内容质量）
+ * ================================================================ */
+
+test('needsRefetch：finish_reason=length → true（哪怕正文有半截内容）', () => {
+  assert.strictEqual(T.needsRefetch({ choices: [{ finish_reason: 'length', message: { content: '{"what":"半截' } }] }), true);
+});
+
+test('needsRefetch：正文空串 → true', () => {
+  assert.strictEqual(T.needsRefetch({ choices: [{ finish_reason: 'stop', message: { content: '' } }] }), true);
+});
+
+test('needsRefetch：正文全空白 → true', () => {
+  assert.strictEqual(T.needsRefetch({ choices: [{ finish_reason: 'stop', message: { content: ' \n\t  ' } }] }), true);
+});
+
+test('needsRefetch：finish=stop 且有内容 → false', () => {
+  assert.strictEqual(T.needsRefetch({ choices: [{ finish_reason: 'stop', message: { content: '{"what":"甲"}' } }] }), false);
+});
+
+test('needsRefetch：body 为 null → false（走「网关失败」分支，不当截断）', () => {
+  assert.strictEqual(T.needsRefetch(null), false);
+  assert.strictEqual(T.needsRefetch(undefined), false);
+});
+
+test('needsRefetch：缺 choices / choices 空数组 → false', () => {
+  assert.strictEqual(T.needsRefetch({}), false);
+  assert.strictEqual(T.needsRefetch({ choices: [] }), false);
+  assert.strictEqual(T.needsRefetch({ choices: null }), false);
+});
+
+test('needsRefetch：缺 message 或 content 不是字符串 → false（不猜，交给上层既有分支）', () => {
+  assert.strictEqual(T.needsRefetch({ choices: [{ finish_reason: 'stop' }] }), false);
+  assert.strictEqual(T.needsRefetch({ choices: [{ finish_reason: 'stop', message: { content: null } }] }), false);
+  assert.strictEqual(T.needsRefetch({ choices: [{ finish_reason: 'stop', message: { content: 42 } }] }), false);
+});
+
+test('needsRefetch：纯函数，不改入参', () => {
+  const body = { choices: [{ finish_reason: 'length', message: { content: '' } }] };
+  const before = JSON.stringify(body);
+  T.needsRefetch(body);
+  assert.strictEqual(JSON.stringify(body), before, 'needsRefetch 不许改入参');
+});
+
+/* ================================================================
+ * 14. 零网络收尾
  * ================================================================ */
 
 console.log('\n--- 零网络收尾 ---');
