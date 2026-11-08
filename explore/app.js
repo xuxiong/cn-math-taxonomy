@@ -564,6 +564,11 @@
 
   /* O4 卡B：知识点 AI 讲解入口。模块已加载过就直接交给它渲染（状态在模块里，切回来不重发请求）；
    * 没加载过就先出按钮，点下去才按序加载 5 个脚本，加载失败给可点重试的错误行（不静默）。 */
+  /* 卡I：ensureDetail / loadQuestionsFor 回包后 renderDetail 会 replaceChildren 重建面板，
+   * 入口盒子的身份会换。这里登记「当前这次渲染的挂载点」，脚本加载完回来画到「现在这个」盒子上，
+   * 而不是点击那一刻捕获的那个（否则 5 段画进已脱离文档的旧盒子，真机可见面板 0 段）。 */
+  var taiHosts = {};
+
   function mountTopicAI(box, topic) {
     var ctx = {
       topic: topic,
@@ -571,6 +576,7 @@
       deps: deps,
       topics: topics
     };
+    taiHosts[topic.id] = { box: box, ctx: ctx };
     if (window.CnmTopicAI && typeof window.CnmTopicAI.mount === 'function') {
       window.CnmTopicAI.mount(box, ctx);
       return;
@@ -587,8 +593,9 @@
       line.textContent = '正在准备讲解…';
       Lazy.load(AI_SCRIPTS).then(function () {
         line.remove();
-        ctx.autostart = true;
-        window.CnmTopicAI.mount(box, ctx);
+        var at = taiHosts[topic.id] || { box: box, ctx: ctx };
+        at.ctx.autostart = true;
+        window.CnmTopicAI.mount(at.box, at.ctx);
       }).catch(function () {
         btn.disabled = false;
         hint.hidden = false;

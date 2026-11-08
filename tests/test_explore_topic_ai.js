@@ -163,6 +163,24 @@ function makeGateway(responder) {
   };
 }
 
+/** 手动回包的网关：让请求停在飞行中，由测试决定何时回包（模拟慢网）。 */
+function makeManualGateway() {
+  const calls = [];
+  let pending = [];
+  return {
+    calls: calls,
+    postOnce: function (body) {
+      calls.push(body);
+      return new Promise(function (resolve) { pending.push(resolve); });
+    },
+    resolveAll: function (value) {
+      const list = pending;
+      pending = [];
+      list.forEach(function (resolve) { resolve(value); });
+    }
+  };
+}
+
 function dataOf(text) {
   return { choices: [{ message: { content: text } }] };
 }
@@ -285,6 +303,13 @@ function aiScriptsFromSource() {
   return files;
 }
 
+/* 卡I：mountTopicAI 依赖模块级登记表 taiHosts，沙箱里必须把它和函数一起装进去。 */
+function mountTopicAISource() {
+  const m = /var\s+taiHosts\s*=\s*\{\s*\}\s*;/.exec(CODE_ONLY);
+  assert.ok(m, 'explore/app.js 里找不到 taiHosts 登记表声明');
+  return m[0] + '\n' + extractFunction('mountTopicAI');
+}
+
 const EXPECTED_SCRIPTS = ['../diagnose/textfmt.js', '../diagnose/topic-explain.js',
   '../diagnose/llm-config.js', '../diagnose/llm-gateway.js', 'topic-ai.js'];
 
@@ -326,7 +351,7 @@ testAsync('1. 点击前 Lazy.load 零调用；点击后恰好一次、参数严�
   sandbox.CnmTopicAI = null;
 
   vm.createContext(sandbox);
-  vm.runInContext(extractFunction('mountTopicAI'), sandbox, { filename: 'explore/app.js#mountTopicAI' });
+  vm.runInContext(mountTopicAISource(), sandbox, { filename: 'explore/app.js#mountTopicAI' });
 
   const box = makeNode('div');
   const t = topic('cnm_sw', '甲');
@@ -759,6 +784,118 @@ testAsync('卡E-5. 追问收到网关错误体 → 显示同一句文案、histo
     if (storage.key(i).indexOf('cnmDiagnose.topicExplain.v1.chat.') === 0) chatKeys++;
   }
   assert.strictEqual(chatKeys, 0, '网关错误不写 history（无 chat 键）');
+});
+
+/* ================================================================ 卡I：首点竞态 / 早挂载 */
+
+testAsync('卡I-1. 模块级早挂载：请求飞行中换盒子，回包画到新盒子、旧盒子 0 段、只发 1 次', async function () {
+  const gateway = makeManualGateway();
+  const mod = loadModule(makeStorage(), makeConfig(true), gateway);
+  const t = topic('cnm_early', '早挂载');
+  const boxA = makeNode('div');
+  const boxB = makeNode('div');
+
+  mod.CnmTopicAI.mount(boxA, autoCtx(t));
+  assert.strictEqual(gateway.calls.length, 1, '首挂载应发起一次讲解请求');
+
+  mod.CnmTopicAI.mount(boxB, ctxOf(t));
+  assert.strictEqual(gateway.calls.length, 1, '请求飞行中换盒子（模拟 renderDetail 重建）不许再发');
+
+  gateway.resolveAll(dataOf(SEG_JSON));
+  await flush();
+
+  assert.strictEqual(byClass(boxB, 'tai-seg').length, 5, '回包应画到当前登记的盒子（boxB）');
+  assert.strictEqual(byClass(boxA, 'tai-seg').length, 0, '旧盒子不许出现 5 段');
+  assert.strictEqual(gateway.calls.length, 1, '全程只发一次讲解请求');
+});
+
+testAsync('卡I-2. 模块级幂等：ready 后同步 mount 新盒子立刻 5 段，且讲解请求数不增加', async function () {
+  const gateway = makeGateway(function () { return dataOf(SEG_JSON); });
+  const mod = loadModule(makeStorage(), makeConfig(true), gateway);
+  const t = topic('cnm_idem', '幂等');
+  const boxA = makeNode('div');
+  mod.CnmTopicAI.mount(boxA, autoCtx(t));
+  await flush();
+  assert.strictEqual(byClass(boxA, 'tai-seg').length, 5);
+
+  const before = gateway.calls.length;
+  const boxC = makeNode('div');
+  mod.CnmTopicAI.mount(boxC, ctxOf(t));
+  assert.strictEqual(byClass(boxC, 'tai-seg').length, 5, 'ready 后 mount 应同步立刻出 5 段');
+  assert.strictEqual(gateway.calls.length, before, 'ready 后再挂载不许增加讲解请求');
+});
+
+testAsync('卡I-3. 模块级不重复：ready 后同一盒子连挂 3 次，5 段 / 1 个对话 / 1 个 badge', async function () {
+  const gateway = makeGateway(function () { return dataOf(SEG_JSON); });
+  const mod = loadModule(makeStorage(), makeConfig(true), gateway);
+  const t = topic('cnm_rep', '不重复');
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(t));
+  await flush();
+
+  mod.CnmTopicAI.mount(box, ctxOf(t));
+  mod.CnmTopicAI.mount(box, ctxOf(t));
+  mod.CnmTopicAI.mount(box, ctxOf(t));
+
+  assert.strictEqual(byClass(box, 'tai-seg').length, 5, '连挂 3 次仍是 5 段');
+  assert.strictEqual(byClass(box, 'tai-chat').length, 1, '对话区只有 1 个（不叠加）');
+  assert.strictEqual(byClass(box, 'tai-badge').length, 1, 'badge 只有 1 个（不叠加）');
+});
+
+testAsync('卡I-4. 首点竞态（app.js 级）：点击后重绘换盒子，加载完回包画到新盒子且用最新 ctx', async function () {
+  const sandbox = {
+    questionsByTopic: new Map(),
+    deps: [],
+    topics: [],
+    document: { createElement: function (tag) { return makeNode(tag); } },
+    console: console,
+    Promise: Promise
+  };
+  sandbox.self = sandbox;
+  sandbox.window = sandbox;
+  function sandboxEl(tag, attrs) {
+    const node = makeNode(tag);
+    const a = attrs || {};
+    Object.keys(a).forEach(function (k) {
+      if (a[k] === null || a[k] === false) return;
+      if (k === 'class') node.className = a[k];
+      else if (k === 'text') node.textContent = a[k];
+      else node.setAttribute(k, a[k]);
+    });
+    for (let i = 2; i < arguments.length; i++) node.append(arguments[i]);
+    return node;
+  }
+  sandbox.el = sandboxEl;
+  sandbox.Lazy = { load: function () { return sandbox.__lazyPromise; } };
+  sandbox.AI_SCRIPTS = aiScriptsFromSource();
+  let resolveLazy;
+  sandbox.__lazyPromise = new Promise(function (resolve) { resolveLazy = resolve; });
+  sandbox.CnmTopicAI = null;
+
+  vm.createContext(sandbox);
+  vm.runInContext(mountTopicAISource(), sandbox, { filename: 'explore/app.js#mountTopicAI' });
+
+  const t = topic('cnm_race', '竞态');
+  const boxA = makeNode('div');
+  sandbox.mountTopicAI(boxA, t);
+  const btn = byClass(boxA, 'tai-btn')[0];
+  assert.ok(btn, '未加载模块时应先出现「让 AI 讲一遍」按钮');
+
+  btn.click();
+
+  const boxB = makeNode('div');
+  sandbox.questionsByTopic.set(t.id, [{ question: '新补的题？', answer: '3' }]);
+  sandbox.mountTopicAI(boxB, t);
+
+  const mountCalls = [];
+  sandbox.CnmTopicAI = { mount: function (b, ctx) { mountCalls.push({ box: b, ctx: ctx }); } };
+  resolveLazy();
+  await flush();
+
+  assert.strictEqual(mountCalls.length, 1, '加载 resolve 后恰好 mount 一次');
+  assert.strictEqual(mountCalls[0].box, boxB, '必须画到现在登记的盒子（boxB），不是点击时捕获的 boxA');
+  assert.strictEqual(mountCalls[0].ctx.autostart, true, '自动开讲：autostart 必须为 true');
+  assert.strictEqual(mountCalls[0].ctx.questions.length, 1, '必须用最新一次的 ctx（含补进来的题）');
 });
 
 /* ================================================================ 8. 红线 */
