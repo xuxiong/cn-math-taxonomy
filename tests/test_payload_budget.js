@@ -26,6 +26,10 @@ const LITE_FIELDS = ['id', 'name', 'domain', 'grade', 'semester', 'chapter', 'ty
 const HEAVY_FIELDS = ['description', 'mastery_criteria', 'diagnostic_question', 'standards', 'root_reason', 'mathLinks'];
 const FORBIDDEN = ['questions.json', 'data/topics.json', 'dependencies.json', 'cn-curriculum-standards'];
 const BUDGET_LIMIT = 80 * 1024;
+/* explore（知识图谱）单独的首屏预算：O4 入口按钮（+703B 实测）是本次上调的唯一原因；
+ * 下一个功能必须自己找空间，不许再动这个常量。首页与 diagnose 仍用 BUDGET_LIMIT。
+ * 入口按钮必须先于第 5 个懒加载脚本存在，只能落在首屏 explore/app.js，故首屏字节必然上涨。 */
+const EXPLORE_BUDGET_LIMIT = BUDGET_LIMIT + 1024;
 
 /* 每页首屏请求数上限（文档 + 同源子资源 + 首屏数据）。
  * 字节预算管不住「把字节拆小了、把往返拆多了」：300ms RTT 下多 3 个往返 ≈ 0.9s，
@@ -565,7 +569,7 @@ function checkExploreBudget(bootFiles, scriptGz, subject) {
     assert.ok(p.startsWith('../data/'), 'explore BOOT_FILES 只能含 ../data/ 下的同源文件：' + p);
     total += gzipBytes(dataPath(p));
   });
-  assert.ok(total <= BUDGET_LIMIT, subject + ' explore 首屏 gzip ' + total + 'B 超过预算 ' + BUDGET_LIMIT + 'B（' + (total / 1024).toFixed(1) + 'KB）');
+  assert.ok(total <= EXPLORE_BUDGET_LIMIT, subject + ' explore 首屏 gzip ' + total + 'B 超过预算 ' + EXPLORE_BUDGET_LIMIT + 'B（' + (total / 1024).toFixed(1) + 'KB）');
   return total;
 }
 
@@ -615,6 +619,21 @@ test('explore/app.js：BOOT_FILES 清单正确，逐学科首屏 gzip ≤ 80KB',
     console.log('    explore ' + s.padEnd(9) + ' 首屏 gzip ' + (total / 1024).toFixed(1) + ' KB');
   });
   assert.ok(maxGz >= 0, 'explore 首屏为空');
+});
+
+test('explore 预算口径：explore 单独 81KB（80KB + 1KB），首页与 diagnose 仍是 80KB —— 不许再动', function () {
+  /* 这笔账只开过一次：O4 入口按钮必须先于第 5 个懒加载脚本存在，只能写在首屏 explore/app.js。
+   * 想让它增长，先自己找空间，不要把 EXPLORE_BUDGET_LIMIT 再往上抬。 */
+  assert.strictEqual(EXPLORE_BUDGET_LIMIT, BUDGET_LIMIT + 1024,
+    'explore 预算只允许 80KB + 1KB，实际 ' + EXPLORE_BUDGET_LIMIT + 'B');
+  assert.strictEqual(BUDGET_LIMIT, 80 * 1024, '首页/diagnose 预算必须维持 80KB');
+});
+
+test('自检7：explore 脚本预算超 EXPLORE_BUDGET_LIMIT 1B，checkExploreBudget 必须报红', function () {
+  const bootFiles = extractBootFiles(EXPLORE_APP);
+  let threw = false;
+  try { checkExploreBudget(bootFiles, EXPLORE_BUDGET_LIMIT + 1, 'math'); } catch (e) { threw = true; }
+  assert.ok(threw, '超过 EXPLORE_BUDGET_LIMIT 1B 时 checkExploreBudget 必须抛错（否则新常量形同虚设）');
 });
 
 const EXPLORE_HTML_PATH = path.join(ROOT, 'explore', 'index.html');
