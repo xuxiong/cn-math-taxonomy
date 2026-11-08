@@ -636,6 +636,117 @@ test('checkReply：算式与数字一律不管（3 + 1 = 2 通过）', () => {
 });
 
 /* ================================================================
+ * 10b. checkSuggest（卡 t_1ff271ac：「你可能想问」的**软校验**，不是闸门）
+ *      list = 能用的条目；ok = 至少一条能用；reasons 恒空。
+ * ================================================================ */
+
+console.log('\n--- checkSuggest ---');
+
+const SUG3 = ['这是什么意思？', '第二步为什么要进位？', '如果减不够怎么办？'];
+
+test('checkSuggest：3 条合格 → ok、list 原序 3 条、reasons 为空', () => {
+  const r = T.checkSuggest(SUG3);
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.list, SUG3, '合格的 3 条要原样、原序留下');
+  assert.deepStrictEqual(r.reasons, [], '软校验不产出闸门理由');
+});
+
+test('checkSuggest：2 条 → 就 2 条（不补齐、不占位）', () => {
+  const r = T.checkSuggest(SUG3.slice(0, 2));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.list.length, 2);
+});
+
+test('checkSuggest：4 条 → 只留前 3 条', () => {
+  const r = T.checkSuggest(SUG3.concat(['第三种情况呢？']));
+  assert.strictEqual(r.list.length, 3);
+  assert.deepStrictEqual(r.list, SUG3);
+});
+
+test('checkSuggest：超 20 字剔除（口径 = Array.from(s).length）', () => {
+  const long = '一'.repeat(21);
+  const edge = '二'.repeat(20);
+  const r = T.checkSuggest([long, edge, '短问题？']);
+  assert.deepStrictEqual(r.list, [edge, '短问题？'], '21 字剔除、20 字保留（≤ 20）');
+});
+
+test('checkSuggest：trim 后相同算重复，只留第一次出现的', () => {
+  const r = T.checkSuggest(['同一个问句？', '  同一个问句？  ', '另一个问题？']);
+  assert.deepStrictEqual(r.list, ['同一个问句？', '另一个问题？']);
+});
+
+test('checkSuggest：空问黑名单命中即剔除', () => {
+  const r = T.checkSuggest([
+    '你想知道什么？',
+    '还有什么不懂的？',
+    '需要我讲什么吗？',
+    '还有什么问题？',
+    '要我讲细一点吗？',
+    '正常问题？'
+  ]);
+  assert.deepStrictEqual(r.list, ['正常问题？']);
+});
+
+test('checkSuggest：与 SEG_TITLES 的 5 段标题重复 → 剔除（只差标点也算）', () => {
+  const bare = T.SEG_KEYS.map((k) => T.SEG_TITLES[k]);
+  const r = T.checkSuggest(bare.concat([bare[0] + '？', '真问题？']));
+  assert.deepStrictEqual(r.list, ['真问题？'], '5 个标题文本 + 其中一个加标点都要被剔');
+});
+
+test('checkSuggest：非字符串条目 / 空白条目直接跳过', () => {
+  const r = T.checkSuggest([null, 3, {}, '   ', '真问题？']);
+  assert.deepStrictEqual(r.list, ['真问题？']);
+});
+
+test('checkSuggest：非数组（缺失 / 字符串 / 对象）→ ok false、list 空，且不抛错', () => {
+  [undefined, null, '这是什么', { a: 1 }, 0].forEach((v) => {
+    const r = T.checkSuggest(v);
+    assert.strictEqual(r.ok, false, '入参 ' + JSON.stringify(v) + ' 应回落不可用');
+    assert.deepStrictEqual(r.list, []);
+    assert.deepStrictEqual(r.reasons, []);
+  });
+});
+
+test('checkSuggest：全是被剔条目 → ok false、list 空（页面层据此不出 chips）', () => {
+  const r = T.checkSuggest(['你想知道什么？', '还有什么不懂？']);
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(r.list, []);
+});
+
+test('checkSuggest：纯函数，不改入参', () => {
+  const input = SUG3.slice();
+  T.checkSuggest(input);
+  assert.deepStrictEqual(input, SUG3);
+});
+
+/* 红线：chips 的好坏不许进 checkExplain —— 讲解的 5 段合格与否只由 §8 的两道闸决定。 */
+test('checkExplain：suggests 缺失 / 非数组 / 全是垃圾时仍 ok === true', () => {
+  const segs = Object.assign({}, GOOD);
+  assert.strictEqual(T.checkExplain(segs).ok, true);
+  segs.suggests = '这不是数组';
+  assert.strictEqual(T.checkExplain(segs).ok, true, 'chips 坏了不许连坐讲解');
+  segs.suggests = ['你想知道什么？', '这是什么'];
+  assert.strictEqual(T.checkExplain(segs).ok, true);
+  segs.suggests = [];
+  assert.strictEqual(T.checkExplain(segs).ok, true);
+  assert.deepStrictEqual(T.checkExplain(segs).reasons, T.checkExplain(Object.assign({}, GOOD)).reasons,
+    'checkExplain 的 reasons 不许因 chips 多一条');
+});
+
+test('parseExplain：顺带带出 suggests（5 段判定一字不动）', () => {
+  const raw = JSON.stringify(Object.assign({}, GOOD, { suggests: SUG3 }));
+  const r = T.parseExplain(raw);
+  assert.deepStrictEqual(r.segs, GOOD);
+  assert.deepStrictEqual(r.suggests, SUG3, '同一次响应里的第 6 键要能原样取到');
+});
+
+test('parseExplain：没有 suggests 字段 → segs 照常、suggests undefined', () => {
+  const r = T.parseExplain(JSON.stringify(GOOD));
+  assert.deepStrictEqual(r.segs, GOOD);
+  assert.strictEqual(r.suggests, undefined);
+});
+
+/* ================================================================
  * 11. chatMessages（多轮：锚点不裁 / 窗口 6 轮 / 字符预算 / 失败轮过滤）
  * ================================================================ */
 

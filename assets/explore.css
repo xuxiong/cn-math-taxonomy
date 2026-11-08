@@ -367,6 +367,31 @@ body.page-explore .site-footer { flex: none; }
   color: var(--text);
 }
 .tai-chat-foot { margin-top: 10px; }
+
+/* 「你可能想问」chips（卡 t_1ff271ac）：5 段下方、追问输入框上方一行；只新增，不改上面任何规则。 */
+.tai-suggests {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.tai-suggests-label { color: var(--muted); font-size: 0.86rem; font-weight: 700; }
+.tai-suggest {
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-muted);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+.tai-suggest:hover:not(:disabled) { border-color: var(--brand); }
+.tai-suggest-used { opacity: 0.55; cursor: default; }
 .tai-gate, .tai-error, .tai-noconfig {
   margin: 8px 0;
   padding: 10px 12px;
