@@ -77,6 +77,13 @@
      * 2048 仍有 3/10 被 reasoning 吃光，4096：37/37 finish=stop）。max_tokens 只是上限、按实际用量计费，
      * 抬高上限不额外花钱；<= 4096 是 test_engine.js 既有的防过度放大红线，别改成 8192。 */
     explain: 4096,
+    /* 截断重发那一次的预算（卡 H）：只在首答命中 needsRefetch（finish_reason=length 或正文
+     * trim 为空）时使用，常态首答仍是上面的 explain=4096。
+     * 依据（DeepSeek-V4.1-Flash，cnm_p031，2026-11-08 实测）：同一 prompt 5 次里 3 次 finish=length，
+     * completion 撞满 4096、reasoning 5614–11272 字符；成功的两次 completion 3463 / 3998、
+     * reasoning 8573 / 9187 字符 —— 差的就是那一点余量，给 1.5 倍（4096×1.5=6144）即可，
+     * 不把常态档位放大。上限 8192 由 tests/test_engine.js 的防放大断言钉住。 */
+    explainRetry: 6144,
     /* 讲解中追问：单轮，但输出是 JSON 对象 {text, graph|null}（不是纯文本）。
      * JSON 比纯文本多吃 token（键名、引号、转义 + graph 结构化参数），且推理模型的
      * reasoning 会先吃预算 —— 正文可能一个字都吐不出来（finish_reason=length、content 空串
@@ -116,9 +123,12 @@
   var timeouts = {
     /* 与 maxTokens.variants=8192 配套（实测依据见上）：网关吞吐约 250 token/s，
      * 长推理题 max_tokens=8192 实测 10.5s / completion 2972 才 finish=stop，旧的 10s 会先触发超时。
-     * 取 30000：宁可等，也不要超时后 fail-closed 丢掉已经生成的内容
-     * （超时 abort 会连同已产出的题目 JSON 一起丢）。 */
-    chat: 30000,
+     * 取 45000（卡 H 由 30000 上调）：宁可等，也不要超时后 fail-closed 丢掉已经生成的内容
+     * （超时 abort 会连同已产出的题目 JSON 一起丢）。
+     * 上调依据（DeepSeek-V4.1-Flash，本机 127.0.0.1:3000 网关，2026-11-08 实测）：单次知识点讲解
+     * 耗时 5.2s–27.6s（cnm_p031 口算加法基线 22.9s、跨 5 点基线最长 19.9s），30s 会把长尾那些次
+     * 直接切掉；45s 只影响「本来就要失败」的请求，正常请求按实际完成时间返回。 */
+    chat: 45000,
     /* O3-4：探测超时放宽到 15s（联调时网关负载大响应可能 >5s，5s 太紧导致误判 false） */
     probe: 15000,
     labmatch: 20000,  /* 推理模型 + 多选项题面实测可超 12s（cnm_230_q1 就吃过超时） */

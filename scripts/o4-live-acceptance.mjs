@@ -52,6 +52,7 @@ const FULL_REPORT_PATH = path.join(ROOT, 'tmp/o4-live-report.md');
 /* 卡 E 章节（§9）。卡 C 的 §0–§6 与卡 D 的 §7–§8 是历史读数，脚本不再覆盖。 */
 const CARD_D_HEADING = '## 7. 卡 D 修后重跑';
 const CARD_E_HEADING = '## 9. 卡 E 修后重跑：网关错误体';
+const CARD_H_HEADING = '## 10. 卡 H 修后重跑：作答纪律 + 截断重发升档';
 
 /* 固定追问三类（可复现） */
 const FOLLOWUPS = [
@@ -278,6 +279,7 @@ async function main() {
 
     let explainRefetched = false;
     let refetchKind = '';
+    let retryMaxTokens = 0;
     let firstFinish = '';
     let firstEmpty = false;
     let firstNeedsRefetch = false;
@@ -309,12 +311,13 @@ async function main() {
           secondRaw = String(explainReq.r.text || '').trim();
         }
       } else if (firstNeedsRefetch) {
-        /* 与页面 generate() 一致：同 messages、同 max_tokens，最多重发 1 次。 */
+        /* 与页面 generate() 一致（卡 H）：同 messages，截断重发升档到 explainRetry（取不到回落 explain）。 */
         explainRefetched = true;
         refetchKind = 'refetch';
         refetches += 1;
-        say(`  explain   首次 ${firstFinish || '(no finish)'} 正文${firstEmpty ? '空' : '有'} → needsRefetch，原样重发 1 次`);
-        explainReq = await post(explainBody, CFG.timeouts.chat);
+        retryMaxTokens = CFG.maxTokens.explainRetry || CFG.maxTokens.explain;
+        say(`  explain   首次 ${firstFinish || '(no finish)'} 正文${firstEmpty ? '空' : '有'} → needsRefetch，重发 1 次（max_tokens ${CFG.maxTokens.explain} → ${retryMaxTokens}）`);
+        explainReq = await post(Object.assign({}, explainBody, { max_tokens: retryMaxTokens }), CFG.timeouts.chat);
         if (explainReq.r) {
           explainMs += explainReq.r.ms;
           if (Number(explainReq.r.http) === 200) refetchHttp200 += 1;
@@ -355,7 +358,7 @@ async function main() {
       const verdict = judgeExplain(content);
       rec.explain = {
         kind: 'explain', http: explainReq.r.http, ms: explainMs, attempts: explainReq.attempts.length,
-        ok: verdict.ok, failed: false, refetched: explainRefetched, refetchKind,
+        ok: verdict.ok, failed: false, refetched: explainRefetched, refetchKind, retryMaxTokens,
         firstFinish, firstEmpty, firstNeedsRefetch,
         firstGw, secondGw, firstRaw, secondRaw,
         reasons: verdict.reasons,
@@ -764,22 +767,115 @@ async function main() {
   e.push('`needsRefetch` 对缺 `choices` 返回 `false` 是设计（它是截断判据），网关错误体由 `gatewayErrorOf` 单独识别。');
   e.push('');
 
-  const cardEText = e.join('\n');
-  let docsMode;
-  let prev = '';
-  try { prev = fs.readFileSync(DOC_PATH, 'utf8'); } catch (e2) { prev = ''; }
+  /* ---------- 10. 卡 H 一节（只维护 §10；§9 是卡 E 的历史读数，缺失才补） ---------- */
 
-  if (!prev.trim()) {
-    /* 首次运行：先落 §0–§8（卡 C 口径的完整报告），再追加 §9。 */
-    fs.writeFileSync(DOC_PATH, fullReport, 'utf8');
+  /* 卡 H 之前的读数（只用于对照，抄自本文件已有小节，运行后不许改）：
+   *   §2 卡 C：讲解 12/20、平均耗时 9177ms；§7.2 卡 D：19/20、12928ms（含重发）；§9.1 卡 E：20/20。 */
+  const CARD_H_PREV = { cOk: 12, cMean: 9177, dOk: 19, dMean: 12928, eOk: 20 };
+
+  const h = [];
+  h.push(CARD_H_HEADING);
+  h.push('');
+  h.push(`运行时间：${new Date().toISOString()}`);
+  h.push('');
+  h.push('本节是**卡 H**（讲解 system 末尾加一句作答纪律 + 截断重发升档 `explainRetry` + `timeouts.chat` 30s→45s）改完之后，用**同一个脚本、同一套采样规则**的重跑读数。');
+  h.push('§0–§9 是卡 C / 卡 D / 卡 E 的历史读数，原样保留、未被本节覆盖；四节数字可直接对照。');
+  h.push('');
+  h.push('### 10.1 本次运行参数');
+  h.push('');
+  h.push(`- 网关：${CFG.chatUrl()}`);
+  h.push(`- model：\`${CFG.model}\`，temperature：0`);
+  h.push(`- max_tokens：讲解首答 **${CFG.maxTokens.explain}**（未动）/ 截断重发 **${CFG.maxTokens.explainRetry}**（卡 H 新增）/ 追问 ${CFG.maxTokens.tutor}（未动）`);
+  h.push(`- 超时：讲解 **${CFG.timeouts.chat}ms**（卡 E 为 30000）/ 追问 ${CFG.timeouts.tutor}ms（未动）`);
+  h.push(`- 截断重发：**${refetches} 次**（同一 messages，重发那一次 \`max_tokens\` 换成 \`explainRetry\`；每点最多 1 次）`);
+  h.push(`- 网关错误重发：${gatewayRefetches} 次（仍用 \`explain\`，跟预算无关）`);
+  h.push(`- 请求次数：${totalRequests}（讲解 ${explainItems.length} + 追问 ${followItems.length} + 截断重发 ${refetches} + 网关错误重发 ${gatewayRefetches}），HTTP 200：${http200}；HTTP 失败重试：${retried} 次`);
+  h.push('');
+  h.push('### 10.2 三个数字（合规率 / 平均讲解耗时 / 截断重发次数）');
+  h.push('');
+  h.push('| 项 | 卡 C §2/§4 | 卡 D §7 | 卡 E §9 | 卡 H（本节） |');
+  h.push('|---|---|---|---|---|');
+  h.push(`| 讲解合规率 | ${CARD_H_PREV.cOk}/20 | ${CARD_H_PREV.dOk}/20 | ${CARD_H_PREV.eOk}/20 | **${explainOk}/${explainItems.length}** |`);
+  h.push(`| 讲解平均耗时 | ${CARD_H_PREV.cMean}ms | ${CARD_H_PREV.dMean}ms（含重发） | —（§9 未记） | **${explainMean}ms**（含重发，共 ${explainItems.length - explainItems.filter((x) => x.failed).length} 点） |`);
+  h.push(`| 截断重发次数 | —（机制卡 D 才有） | 2 | 0 | **${refetches}** |`);
+  h.push(`| 追问合规率 | 60/60 | 60/60 | 60/60 | ${followOk}/${followItems.length} |`);
+  h.push('');
+  h.push('判定口径与卡 C 起完全相同：`checkExplain(segs)` / `checkReply(text)` 的 `ok` 与 `reasons[].gate`；本节不改任何判据。');
+  h.push('');
+  h.push('### 10.3 讲解耗时分布（同一批 20 点）');
+  h.push('');
+  const msList = explainItems.filter((x) => !x.failed).map((x) => x.ms).sort((a, b) => a - b);
+  const median = msList.length ? (msList.length % 2
+    ? msList[(msList.length - 1) / 2]
+    : Math.round((msList[msList.length / 2 - 1] + msList[msList.length / 2]) / 2)) : 0;
+  h.push(`- 中位数：${median}ms；最快 ${msList[0] || 0}ms；最慢 ${msList[msList.length - 1] || 0}ms（${msList.length} 个成功点）`);
+  h.push('- 对照：卡 C 平均 9177ms / 卡 D 平均 12928ms（含重发）。');
+  h.push('');
+  h.push('最慢 5 点（含重发耗时）：');
+  h.push('');
+  h.push('| # | 学科 | topicId | 耗时 | 合规 | 重发 |');
+  h.push('|---|---|---|---|---|---|');
+  for (const r of runs.filter((x) => x.explain && !x.explain.failed).sort((a, b) => b.explain.ms - a.explain.ms).slice(0, 5)) {
+    h.push(`| ${r.seq} | ${r.subject} | ${r.topicId} | ${r.explain.ms}ms | ${r.explain.ok ? '合规' : '不合规'} | ${r.explain.refetched ? r.explain.refetchKind : '—'} |`);
   }
-  docsMode = upsertSection(DOC_PATH, CARD_E_HEADING, cardEText);
+  h.push('');
+  h.push('### 10.4 截断重发的点（首答 finish → 重发预算 → 结果）');
+  h.push('');
+  if (refetches) {
+    h.push('| # | 学科 | topicId | 首答 finish | 首答正文 | 重发 max_tokens | 重发后 finish | 重发后合规 |');
+    h.push('|---|---|---|---|---|---|---|---|');
+    for (const r of runs) {
+      if (!r.explain || r.explain.refetchKind !== 'refetch') continue;
+      h.push(`| ${r.seq} | ${r.subject} | ${r.topicId} | ${r.explain.firstFinish || '(空)'} | ${r.explain.firstEmpty ? '空' : '有（截断）'} | ${r.explain.retryMaxTokens || CFG.maxTokens.explainRetry} | ${r.explain.finish || '(失败)'} | ${r.explain.ok ? '合规' : '不合规'} |`);
+    }
+    h.push('');
+    h.push(`重发后恢复 ${explainRefetchRecovered} 次、重发后仍截断 ${explainRefetchStillBad} 次。`);
+  } else {
+    h.push('本节这次运行没有任何点触发截断重发——20 条讲解首答全部 `finish_reason=stop` 且正文非空。');
+  }
+  h.push('');
+  h.push('### 10.5 仍不合规的点（如实记录，不修饰）');
+  h.push('');
+  if (explainBadPoints.length) {
+    h.push('| # | 学科 | topicId | http | finish | 首答需重发 | 拒因 |');
+    h.push('|---|---|---|---|---|---|---|');
+    for (const r of explainBadPoints) {
+      h.push(`| ${r.seq} | ${r.subject} | ${r.topicId} | ${r.explain.http} | ${r.explain.finish || '(空)'} | ${r.explain.firstNeedsRefetch ? '是' : '否'} | ${r.explain.reasons.map((x) => x.gate + ' ' + x.why).join('；')} |`);
+    }
+  } else {
+    h.push('（无：20 条讲解全部合规）');
+  }
+  h.push('');
+  h.push('### 10.6 原始返回');
+  h.push('');
+  h.push(`- 逐条：\`tmp/o4-live-raw/<topicId>.json\`（${runs.length} 个文件，新增字段 \`explain.retryMaxTokens\`）`);
+  h.push('- `tmp/` 在 `.gitignore` 内，不入库。');
+  h.push('');
+
+  const cardEText = e.join('\n');
+  const cardHText = h.join('\n');
+  let fresh = '';
+  try { fresh = fs.readFileSync(DOC_PATH, 'utf8'); } catch (e4) { fresh = ''; }
+  if (!fresh.trim()) {
+    /* 首次运行：先落 §0–§8（卡 C 口径的完整报告）。 */
+    fs.writeFileSync(DOC_PATH, fullReport, 'utf8');
+    fresh = fullReport;
+  }
+  /* 卡 H：§9 是卡 E 的历史读数 —— 文档里已有就绝不覆盖，只有缺失时才补写一次。 */
+  const eKept = fresh.indexOf(CARD_E_HEADING) >= 0;
+  const docsMode = eKept ? 'kept' : upsertSection(DOC_PATH, CARD_E_HEADING, cardEText);
+  const hMode = upsertSection(DOC_PATH, CARD_H_HEADING, cardHText);
 
   const DOCS_MSG = {
-    replaced: '§9 已整段替换（§0–§8 未动）',
-    appended: '§9 已追加到文末（§0–§8 未动）'
+    replaced: '§10 已整段替换（§0–§9 未动）',
+    appended: '§10 已追加到文末（§0–§9 未动）'
   };
-  const docsMsg = DOCS_MSG[docsMode] || docsMode;
+  const E_MSG = {
+    kept: '§9 是卡 E 的历史读数，本次未动',
+    replaced: '§9 已补写',
+    appended: '§9 已补写'
+  };
+  const docsMsg = (DOCS_MSG[hMode] || hMode) + '；' + (E_MSG[docsMode] || docsMode);
   say(`\n报告已写入 ${path.relative(ROOT, DOC_PATH)}：${docsMsg}`);
   say(`完整报告（含卡 C 口径的 §0–§8）已写入 ${path.relative(ROOT, FULL_REPORT_PATH)}（临时，不入库）`);
   say(`原始返回已写入 ${path.relative(ROOT, RAW_DIR)}/（${runs.length} 个文件）`);

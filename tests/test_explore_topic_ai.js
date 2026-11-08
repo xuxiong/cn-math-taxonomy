@@ -144,7 +144,7 @@ function makeStorage() {
 function makeConfig(on) {
   return {
     model: 'test-model',
-    maxTokens: { explain: 111, tutor: 222 },
+    maxTokens: { explain: 111, explainRetry: 333, tutor: 222 },
     isConfigured: function () { return on !== false; }
   };
 }
@@ -591,7 +591,7 @@ function explainCacheKeys(storage) {
   return n;
 }
 
-testAsync('7b. 首次 finish=length、第二次合规 → 恰好 2 次请求（同 messages 同 max_tokens）、5 段上屏、缓存已写', async function () {
+testAsync('7b. 首次 finish=length、第二次合规 → 恰好 2 次请求（同 messages、首答 explain / 重发 explainRetry）、5 段上屏、缓存已写', async function () {
   const storage = makeStorage();
   const gateway = makeGateway(function (body, n) {
     return n === 1 ? TRUNCATED : dataOf(SEG_JSON);
@@ -604,8 +604,8 @@ testAsync('7b. 首次 finish=length、第二次合规 → 恰好 2 次请求（�
 
   assert.strictEqual(gateway.calls.length, 2, '首次被截断 → 只重发 1 次（共 2 次请求）');
   assert.deepStrictEqual(gateway.calls[1].messages, gateway.calls[0].messages, '重发必须用同样的 messages');
-  assert.strictEqual(gateway.calls[1].max_tokens, gateway.calls[0].max_tokens, '重发必须用同样的 max_tokens');
-  assert.strictEqual(gateway.calls[0].max_tokens, 111, 'max_tokens 取自配置的 maxTokens.explain');
+  assert.strictEqual(gateway.calls[0].max_tokens, 111, '首答 max_tokens 取自配置的 maxTokens.explain');
+  assert.strictEqual(gateway.calls[1].max_tokens, 333, '截断重发必须升档到 maxTokens.explainRetry（卡 H）');
   assert.strictEqual(gateway.calls[1].model, gateway.calls[0].model, '重发沿用同一个 model');
 
   assert.strictEqual(byClass(box, 'tai-seg').length, 5, '重发成功后讲解应正常上屏');
@@ -624,6 +624,8 @@ testAsync('7c. 两次都 finish=length → 恰好 2 次请求（不是 3 次）�
   await flush();
 
   assert.strictEqual(gateway.calls.length, 2, '最多重发 1 次：两次都截断也只能是 2 次请求（不许 while 循环）');
+  assert.strictEqual(gateway.calls[0].max_tokens, 111, '首答仍用 explain');
+  assert.strictEqual(gateway.calls[1].max_tokens, 333, '截断重发仍升档到 explainRetry（卡 H）');
   assert.strictEqual(byClass(box, 'tai-seg').length, 0, '两次都截断不能出现 5 段');
   const gate = byClass(box, 'tai-gate')[0];
   assert.ok(gate, '应渲染 .tai-gate');
@@ -631,6 +633,26 @@ testAsync('7c. 两次都 finish=length → 恰好 2 次请求（不是 3 次）�
   assert.ok(byClass(box, 'tai-retry').length === 1, '应给可见重试按钮');
   assert.strictEqual(textOf(box).indexOf('正在重试'), -1, '不许给用户加「正在重试」的技术噪音');
   assert.strictEqual(explainCacheKeys(storage), 0, '重发失败不写缓存');
+});
+
+/* 卡 H：配置里没有 explainRetry（老配置 / 外部注入）时，重发回落 explain，不许发 undefined。 */
+testAsync('卡H-回落. 配置缺 explainRetry 时，截断重发回落 explain（仍恰好 2 次）', async function () {
+  const storage = makeStorage();
+  const gateway = makeGateway(function (body, n) {
+    return n === 1 ? TRUNCATED : dataOf(SEG_JSON);
+  });
+  const cfg = makeConfig(true);
+  delete cfg.maxTokens.explainRetry;
+  const mod = loadModule(storage, cfg, gateway);
+
+  const box = makeNode('div');
+  mod.CnmTopicAI.mount(box, autoCtx(topic('cnm_refetch_nofallback', '缺档位回落')));
+  await flush();
+
+  assert.strictEqual(gateway.calls.length, 2, '仍然只重发 1 次');
+  assert.strictEqual(gateway.calls[0].max_tokens, 111, '首答 explain');
+  assert.strictEqual(gateway.calls[1].max_tokens, 111, '缺 explainRetry 时重发回落 explain（不发 undefined）');
+  assert.strictEqual(byClass(box, 'tai-seg').length, 5, '回落也应能上屏');
 });
 
 /* ================================================================ 7d. 网关错误体（卡 E） */
@@ -652,7 +674,8 @@ testAsync('卡E-1. 首次网关错误体、第二次正常 → 2 次请求、800
 
   assert.strictEqual(gateway.calls.length, 2, '网关错误只重发 1 次（共 2 次请求）');
   assert.deepStrictEqual(gateway.calls[1].messages, gateway.calls[0].messages, '重发必须用同样的 messages');
-  assert.strictEqual(gateway.calls[1].max_tokens, gateway.calls[0].max_tokens, '重发必须用同样的 max_tokens');
+  assert.strictEqual(gateway.calls[0].max_tokens, 111, '网关错误那次的首次请求用 explain');
+  assert.strictEqual(gateway.calls[1].max_tokens, 111, '网关错误的退避重发仍用 explain（跟预算无关，不升档）');
   assert.deepStrictEqual(timers.delays, [800], '退避延迟必须恰好 800ms 且只调用 1 次');
   assert.strictEqual(byClass(box, 'tai-seg').length, 5, '重发成功后讲解应正常上屏');
   assert.ok(byClass(box, 'tai-gate').length === 0, '不该出现「格式没成形」');
