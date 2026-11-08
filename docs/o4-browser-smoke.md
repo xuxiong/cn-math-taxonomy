@@ -244,3 +244,45 @@ serve.js 尾部日志：
 - 修后首点即 5 段、只发 1 次讲解请求，不需要第二次点击 —— §8 那条「孩子手快点就白点」的路径不再成立。
 - 本节同样不含「孩子能听懂 / 讲得清楚 / 质量好」类判断；只有 DOM 读数、布尔结论与请求计数。
 
+## 11. 卡「AI 生成」提示（t_66f641d9）
+
+口径：本节是临时脚本 `tmp/ai-badge-smoke.mjs`（放 `tmp/`，不入库）的实测读数 —— 自己起空闲端口的 `scripts/serve.js`（`/v1` 同源反代本机 3000 网关）+ 自己的无头 Chrome（`--remote-debugging-port=0` + 自己的 `--user-data-dir`），不碰 9222、不 `pkill`。横幅位置一律按 **DOM 事实**判：`banner.parentElement.children` 的下标 + `compareDocumentPosition`（`& 4` = FOLLOWING），不比字符串顺序。
+
+采样两点：`#cnc_j143`（语文选择题，有 options）、`#cnm_p031`（算术口算，有 options）。每次整页加载带唯一 query（`?t=<序号>#<topicId>`），新 profile、localStorage 为空 → 讲解必走真网关，不是缓存凑的。
+
+### 11.1 两态读数（loading / ready 都要有横幅）
+
+| topicId | 面板状态 | loading 态横幅出现 | 那一刻 5 段 | ready 态横幅文本（原文） | 横幅在面板 children 里的下标 | 第一个 `.tai-seg` 的下标 | 讲解请求数 | 耗时 |
+|---|---|---|---|---|---|---|---|---|
+| `cnc_j143` | `ready` | 点击后 55ms | 0 段 | 本页讲解由 AI 生成，未经人工审核（题面、答案来自题库） | 0 | 1 | 1 | 7.6s |
+| `cnm_p031` | `ready` | 点击后 57ms | 0 段 | 本页讲解由 AI 生成，未经人工审核（题面、答案来自题库） | 0 | 1 | 1 | 10.2s |
+
+- 两点都是：`bannerCount=1`（一条横幅，不是每段各挂一条）、`bannerIsBoxFirstChild=true`、`sameParent=true`（横幅与 5 段同父，父节点 `class="tai"`）、`bannerPrecedesFirstSegByTreeOrder=true`、`bannerInsideSeg=false`（没被挂进段里）。
+- loading 那一行是「点击后轮询到横幅出现的第一帧」：此刻 `segCount=0`、`bannerCount=1` —— 也就是讲解还没上屏就已经有横幅了。
+
+### 11.2 chips 的「AI 建议」标
+
+| topicId | chips 条数 | `.tai-chip-label` 个数 | 标文案 | 标与 chips 同一行 | 标在第一条 chip 之前 |
+|---|---|---|---|---|---|
+| `cnc_j143` | 3 | 1 | AI 建议 | 是（`parentElement` 就是 `.tai-suggests` 行） | 是 |
+| `cnm_p031` | 3 | 1 | AI 建议 | 是 | 是 |
+
+- 底部 `.tai-foot` 里的 `AI 生成 · 未经人工审核` 两点都仍在（`footerBadge` 逐字相等），本卡没删它。
+
+### 11.3 手机宽度（390）下的横幅
+
+`Emulation.setDeviceMetricsOverride` 切到 `width=390, deviceScaleFactor=2, mobile=true` 后量 `.tai-banner`：
+
+| topicId | 横幅宽 / 面板宽 | 高 | `scrollWidth` / `clientWidth` | 横向溢出 |
+|---|---|---|---|---|
+| `cnc_j143` | 358 / 358 | 56 | 356 / 356 | 否 |
+| `cnm_p031` | 358 / 358 | 56 | 356 / 356 | 否 |
+
+- 高 56px ≈ 两行（`font-size: 0.8rem` + `line-height: 1.5` + 上下 padding）—— 在 390 宽下是自然折两行，宽与面板同宽、`scrollWidth` 未超 `clientWidth`。
+- 横幅样式没有 `white-space: nowrap`，是 `overflow-wrap: anywhere`。
+
+### 11.4 收尾
+
+- 本次自己的 Chrome 进程：**0 个**（按自己那条 `--user-data-dir` 路径 `ps -axo` 反查为空；收尾只用 `guard.kill(chrome)` + serve 子进程 pid）。
+- serve 端口：已释放（收尾后对同一端口重新 `listen` 成功）。
+- 本节只有 DOM 读数和请求计数，不含「提示是否醒目 / 文案是否合适」这类判断。

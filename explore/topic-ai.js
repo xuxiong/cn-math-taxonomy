@@ -29,6 +29,13 @@
   /* 固定文案（卡面要求严格一致，不许写成「已审核 / 已验证」）。 */
   var BADGE = 'AI 生成 · 未经人工审核';
   var HINT = 'AI 生成，仅供参考';
+
+  /* 卡 t_66f641d9：讲解内容必须明示「AI 生成」——横幅在 5 段之前、面板一打开就有。
+   * 它只是渲染层的装饰：不进缓存条目、不改 cacheKey（老缓存命中时同样要出现）。
+   * 后半句不能删：题面/选项/答案/解析是 inputs.examples[0] 的题库原文，不是模型写的。 */
+  var BANNER = '本页讲解由 AI 生成，未经人工审核（题面、答案来自题库）';
+  /* chips 行首的小标：chip 文案是模型给的建议问句，不是题库内容。 */
+  var CHIP_LABEL = 'AI 建议';
   var LOADING = '正在准备讲解…';
   var GATE_TEXT = '这条没通过自动校验（格式没成形），换一次试试';
   var CHAT_FAIL = '这条没通过自动校验（格式没成形），再问一次试试';
@@ -401,6 +408,10 @@
     var box = st.box;
     if (!box) return;
     box.replaceChildren();
+    /* 卡 t_66f641d9：横幅是面板首个子节点、在 5 段之前。loading 与 ready（含缓存命中）
+     * 都必须有；讲解还没上屏的失败态（gate / gwerror / error / noconfig）不挂，
+     * 免得在没有任何 AI 文本时也说「本页讲解由 AI 生成」。 */
+    if (st.status === 'loading' || st.status === 'ready') box.append(el('p', 'tai-banner', BANNER));
     if (st.status === 'idle') renderIdle(st, box);
     else if (st.status === 'loading') renderLoading(box);
     else if (st.status === 'noconfig') renderNoConfig(box);
@@ -593,6 +604,10 @@
   function suggestsRow(st) {
     var row = el('div', 'tai-suggests');
     row.append(el('span', 'tai-suggests-label', '你可能想问：'));
+    /* 卡 t_66f641d9：3 条 chip 都是模型给的建议问句 → 行首加「AI 建议」小标。
+     * 这行只在真有一条 chip 时才会被建（唯一调用点判了 st.suggests.length），
+     * 所以不会出现「有标没有 chip」的孤标。 */
+    row.append(el('span', 'tai-chip-label', CHIP_LABEL));
     st.suggests.forEach(function (q, index) {
       var chip = el('button', 'tai-suggest', q);
       chip.setAttribute('type', 'button');
