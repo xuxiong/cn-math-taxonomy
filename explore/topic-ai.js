@@ -489,8 +489,10 @@
       else steps.push(row);
     });
 
+    /* 「看个例子」的步骤列表：容器自己不出 marker（tai-steps-plain），模型写了序号就原样留着，
+     * 没写就是纯行。不调 stripOrder —— 砍模型序号不是本段的口径（见卡 t_ae6eeac0 §2）。 */
     if (steps.length) {
-      var ol = el('ol', 'tai-steps');
+      var ol = el('ol', 'tai-steps tai-steps-plain');
       steps.forEach(function (row) { ol.append(el('li', null, row)); });
       section.append(ol);
     }

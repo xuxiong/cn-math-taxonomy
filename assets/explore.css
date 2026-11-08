@@ -300,6 +300,7 @@ body.page-explore .site-footer { flex: none; }
 }
 .tai-list, .tai-steps { margin: 4px 0 0; padding-left: 1.3em; }
 .tai-list li, .tai-steps li { margin: 4px 0; line-height: 1.6; }
+.tai-steps-plain { list-style: none; padding-left: 0; }
 .tai-q {
   margin: 8px 0;
   padding: 10px 12px;
