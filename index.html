@@ -51,6 +51,25 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="知识图谱">
 <link rel="stylesheet" href="assets/pwa.css">
+<style>
+/* 首页「AI 老师」一节。只加 .ai-teacher / .ai-card / .ai-note 三个类，子选择器都收在本节作用域内。
+   放本页 inline 而不是 assets/site.css：那份是所有页面共用的一份请求，加字节会吃 explore 的首屏预算余量。 */
+.ai-teacher { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 32px 0 0; }
+.ai-teacher > h2 { grid-column: 1 / -1; margin: 0; font-size: 1.15rem; letter-spacing: -0.02em; }
+.ai-teacher > p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 0.95rem; }
+.ai-teacher > .ai-note { font-size: 0.86rem; }
+.ai-card {
+  display: flex; flex-direction: column; gap: 8px;
+  background: var(--bg-elev); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px 16px 18px; min-width: 0;
+}
+.ai-card h3 { margin: 0; font-size: 1.05rem; letter-spacing: -0.02em; }
+.ai-card p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+.ai-card .ai-note { margin-top: auto; color: var(--muted); font-size: 0.86rem; }
+.ai-card a { color: var(--brand-strong); font-weight: 650; text-underline-offset: 3px; }
+.ai-note { color: var(--muted); font-size: 0.86rem; }
+@media (max-width: 800px) { .ai-teacher { grid-template-columns: 1fr; } }
+</style>
 </head>
 <body class="page-home">
 <header class="site-header">
@@ -87,9 +106,9 @@
 </header>
 <main class="home">
   <section class="hero">
-    <p class="eyebrow">数学：小学到高中 · 语文：小学一至六年级 · 初中七至九年级 · 科学：小学一至六年级 · 道德与法治：小学一至六年级 · 历史：初中七至九年级 · 地理：初中七至八年级 · 生物：初中七至八年级 · 化学：初中九年级 · 英语：三年级到高中 · 物理：初中到高中</p>
+    <p class="eyebrow">小学一年级到高中 · 十门学科</p>
     <h1>先找到真正没学会的那一步</h1>
-    <p class="lede">沿着先修关系自适应出题。数学从小学追到高中，语文覆盖统编版小学一至六年级和初中七至九年级，科学覆盖教科版小学一至六年级，道德与法治覆盖统编版小学一至六年级，历史覆盖统编版初中七至九年级，地理覆盖人教版初中七至八年级，生物覆盖人教版初中七至八年级，化学覆盖人教版初中九年级，英语覆盖三年级到高中，物理覆盖初中八、九年级和高中必修、选择性必修。从你选的知识点往回追，定位薄弱根因，并给出一条按学习顺序排起的路径。</p>
+    <p class="lede">答几道题，帮你找到真正卡住的那一步。从你选的知识点往回追，指出该从哪里补，再给一条按顺序排好的路。</p>
     <div class="hero-actions">
       <a class="btn btn-primary btn-lg" href="diagnose/">开始诊断</a>
       <a class="btn btn-lg" href="explore/">浏览知识图谱</a>
@@ -98,38 +117,55 @@
     <p class="quiet-link"><a href="diagnose/?target=cnm_221&amp;demo=1">先看一遍演示：配方法</a></p>
   </section>
 
+  <section class="ai-teacher">
+    <h2>AI 老师</h2>
+    <p>知识点可以让它讲一遍，做题卡住了可以问它。</p>
+    <article class="ai-card">
+      <h3>讲一个知识点</h3>
+      <p>点开任一知识点，用「让 AI 讲一遍」：这是什么、为什么、怎么做、看个例子、容易错的地方。听不懂就接着问，它会顺着你的问题往下讲。</p>
+      <p class="ai-note">讲解由 AI 生成，未经人工审核。</p>
+      <a href="explore/#cnm_p031">看一个例子：口算加法</a>
+    </article>
+    <article class="ai-card">
+      <h3>陪你把题做完</h3>
+      <p>诊断时答错了，点「为什么错了」，它把这道题一步步讲清楚，还有不清楚的直接问。「再来一道」可以换一道同难度的题接着练；出不了会直接告诉你。</p>
+      <p class="ai-note">AI 生成的内容都会标出来。</p>
+      <a href="diagnose/?target=cnm_221&amp;demo=1">看一个例子：配方法</a>
+    </article>
+    <p class="ai-note">第一次用 AI 功能会让你填一个模型，只存在这台设备上。</p>
+  </section>
+
   <h2 class="section-title">三步</h2>
   <ol class="steps">
     <li>
       <span class="step-no">1</span>
       <h3>选知识点</h3>
-      <p>数学从一年级到高中必修和选择性必修，语文从一年级到九年级，科学和道德与法治从一年级到六年级，历史从七年级到九年级，地理从七年级到八年级，生物从七年级到八年级，化学在九年级，英语从三年级到高中，物理从八年级上册到高中选择性必修第三册。搜索或按册、章找到想检查的内容。</p>
+      <p>搜索，或按年级、册次找想检查的内容。</p>
     </li>
     <li>
       <span class="step-no">2</span>
       <h3>自适应答题</h3>
-      <p>先问目标本身。答错再出一道同级或更容易的题，仍然错才沿着先修往回追。</p>
+      <p>先问你选的那个知识点。答错就换一道同级或更简单的题；还错，就往前追到更基础的地方。</p>
     </li>
     <li>
       <span class="step-no">3</span>
       <h3>找到根因和学习路径</h3>
-      <p>标出薄弱根因和不稳的点，并按年级从低到高排出建议补学的顺序。</p>
+      <p>标出没打牢的地方，按年级从低到高排成一条补学顺序。</p>
     </li>
   </ol>
 
   <h2 class="section-title">图谱里有什么</h2>
   <div class="stat-grid" id="stats">
     <div class="stat-card"><div class="stat-num" id="n-topics">…</div><div class="stat-label">知识点</div></div>
-    <div class="stat-card"><div class="stat-num" id="n-edges">…</div><div class="stat-label">先修边</div></div>
+    <div class="stat-card"><div class="stat-num" id="n-edges">…</div><div class="stat-label">先修关系</div></div>
     <div class="stat-card"><div class="stat-num" id="n-questions">…</div><div class="stat-label">题目</div></div>
-    <div class="stat-card"><div class="stat-num" id="n-standards">…</div><div class="stat-label">课标条目</div></div>
   </div>
-  <p class="stat-note">以上数字在打开页面时从当前学科的知识点、先修、题库和课标统计。默认是数学。</p>
+  <p class="stat-note">数字按当前学科实时统计，默认数学。</p>
   <div id="load-error" class="load-error" hidden></div>
 
   <section class="blind-home" id="blind-home" hidden>
-    <h2 class="section-title">本机盲区</h2>
-    <p class="muted" id="blind-home-lead">根据本机诊断记录汇总的薄弱 / 不稳知识点。只存在这台浏览器，可一键再测。</p>
+    <h2 class="section-title">这台设备上的薄弱点</h2>
+    <p class="muted" id="blind-home-lead">你在本机测出来的薄弱点。只记在这台设备的浏览器里，不会上传，可以一键再测。</p>
     <ul class="blind-home-list" id="blind-home-list"></ul>
     <p class="blind-home-actions" id="blind-home-actions"></p>
   </section>
