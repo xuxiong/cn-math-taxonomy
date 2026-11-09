@@ -190,7 +190,6 @@
     setText('n-topics', dash(topics));
     setText('n-edges', dash(per.edges));
     setText('n-questions', dash(per.questions));
-    setText('n-standards', dash(per.standards));
   }
 
   function renderBlindHome(lite) {
@@ -345,7 +344,6 @@
     setText('n-topics', '—');
     setText('n-edges', '—');
     setText('n-questions', '—');
-    setText('n-standards', '—');
     var grades = document.getElementById('grades');
     if (grades) { grades.replaceChildren(); grades.removeAttribute('aria-busy'); }
     fail('数据没有加载成功（' + (error && error.message ? error.message : error) + '）。请刷新重试；若持续失败，请在项目根目录运行 python3 -m http.server 8000，再用浏览器打开。');
