@@ -16,6 +16,14 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const source = fs.readFileSync(path.join(__dirname, '../assets/home.js'), 'utf8');
+/* 测试专用探针：assets/home.js 的 fetchJsonWithRetry 是 IIFE 私有函数，页面本身只调用一次，
+ * 外部无法制造「同一 URL 并发两次」。这里只在**测试里跑的源码副本**上把该函数挂到 window，
+ * 供去重用例直接驱动并发；assets/home.js 一个字节不动。锚点是函数体的收尾两行，
+ * 锚点失配时 probe 为 undefined，用例第一条断言就会红（不会静默放行）。 */
+const PROBE_ANCHOR = '    return fetchInflight[url];\n  }\n';
+const probeSource = source.indexOf(PROBE_ANCHOR) >= 0
+  ? source.replace(PROBE_ANCHOR, PROBE_ANCHOR + '  window.__testFetchJsonWithRetry = fetchJsonWithRetry;\n')
+  : source;
 let passed = 0;
 
 async function test(name, fn) {
@@ -84,7 +92,7 @@ function load(search) {
       createElement() { return element(); }
     }
   };
-  vm.runInNewContext(source, context, { filename: 'assets/home.js' });
+  vm.runInNewContext(probeSource, context, { filename: 'assets/home.js' });
   const all = url => calls.filter(c => c.url === url);
   const call = url => all(url)[0];
   const respond = (url, data, status) => {
@@ -103,7 +111,7 @@ function load(search) {
     respond('data/topics-lite/' + (subject || 'math') + '.json', subject === 'english' ? englishLite : mathLite);
     await flush();
   }
-  return { ids, calls, all, call, respond, failNet, baseMeta };
+  return { ids, calls, all, call, respond, failNet, baseMeta, probe: context.window.__testFetchJsonWithRetry };
 }
 
 (async () => {
@@ -165,12 +173,33 @@ function load(search) {
   });
 
   await test('进行中 Promise 去重（fetchInflight / fetchJsonWithRetry）', async () => {
-    assert.ok(source.indexOf('fetchInflight') >= 0, 'inflight map present');
-    assert.ok(source.indexOf('function fetchJsonWithRetry') >= 0, 'retry helper present');
-    /* 每个首屏 URL 只发一次：同 url 的并发请求共用一条 promise，不重复下载。 */
-    const { all } = load('');
-    assert.strictEqual(all('data/stats.json').length, 1);
-    assert.strictEqual(all('data/topics-lite/math.json').length, 1);
+    /* 真并发断言，不再只看源码里有没有这个字符串（板主变异验证过那种写法是假覆盖）。 */
+    const { all, respond, probe } = load('');
+    assert.strictEqual(typeof probe, 'function', '探针未注入：home.js 的 fetchJsonWithRetry 结构变了，更新本文件的 PROBE_ANCHOR');
+
+    /* ① 同一 URL 并发取两次：第二次必须搭上第一次的 inflight promise，底层 fetch 仍然只发 1 次。 */
+    const p1 = probe('data/stats.json');
+    const p2 = probe('data/stats.json');
+    assert.strictEqual(all('data/stats.json').length, 1, '同一 URL 并发只允许 1 次 fetch');
+
+    respond('data/stats.json', stats);
+    respond('data/topics-lite/math.json', mathLite);
+    const both = await Promise.all([p1, p2]);
+    await flush();
+    /* ② 两个消费者拿到同一份数据：同一条 promise、同一个结果对象（值等价）。 */
+    assert.ok(both[0] === both[1], '两个消费者共用同一条 inflight promise 的结果');
+    assert.deepStrictEqual(both[0], stats);
+    assert.deepStrictEqual(both[1], stats);
+
+    /* ③ 失败不进缓存：第一次失败后再取同一 URL，fetch 会被重新调用，不被残留的 inflight 挡住。 */
+    const failing = probe('data/retry-probe.json', 1);
+    assert.strictEqual(all('data/retry-probe.json').length, 1, '首次取数发出一次 fetch');
+    all('data/retry-probe.json')[0].reject(new Error('network'));
+    await assert.rejects(failing, /network/);
+    const again = probe('data/retry-probe.json', 1);
+    assert.strictEqual(all('data/retry-probe.json').length, 2, '失败后重取要重新发 fetch（失败不入缓存）');
+    all('data/retry-probe.json')[1].resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: 1 }) });
+    assert.deepStrictEqual(await again, { ok: 1 });
   });
 
   await test('lite 404 也走失败分支（对应上游「topics 无效仍 fail」）', async () => {
