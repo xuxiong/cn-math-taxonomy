@@ -329,18 +329,44 @@
     }
   }
 
+  /* 首屏数据重试 + inflight 去重（上游 b17bbe7 的 fetchJsonWithRetry）：弱网一次抖动不炸整页，
+   * 同一 url 的并发请求共用一条 promise；HTTP 4xx/5xx 不重试（重试也不会变好，直接报错）。 */
+  var fetchInflight = {};
+  function fetchJsonWithRetry(url, attempts) {
+    attempts = attempts || 2;
+    if (fetchInflight[url]) return fetchInflight[url];
+    function tryOnce(left) {
+      return fetch(url).then(function (response) {
+        if (!response.ok) {
+          var httpErr = new Error('HTTP ' + response.status);
+          httpErr.noRetry = true;
+          throw httpErr;
+        }
+        return response.json();
+      }).catch(function (err) {
+        if (err && err.noRetry) throw err;
+        if (left > 1) return tryOnce(left - 1);
+        throw err;
+      });
+    }
+    /* 只登记「本次尝试链」，成功/失败都摘掉：下次再来重新发，不缓存失败。 */
+    fetchInflight[url] = tryOnce(attempts).then(function (data) {
+      delete fetchInflight[url];
+      return data;
+    }, function (err) {
+      delete fetchInflight[url];
+      throw err;
+    });
+    return fetchInflight[url];
+  }
+
   /* 首屏只取两份：stats.json（各学科计数） + 当前学科 topics-lite（年级卡 + 盲区名称）。
    * 同一份 Promise 链，任一失败走统一 fail()，计数器回退为 —；fetch 本身在 8-10KB/s 下
    * 比整包 topics/deps/questions/课标省下约 1630KB gz（≈160s 首次绘制）。 */
   Promise.all([
-    fetch('data/stats.json'),
-    fetch('data/topics-lite/' + subject + '.json')
-  ]).then(function (responses) {
-    responses.forEach(function (response, index) {
-      if (!response.ok) throw new Error('HTTP ' + response.status);
-    });
-    return Promise.all(responses.map(function (response) { return response.json(); }));
-  }).then(function (data) {
+    fetchJsonWithRetry('data/stats.json'),
+    fetchJsonWithRetry('data/topics-lite/' + subject + '.json')
+  ]).then(function (data) {
     var stats = data[0];
     var lite = data[1];
     if (!Array.isArray(lite)) throw new Error('数据格式无法识别');

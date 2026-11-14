@@ -130,6 +130,8 @@ jobs:
         run: node tests/test_geomlab.js
       - name: Node 测试：home copy
         run: node tests/test_home_copy.js
+      - name: Node 测试：home retry
+        run: node tests/test_home_retry.js
       - name: Node 测试：labmatch
         run: node tests/test_labmatch.js
       - name: Node 测试：lazy load
