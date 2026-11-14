@@ -380,6 +380,33 @@
     });
   }
 
+  var SIDE_COLLAPSED_KEY = 'explore.sideCollapsed';
+
+  /* 宽屏把左侧知识点目录收起/展开：切 .explore 的 side-collapsed（CSS 已在 assets/explore.css），
+   * 同步 aria-expanded 与按钮文案；窄屏按钮被 CSS 隐藏，这里不参与。 */
+  function applySideCollapsed(collapsed) {
+    var box = document.querySelector('.explore');
+    if (box) box.classList.toggle('side-collapsed', !!collapsed);
+    var btn = $('side-collapse');
+    if (btn) {
+      btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      btn.textContent = collapsed ? '展开目录' : '收起目录';
+    }
+  }
+
+  /* 图重排（原来内联在「适配」按钮里）：收起/展开侧栏后画布宽度变了，要重新 resize + fit。 */
+  function fitGraph() {
+    if (!cy) return;
+    cy.resize();
+    var many = cy.nodes().length > 80;
+    if (many) cy.minZoom(0.5);
+    cy.fit(undefined, 36);
+    if (many && cy.zoom() < 0.5) {
+      cy.zoom(0.5);
+      cy.center();
+    }
+  }
+
   function closeDrawerIfMobile() {
     if (!window.matchMedia('(max-width: 900px)').matches) return;
     $('side').classList.remove('open');
@@ -1423,17 +1450,17 @@
       $('list-toggle').setAttribute('aria-expanded', open ? 'true' : 'false');
       $('list-toggle').textContent = open ? '收起目录' : '知识点目录';
     });
-    $('btn-fit').addEventListener('click', function () {
-      if (!cy) return;
-      cy.resize();
-      var many = cy.nodes().length > 80;
-      if (many) cy.minZoom(0.5);
-      cy.fit(undefined, 36);
-      if (many && cy.zoom() < 0.5) {
-        cy.zoom(0.5);
-        cy.center();
-      }
+    $('btn-fit').addEventListener('click', fitGraph);
+    /* 侧边栏可折叠（上游 2048c6e，#43）：按钮/样式已在树里但没接线 —— 宽屏点了是死按钮。 */
+    $('side-collapse').addEventListener('click', function () {
+      var collapsed = !document.querySelector('.explore').classList.contains('side-collapsed');
+      applySideCollapsed(collapsed);
+      try { localStorage.setItem(SIDE_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch (e) {}
+      requestAnimationFrame(fitGraph);
     });
+    var savedCollapsed = false;
+    try { savedCollapsed = localStorage.getItem(SIDE_COLLAPSED_KEY) === '1'; } catch (e) {}
+    applySideCollapsed(savedCollapsed);
     $('btn-zoom-in').addEventListener('click', function () { zoomBy(1.25); });
     $('btn-zoom-out').addEventListener('click', function () { zoomBy(0.8); });
     $('pick-sample').addEventListener('click', function () {
