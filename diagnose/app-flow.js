@@ -914,6 +914,8 @@ function renderQuestion(item) {
       if (qt) qt.insertAdjacentElement('afterend', stemFig);
     }
 
+    /* 结果区起点：提交后同题重渲染要把「判定/解析」滚进视野（上游 2048c6e 的 diagnose 面）。 */
+    const resultStart = card.children.length;
     if (S.ui.phase === 'ask') {
       if (q.type === 'choice') {
         append(card, choicesBlock(q, { item: item, readonly: false, pickedKey: S.ui.picked }));
@@ -929,7 +931,7 @@ function renderQuestion(item) {
           onkeydown: function (e) { if (e.key === 'Enter' && !e.isComposing) judgeAndGo(item); }
         }));
       }
-      card.append(h('div', { class: 'row', style: 'margin-top:10px' },
+      card.append(h('div', { class: 'row actions-sticky', style: 'margin-top:10px' },
         q.type === 'self' ? null : h('button', { class: 'primary', id: 'btn-submit', onclick: function () { judgeAndGo(item); } }, '提交答案'),
         q.type === 'choice' ? null : h('button', { id: 'btn-peek', onclick: function () { S.ui.phase = 'self'; S.ui.verdict = null; renderQuestion(item); } }, '看参考答案并自评'),
         h('button', { id: 'btn-skip', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiNotice = null; S.ui.aiRequested = false; renderQuestion(item); } }, '不会')));
@@ -946,7 +948,7 @@ function renderQuestion(item) {
           : answerEcho(q, S.ui.answer),
         h('div', { class: 'verdict ' + (ok ? 'ok' : 'no') }, ok ? '自动判定：正确' : '自动判定：不正确'),
         feedbackBlock(q),
-        h('div', { class: 'row' },
+        h('div', { class: 'row actions-sticky' },
           ok ? null : h('button', { class: 'primary', id: 'btn-explain', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiNotice = null; S.ui.aiRequested = false; renderQuestion(item); } }, '为什么错了？一起想想'),
           h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer(nextResult); } }, ends ? '看结果' : '下一题'),
           h('button', { id: 'btn-flip', onclick: function () { finishAnswer(ok ? 'wrong' : 'correct'); } }, ok ? '判错了，我其实没做对' : '判错了，我其实做对了'),
@@ -970,7 +972,7 @@ function renderQuestion(item) {
           ? choicesBlock(q, { item: item, readonly: true, correctKey: answerKeys(q), pickedKey: null })
           : answerEcho(q, null),
         feedbackBlock(q),
-        h('div', { class: 'row' }, h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer('skip'); } }, sessionEndsAfter(item, 'skip') ? '看结果' : '下一题')));
+        h('div', { class: 'row actions-sticky' }, h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer('skip'); } }, sessionEndsAfter(item, 'skip') ? '看结果' : '下一题')));
     } else {
       /* 原生 card.append 会把三目里的 null 字符串化成文本节点（self 阶段、ui.verdict 还空时）。
        * 自定义 append(el, c) 只吃一个子节点，兄弟节点要放进数组里传；它天生跳过 null。 */
@@ -981,7 +983,7 @@ function renderQuestion(item) {
         q.type === 'self' ? h('div', { class: 'muted' }, '开放题：请对照参考答案自己判断。')
           : (S.ui.verdict ? h('div', { class: 'muted' }, '这道题的答案无法被自动可靠地判定，请对照参考答案自己判断。') : null),
         feedbackBlock(q),
-        h('div', { class: 'row' },
+        h('div', { class: 'row actions-sticky' },
           h('button', { class: 'good', id: 'btn-right', onclick: function () { finishAnswer('correct'); } }, '对（我做对了）'),
           h('button', { class: 'bad', id: 'btn-wrong', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiNotice = null; S.ui.aiRequested = false; renderQuestion(item); } }, '不对'),
           h('button', { id: 'btn-skip2', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiNotice = null; S.ui.aiRequested = false; renderQuestion(item); } }, '不会'))]);
@@ -1004,6 +1006,15 @@ function renderQuestion(item) {
     append(page, childBar('question'));
     page.append(card);
     show(withRouteBack(page), !isNewQuestion);
+    /* 同题重渲染（提交后出判定/解析）把结果区滚进视野 —— 长解析下不用再往下翻找结论
+     * （上游 2048c6e 的 diagnose 面：滚动定位 + 操作栏贴底）。换题时不滚，交给上面的回顶。 */
+    const resultEl = S.ui.phase === 'ask' ? null : card.children[resultStart];
+    if (resultEl && !isNewQuestion) {
+      const head = document.querySelector('.site-header');
+      resultEl.style.scrollMarginTop = ((head ? head.offsetHeight : 0) + 12) + 'px';
+      const calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      resultEl.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'start' });
+    }
     if (S.ui.askScroll) {
       const items = page.querySelectorAll('.ask-item');
       const last = items.length ? items[items.length - 1] : null;
