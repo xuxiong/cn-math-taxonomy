@@ -101,7 +101,7 @@ function startSession(targets, label, limit, mode) {
     S.session = eng().createSession(graph, targets, {
       mode: mode, limit: limit || (screen ? st.screenLimit : st.limit), confirm: st.confirm, seed: newSeed(), avoid: seenList()
     });
-    S.sessionMeta = { label: label };
+    S.sessionMeta = { label: label, excluded: [] };
     resetUi();
     save();
     /* 兜底：题源还在路上（lite 没有 diagnostic_question + 题库没到 + 全量没到）时开出的会话
@@ -141,7 +141,7 @@ function restoreSession(saved) {
       S.session = eng().replay(S.D.graph, saved.targets, saved.answers, {
         mode: saved.mode, limit: saved.limit, confirm: saved.confirm, seed: saved.seed, avoid: saved.avoid
       });
-      S.sessionMeta = { label: saved.label || saved.targets.map(nameOf).join('、') };
+      S.sessionMeta = { label: saved.label || saved.targets.map(nameOf).join('、'), excluded: Array.isArray(saved.excluded) ? saved.excluded : [] };
       return true;
     } catch (e) { return false; }
   }
