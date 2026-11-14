@@ -872,7 +872,9 @@ function renderQuestion(item) {
     const t = S.D.graph.byId[id];
     const pr = !!S.prac;   // T3 练习模式
     const key = id + '#' + item.attempt;
-    if (S.ui.key !== key) S.ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiNotice: null, aiRequested: false, askHistory: [], askPending: false, askScroll: false, askDraft: '', labCfg: null, labDesc: null, labAsk: null, labAskMsg: null, askSession: null, askChipBusy: null, askFreeOpen: false, askAnother: null, newQuestionNotice: false, hintLevel: 1 };
+    /* 同题重渲染（答题提交 / 翻讲解步骤 / 追问回显）不把页面拉回顶部：位置留给学生 */
+    const isNewQuestion = S.ui.key !== key;
+    if (isNewQuestion) S.ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiNotice: null, aiRequested: false, askHistory: [], askPending: false, askScroll: false, askDraft: '', labCfg: null, labDesc: null, labAsk: null, labAskMsg: null, askSession: null, askChipBusy: null, askFreeOpen: false, askAnother: null, newQuestionNotice: false, hintLevel: 1 };
     /* 卡 D：渲染题面前先把追问会话锚定好 —— 换题（题面 hash 变了）在这里换新会话并置
      * newQuestionNotice，题卡上的提示行和 askBox 读的都是这一次锚定的结果。 */
     ensureAskSession(item);
@@ -1001,8 +1003,7 @@ function renderQuestion(item) {
     if (S.demo) page.append(demoBanner());
     append(page, childBar('question'));
     page.append(card);
-    show(withRouteBack(page));
-    // 必须放在 show() 之后：show() 内有 window.scrollTo(0,0) 会把页面拉回顶部，且此时节点还没进 document，提前调用 scrollIntoView 无效。
+    show(withRouteBack(page), !isNewQuestion);
     if (S.ui.askScroll) {
       const items = page.querySelectorAll('.ask-item');
       const last = items.length ? items[items.length - 1] : null;
@@ -1012,8 +1013,10 @@ function renderQuestion(item) {
     /* 卡 D：换题提示显示过一次就清 —— 翻步骤/重渲染不重复提示；再换题时 ensureAskSession 会重新置位。 */
     S.ui.newQuestionNotice = false;
     const inp = document.getElementById('ans');
-    if (inp && inp.setSelectionRange && inp.tagName === 'INPUT') { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
-    else if (inp) inp.focus();
+    /* 同题重渲染时聚焦输入框不许连带滚动（preventScroll），否则 keepScroll 白做 */
+    const focusOpts = { preventScroll: !isNewQuestion };
+    if (inp && inp.setSelectionRange && inp.tagName === 'INPUT') { inp.focus(focusOpts); inp.setSelectionRange(inp.value.length, inp.value.length); }
+    else if (inp) inp.focus(focusOpts);
   }
 
 /* 是否配置了 LLM：唯一判据是 LLMConfig.isConfigured()（base+model+key 三者齐）。

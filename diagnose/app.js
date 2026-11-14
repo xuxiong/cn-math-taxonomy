@@ -581,7 +581,9 @@
     S.pathTipLock = false;
     if (S.pathCy) { S.pathCy.destroy(); S.pathCy = null; window.__pathCy = null; }
   }
-  function show(node) { teardownPath(); const cs = flow('closeShare'); if (cs) cs(); clearRoot(); root.append(node); window.scrollTo(0, 0); }
+  /* keepScroll：同一题的重渲染（答题提交、翻讲解步骤、追问）保位置，别把学生拉回页首；
+   * 换题/切页不传，照旧回顶部（上游 2048c6e）。 */
+  function show(node, keepScroll) { teardownPath(); const cs = flow('closeShare'); if (cs) cs(); clearRoot(); root.append(node); if (!keepScroll) window.scrollTo(0, 0); }
   function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
   function theme() {
     return {
