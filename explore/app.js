@@ -225,7 +225,7 @@
     }).then(function () {
       if (topic && topic.__detail) { renderDetail(); loadQuestionsFor(topic); }
     }).catch(function () {
-      /* 任何失败都静默，保留 lite 面板；只留一个可重试标记（再点同一节点会重新进来）。 */
+      /* 失败静默，保留 lite 面板，只留可重试标记。 */
       if (topic) {
         topic.__detailFailed = true;
         try { renderDetail(true); } catch (e) { /* 只重绘提示；重绘失败也不再向外抛 */ }
@@ -390,8 +390,7 @@
     });
   }
 
-  /* 宽屏把左侧知识点目录收起/展开：切 .explore 的 side-collapsed（CSS 已在 assets/explore.css），
-   * 同步 aria-expanded 与按钮文案；窄屏按钮被 CSS 隐藏，这里不参与。 */
+  /* 宽屏收起/展开左侧目录：切 .explore 的 side-collapsed，同步 aria-expanded 与按钮文案。 */
   function applySideCollapsed(collapsed) {
     var box = document.querySelector('.explore');
     if (box) box.classList.toggle('side-collapsed', !!collapsed);
@@ -402,7 +401,7 @@
     }
   }
 
-  /* 图重排（原来内联在「适配」按钮里）：收起/展开侧栏后画布宽度变了，要重新 resize + fit。 */
+  /* 图重排（原内联在「适配」按钮里）：收起/展开后画布宽度变了，重新 resize + fit。 */
   function fitGraph() {
     if (!cy) return;
     cy.resize();
@@ -430,7 +429,7 @@
     toggle.textContent = '知识点目录';
   }
 
-  /* 窄屏把详情面板排到图下方，选中后要把它带进视口；桌面三栏本来就并排可见，不动。 */
+  /* 窄屏选中后把详情带进视口；桌面三栏并排可见，不动。 */
   function revealDetailOnMobile() {
     if (!window.matchMedia('(max-width: 900px)').matches) return;
     var detail = $('detail');
@@ -605,11 +604,8 @@
     return el('div', { class: wide ? 'span-2' : '' }, el('dt', { text: label }), el('dd', { text: value || '—' }));
   }
 
-  /* O4 卡B：知识点 AI 讲解入口。模块已加载过就直接交给它渲染（状态在模块里，切回来不重发请求）；
-   * 没加载过就先出按钮，点下去才按序加载 5 个脚本，加载失败给可点重试的错误行（不静默）。 */
-  /* 卡I：ensureDetail / loadQuestionsFor 回包后 renderDetail 会 replaceChildren 重建面板，
-   * 入口盒子的身份会换。这里登记「当前这次渲染的挂载点」，脚本加载完回来画到「现在这个」盒子上，
-   * 而不是点击那一刻捕获的那个（否则 5 段画进已脱离文档的旧盒子，真机可见面板 0 段）。 */
+  /* O4 卡B：知识点 AI 讲解入口；模块已加载就交给它渲染，否则先出按钮、点了才按序加载脚本。 */
+  /* 卡I：renderDetail 会 replaceChildren 重建面板、盒子身份会换，故登记这次渲染的挂载点。 */
   var taiHosts = {};
 
   function mountTopicAI(box, topic) {
@@ -1447,7 +1443,7 @@
       $('list-toggle').textContent = open ? '收起目录' : '知识点目录';
     });
     $('btn-fit').addEventListener('click', fitGraph);
-    /* 侧边栏可折叠（上游 2048c6e，#43）：按钮/样式已在树里但没接线 —— 宽屏点了是死按钮。 */
+    /* 宽屏折叠按钮（上游 2048c6e）：按钮/样式已在树里但没接线，点了是死按钮。 */
     $('side-collapse').addEventListener('click', function () {
       applySideCollapsed(!document.querySelector('.explore').classList.contains('side-collapsed'));
       requestAnimationFrame(fitGraph);
@@ -1525,11 +1521,8 @@
   }
 
   async function load() {
-    /* 首屏只取 BOOT_FILES 展开后的三份：当前学科 topics-lite（轻量行）+ 当前学科先修边
-     * + 旧编号别名表。物理额外再取一份数学 lite 做 mathLinks 的名字。
-     * 8-10KB/s 链路下这几份加起来 ≤80KB gz（见 tests/test_payload_budget.js），不再首屏拉
-     * topics.json(337KB gz) / dependencies.json(112KB) / cn-curriculum-standards(45KB) /
-     * questions.json(1246KB)，它们都改到详情面板按需加载。 */
+    /* 首屏只取 BOOT_FILES 展开的三份（lite/先修边/别名，物理多一份数学 lite），
+     * 重数据改到详情面板按需加载；预算见 tests/test_payload_budget.js。 */
     var files = BOOT_FILES.map(function (p) { return p.replace('{subject}', subject); });
     if (subject === 'physics') files.push('../data/topics-lite/math.json');
     var responses = await Promise.all(files.map(function (file) { return fetch(file); }));
