@@ -570,6 +570,9 @@
   function seenList() { const v = lsGet(LS_SEEN); return Array.isArray(v) ? v : []; }
   function markSeen(qid) {
     if (!qid || S.demo) return;
+    /* 退役题号（园地一旧题号一族）不进「已见」清单：它们不会再被抽到，进清单只会挤掉真题号。
+     * 清单本身在 assets/stem-compat.js（sw.js SHELL 已带），这里只做早退（上游 c09bcfe）。 */
+    if (window.StemCompat && StemCompat.isRetiredQid && StemCompat.isRetiredQid(qid)) return;
     const v = seenList();
     if (v.indexOf(qid) < 0) { v.push(qid); lsSet(LS_SEEN, v); }
   }
@@ -1541,7 +1544,7 @@
     if (S.demo || !S.session) return;
     lsSet(sessionKey(), {
       v: 2, mode: S.session.mode, targets: S.session.targets, limit: S.session.limit, confirm: S.session.confirm,
-      label: S.sessionMeta.label, answers: S.session.answers,
+      label: S.sessionMeta.label, excluded: (S.sessionMeta && S.sessionMeta.excluded) || [], answers: S.session.answers,
       seed: S.session.seed, avoid: S.session.avoid, savedAt: new Date().toISOString()
     });
   }
