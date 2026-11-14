@@ -1,5 +1,15 @@
 #!/usr/bin/env node
-/* 首页题库异步：假 DOM + 可控 fetch。 */
+/* 首页首屏数据：异步到货 / 失败降级 / 重试 / inflight 去重（上游 tests/test_home.js 按本 fork 结构改写）。
+ *
+ * 上游版用假 fetch 逼 assets/home.js 去取 data/topics.json、data/dependencies.json、
+ * data/cn-curriculum-standards.json 和 data/questions.json；本 fork 走 payload-split，
+ * 首屏只取 data/stats.json + data/topics-lite/<subject>.json，且 tests/test_payload_budget.js
+ * 的 FORBIDDEN 明令 home.js 整文件不许出现那四个串。两边映射同一批行为：
+ *   到货前占位「…」、404/非数组降级成「—」不白屏、网络错误重试且第二次成功、
+ *   inflight 去重、学科过滤计数、年级卡与册次渲染。
+ * 所以只换断言的对象（URL 与数据文件），行为强度一条不降；逐条对照见
+ * docs/fork-divergences.md「上游首页测试按 payload-split 改写」。
+ */
 'use strict';
 const assert = require('assert');
 const fs = require('fs');
@@ -32,22 +42,26 @@ function element() {
   return el;
 }
 
-const topics = [
-  { id: 'cnm_a', grade: 1, semester: '上' },
-  { id: 'cnm_b', grade: 7, semester: '下' },
-  { id: 'cne_a', grade: 3, semester: '上' },
-  { id: 'cnp_a', grade: 8, semester: '上' }
+/* 与 data/stats.json 同形：subjects.<学科> 下 topics/edges/questions/standards + total。 */
+const stats = {
+  subjects: {
+    math: { topics: 2, edges: 1, questions: 3, standards: 4 },
+    english: { topics: 1, edges: 0, questions: 1, standards: 1 }
+  },
+  total: { topics: 3, edges: 1, questions: 4, standards: 5 }
+};
+/* 与 data/topics-lite/<subject>.json 同形：id/name/grade/semester 的扁平数组。 */
+const mathLite = [
+  { id: 'cnm_a', name: '数一数', grade: 1, semester: '上' },
+  { id: 'cnm_b', name: '有理数', grade: 7, semester: '下' }
 ];
-const deps = [{ topicId: 'cnm_b', prerequisiteId: 'cnm_a' }];
-const standards = { items: [{ id: 'cms-1' }, { id: 'ces-1' }, { id: 'cps-1' }] };
-const questions = [
-  { topicId: 'cnm_a' }, { topicId: 'cnm_b' }, { topicId: 'cnm_a' },
-  { topicId: 'cne_a' }, { topicId: 'cnp_a' }
-];
+const englishLite = [{ id: 'cne_a', name: 'Hello', grade: 3, semester: '上' }];
 
 function load(search) {
   const ids = {};
   ['n-topics', 'n-edges', 'n-questions', 'n-standards', 'load-error', 'grades'].forEach(id => { ids[id] = element(); });
+  /* 与 index.html 一致：三格计数器初值是「…」，年级区挂 aria-busy 等数据。 */
+  ['n-topics', 'n-edges', 'n-questions'].forEach(id => { ids[id].textContent = '…'; });
   ids.grades.setAttribute('aria-busy', 'true');
   const calls = [];
   function fetch(url) {
@@ -84,79 +98,106 @@ function load(search) {
     assert.ok(c, 'expected fetch of ' + url);
     c.reject(new Error('network'));
   };
-  async function baseMeta() {
-    respond('data/topics.json', topics);
-    respond('data/dependencies.json', deps);
-    respond('data/cn-curriculum-standards.json', standards);
+  async function baseMeta(subject) {
+    respond('data/stats.json', stats);
+    respond('data/topics-lite/' + (subject || 'math') + '.json', subject === 'english' ? englishLite : mathLite);
     await flush();
   }
   return { ids, calls, all, call, respond, failNet, baseMeta };
 }
 
 (async () => {
-  await test('元数据到后可渲染，题库先显示 …', async () => {
-    const { ids, baseMeta, respond } = load('');
+  await test('首屏数据到货前计数器保持 …，到货后渲染计数与年级卡', async () => {
+    const { ids, calls, baseMeta } = load('');
+    /* 数据还在路上：三格仍是 index.html 的占位「…」，年级区还挂着 aria-busy。 */
+    assert.strictEqual(ids['n-topics'].textContent, '…');
+    assert.strictEqual(ids['n-questions'].textContent, '…');
+    assert.ok(ids.grades.hasAttribute('aria-busy'), '年级卡等数据');
+    assert.strictEqual(ids.grades.children.length, 0);
     await baseMeta();
     assert.strictEqual(ids['n-topics'].textContent, '2');
-    assert.strictEqual(ids['n-questions'].textContent, '…');
+    assert.strictEqual(ids['n-edges'].textContent, '1');
+    assert.strictEqual(ids['n-questions'].textContent, '3');
     assert.ok(ids.grades.children.length > 0, 'grade cards rendered');
-    respond('data/questions.json', questions);
-    await flush();
-    assert.strictEqual(ids['n-questions'].textContent, '3');
+    assert.ok(!ids.grades.hasAttribute('aria-busy'), '到货后摘掉 aria-busy');
+    /* 首屏只取两份：题库计数与统计同源，不再单独拉题库文件或整包 topics / 课标。 */
+    assert.deepStrictEqual(calls.map(c => c.url).sort(), ['data/stats.json', 'data/topics-lite/math.json']);
   });
 
-  await test('题库 404 显示 — 且不整页 fail', async () => {
-    const { ids, baseMeta, respond } = load('');
-    await baseMeta();
-    respond('data/questions.json', null, 404);
-    await flush();
-    assert.strictEqual(ids['n-questions'].textContent, '—');
-    assert.strictEqual(ids['load-error'].hidden, true);
-  });
-
-  await test('题库非数组显示 —', async () => {
-    const { ids, baseMeta, respond } = load('');
-    await baseMeta();
-    respond('data/questions.json', { nope: true });
-    await flush();
-    assert.strictEqual(ids['n-questions'].textContent, '—');
-  });
-
-  await test('题库网络错误会重试至多 2 次', async () => {
-    const { ids, all, baseMeta, failNet, respond } = load('');
-    await baseMeta();
-    assert.strictEqual(all('data/questions.json').length, 1);
-    failNet('data/questions.json');
-    await flush();
-    assert.ok(all('data/questions.json').length >= 2, 'retried');
-    // second attempt succeeds
-    const second = all('data/questions.json')[1];
-    second.resolve({ ok: true, status: 200, json: () => Promise.resolve(questions) });
-    await flush();
-    assert.strictEqual(ids['n-questions'].textContent, '3');
-  });
-
-  await test('进行中 Promise 去重', async () => {
-    assert.ok(source.includes('fetchInflight'), 'inflight map present');
-    assert.ok(source.includes('fetchJsonWithRetry'), 'retry helper present');
-  });
-
-  await test('topics 无效仍 fail', async () => {
+  await test('stats 404 → 三格显示 —、年级卡清空，错误条给出重试路径', async () => {
     const { ids, respond } = load('');
-    respond('data/topics.json', { bad: true });
-    respond('data/dependencies.json', deps);
-    respond('data/cn-curriculum-standards.json', standards);
+    respond('data/stats.json', null, 404);
+    respond('data/topics-lite/math.json', mathLite);
+    await flush();
+    assert.strictEqual(ids['n-topics'].textContent, '—');
+    assert.strictEqual(ids['n-edges'].textContent, '—');
+    assert.strictEqual(ids['n-questions'].textContent, '—');
+    assert.strictEqual(ids.grades.children.length, 0, '年级卡不留半截');
+    assert.ok(!ids.grades.hasAttribute('aria-busy'));
+    assert.strictEqual(ids['load-error'].hidden, false, '要有错误条');
+    assert.ok(ids['load-error'].textContent.indexOf('刷新重试') >= 0, '要给出重试路径');
+    assert.ok(ids['load-error'].textContent.indexOf('http.server') >= 0, '要给出本地起服务的路径');
+  });
+
+  await test('lite 非数组 → 三格 — 且报「数据格式无法识别」', async () => {
+    const { ids, respond } = load('');
+    respond('data/stats.json', stats);
+    respond('data/topics-lite/math.json', { nope: true });
+    await flush();
+    assert.strictEqual(ids['n-topics'].textContent, '—');
+    assert.strictEqual(ids['n-questions'].textContent, '—');
+    assert.strictEqual(ids['load-error'].hidden, false);
+    assert.ok(ids['load-error'].textContent.indexOf('数据格式无法识别') >= 0);
+  });
+
+  await test('网络错误会重试至多 2 次，第二次成功照常渲染', async () => {
+    const { ids, all, failNet, respond } = load('');
+    assert.strictEqual(all('data/stats.json').length, 1, '首发一次');
+    failNet('data/stats.json');
+    await flush();
+    assert.strictEqual(all('data/stats.json').length, 2, '断网后重试一次');
+    /* 第二次尝试才成功：拿第二发的 promise 兑现。 */
+    all('data/stats.json')[1].resolve({ ok: true, status: 200, json: () => Promise.resolve(stats) });
+    respond('data/topics-lite/math.json', mathLite);
+    await flush();
+    assert.strictEqual(ids['n-questions'].textContent, '3');
+    assert.strictEqual(ids['load-error'].hidden, true, '重试成功不该报错');
+  });
+
+  await test('进行中 Promise 去重（fetchInflight / fetchJsonWithRetry）', async () => {
+    assert.ok(source.indexOf('fetchInflight') >= 0, 'inflight map present');
+    assert.ok(source.indexOf('function fetchJsonWithRetry') >= 0, 'retry helper present');
+    /* 每个首屏 URL 只发一次：同 url 的并发请求共用一条 promise，不重复下载。 */
+    const { all } = load('');
+    assert.strictEqual(all('data/stats.json').length, 1);
+    assert.strictEqual(all('data/topics-lite/math.json').length, 1);
+  });
+
+  await test('lite 404 也走失败分支（对应上游「topics 无效仍 fail」）', async () => {
+    const { ids, respond } = load('');
+    respond('data/stats.json', stats);
+    respond('data/topics-lite/math.json', null, 404);
     await flush();
     assert.strictEqual(ids['load-error'].hidden, false);
+    assert.strictEqual(ids['n-topics'].textContent, '—', '坏的 lite 不许拿 stats 顶上');
   });
 
-  await test('英语学科计数过滤', async () => {
-    const { ids, baseMeta, respond } = load('?subject=english');
-    await baseMeta();
-    respond('data/questions.json', questions);
-    await flush();
+  await test('英语学科过滤计数：只取本学科 lite，计数取 stats.subjects.english', async () => {
+    const { ids, calls, baseMeta } = load('?subject=english');
+    assert.deepStrictEqual(calls.map(c => c.url).sort(), ['data/stats.json', 'data/topics-lite/english.json']);
+    await baseMeta('english');
     assert.strictEqual(ids['n-topics'].textContent, '1');
+    assert.strictEqual(ids['n-edges'].textContent, '0');
     assert.strictEqual(ids['n-questions'].textContent, '1');
+    /* 年级卡：英语从三年级起；本学科 lite 只到三年级，高中册次卡跟在后面。 */
+    const cards = ids.grades.children;
+    assert.strictEqual(cards[0].children[1].textContent, '三年级');
+    assert.strictEqual(cards[0].children[2].textContent, '1 个知识点');
+    assert.strictEqual(cards[0].children[3].textContent, '上 1 · 下 0');
+    assert.ok(cards[0].className.indexOf('is-primary') >= 0, '小学卡带 is-primary');
+    const titles = cards.map(card => card.children[1].textContent);
+    assert.ok(titles.indexOf('必修一') >= 0, '高中必修卡在');
+    assert.ok(cards.some(card => card.className.indexOf('is-senior') >= 0), '高中卡带 is-senior');
   });
 
   console.log(passed + ' passed');

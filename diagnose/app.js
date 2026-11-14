@@ -498,8 +498,8 @@
       if (S.volSel === '全') S.volSel = '';
     }
     if (S.subject === 'morality') {
-      document.title = '诊断 · 小学道德与法治';
-      if ('一二三四五六'.indexOf(S.gradeSel) < 0) S.gradeSel = '一';
+      document.title = '诊断 · 道德与法治';
+      if ('一二三四五六七八九'.indexOf(S.gradeSel) < 0) S.gradeSel = '一';
       if (S.volSel === '全') S.volSel = '';
     }
     if (S.subject === 'history') {
@@ -1703,8 +1703,8 @@
       : stageButton;
     const list = S.subject === 'physics' || S.subject === 'chemistry' ? [mk('', '全部'), mk('j', '初中'), mk('h', '高中')]
       : S.subject === 'history' || S.subject === 'geography' || S.subject === 'biology' ? [mk('', '全部'), mk('j', '初中')]
-      : S.subject === 'chinese' ? [mk('', '全部'), mk('p', '小学'), mk('j', '初中')]
-      : S.subject === 'science' || S.subject === 'morality' ? [mk('', '全部'), mk('p', '小学')]
+      : S.subject === 'chinese' || S.subject === 'morality' ? [mk('', '全部'), mk('p', '小学'), mk('j', '初中')]
+      : S.subject === 'science' ? [mk('', '全部'), mk('p', '小学')]
       : [mk('', '全部'), mk('p', '小学'), mk('j', '初中'), mk('h', '高中')];
     return h('div', { class: 'stage-tabs', role: 'tablist', 'aria-label': '学段' }, list);
   }
@@ -1927,10 +1927,9 @@
           : S.subject === 'chemistry'
           ? [['九', '九年级'], ['必修一', '必修一'], ['必修二', '必修二'],
             ['选必一', '选必一'], ['选必二', '选必二'], ['选必三', '选必三']]
-          : S.subject === 'chinese'
-          ? '一二三四五六七八九'.split('').map(function (x) { return [x, x + '年级']; })
-          : S.subject === 'science' || S.subject === 'morality'
-          ? '一二三四五六'.split('').map(function (x) { return [x, x + '年级']; })
+          : S.subject === 'chinese' ? '一二三四五六七八九'.split('').map(function (x) { return [x, x + '年级']; })
+          : S.subject === 'morality' ? '一二三四五六七八九'.split('').map(function (x) { return [x, x + '年级']; })
+          : S.subject === 'science' ? '一二三四五六'.split('').map(function (x) { return [x, x + '年级']; })
           : GRADES.map(function (x) { return [x, x + '年级']; }).concat([
             ['高一', '高一'], ['高二', '高二'], ['选必一', '选必一'], ['选必二', '选必二'], ['选必三', '选必三']
           ]), S.gradeSel, function (v) {
