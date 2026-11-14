@@ -771,6 +771,15 @@ function answerText(q) {
     return q.answer;
   }
 
+/* 题目报错链接（上游 b17bbe7）。只带题目 ID：题面/答案/解析/会话/孩子信息一概不进 URL，
+ * 免得把孩子的作答内容泄到公开 issue 里。 */
+const ISSUE_NEW_URL = 'https://github.com/xiaoyang111222/cn-math-taxonomy/issues/new';
+
+function reportUrl(q) {
+    return ISSUE_NEW_URL + '?template=question-fix.yml&title=' + encodeURIComponent('[题目] ' + q.id) +
+      '&question_id=' + encodeURIComponent(q.id);
+  }
+
 function feedbackBlock(q) {
     /* 卡 t_dc7163ea：AI 题的解析走受控微型标记渲染（分式真上下堆叠）；
      * 题库原题的解析仍是纯文本，呈现方式与今天一致。 */
@@ -781,8 +790,10 @@ function feedbackBlock(q) {
       : null;
     return h('div', { class: 'feedback' },
       h('div', { class: 'refans' }, h('b', null, '参考答案：'), answerText(q)),
-      exEl);
-}
+      exEl,
+      q.id ? h('div', { class: 'report-link no-print' },
+        h('a', { id: 'report-q', href: reportUrl(q), target: '_blank', rel: 'noopener noreferrer' }, '这道题有错？报错')) : null);
+  }
 
 function answerKeys(q) {
     const raw = q && q.answer;

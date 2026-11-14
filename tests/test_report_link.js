@@ -4,7 +4,10 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const root = path.join(__dirname, '..');
-const appSrc = fs.readFileSync(path.join(root, 'diagnose/app.js'), 'utf8');
+/* 我们的题面渲染在 diagnose/app-flow.js（renderQuestion/feedbackBlock），
+ * 不在 diagnose/app.js —— 两文件拼起来读，与上游单文件口径等价，断言不变。 */
+const appSrc = ['diagnose/app.js', 'diagnose/app-flow.js']
+  .map((f) => fs.readFileSync(path.join(root, f), 'utf8')).join('\n');
 const cssSrc = fs.readFileSync(path.join(root, 'diagnose/style.css'), 'utf8');
 assert.ok(appSrc.includes('ISSUE_NEW_URL'));
 assert.ok(appSrc.includes('function reportUrl(q)'));

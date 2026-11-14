@@ -551,3 +551,4 @@ button.is-deviated { box-shadow: 0 0 0 2px rgba(192,57,43,.55); background: #fde
   .tf-num, .tf-den { overflow-wrap: anywhere; word-break: break-word; }
   .tf-sqrt { white-space: normal; }
 }
+.report-link { text-align: right; font-size: .85rem; margin: -4px 0 10px; }
