@@ -252,6 +252,11 @@
 
   function ensureFlowEngine() {
     if (!flowEnginePromise) {
+      /* 退役题号清单（assets/stem-compat.js）：markSeen / 引擎的 pin 过滤都要它。
+       * WHY 不挂在首屏 <script> 链上：diagnose 首屏请求上限是 17（tests/test_payload_budget.js
+       * REQ_CAP.diagnose），第 4 个静态脚本会把实测推到 18。「data-lazy 的运行期注入不计」是该上限的
+       * 既定口径，所以这里随引擎一起按需注入；失败不阻塞流程（调用点都做了 window.StemCompat 存在性判断）。 */
+      Lazy.load('../assets/stem-compat.js').then(null, function () { /* 清单缺失只影响退役题号过滤，不挡出题 */ });
       /* 只有这两个文件可以并发：app-flow.js 顶部只从 CORE 拿 app.js 已提供的东西，引擎走 eng() → CORE.E
        * getter（每次用时读），两个脚本谁先执行都不影响。Lazy.load 文档里要求串行的那些链
        * （funclab→labmatch→chatgraph、llm-eval→…）不动 —— 那些链里有顶层抓引用，串行是硬约束。
@@ -513,8 +518,10 @@
       if (S.volSel === '全') S.volSel = '';
     }
     if (S.subject === 'chemistry') {
-      document.title = '诊断 · 初中化学';
-      if (S.gradeSel !== '九') S.gradeSel = '九';
+      document.title = '诊断 · 化学';
+      /* 化学高中五册（上游 3ecd054）：必修一/必修二/选必一/选必二/选必三 ——
+       * 旧口径只认九年级，高中知识点在化学页里根本选不到。 */
+      if (S.gradeSel !== '九' && !/^(必修[一二]|选必[一二三])$/.test(S.gradeSel)) S.gradeSel = '九';
       if (S.volSel === '全') S.volSel = '';
     }
     if (S.subject === 'chinese') {
@@ -1694,8 +1701,8 @@
     const mk = disabled
       ? function (value, label) { return h('button', { type: 'button', class: 'stage-tab', role: 'tab', 'aria-selected': 'false', disabled: 'disabled' }, label); }
       : stageButton;
-    const list = S.subject === 'physics' ? [mk('', '全部'), mk('j', '初中'), mk('h', '高中')]
-      : S.subject === 'history' || S.subject === 'geography' || S.subject === 'biology' || S.subject === 'chemistry' ? [mk('', '全部'), mk('j', '初中')]
+    const list = S.subject === 'physics' || S.subject === 'chemistry' ? [mk('', '全部'), mk('j', '初中'), mk('h', '高中')]
+      : S.subject === 'history' || S.subject === 'geography' || S.subject === 'biology' ? [mk('', '全部'), mk('j', '初中')]
       : S.subject === 'chinese' ? [mk('', '全部'), mk('p', '小学'), mk('j', '初中')]
       : S.subject === 'science' || S.subject === 'morality' ? [mk('', '全部'), mk('p', '小学')]
       : [mk('', '全部'), mk('p', '小学'), mk('j', '初中'), mk('h', '高中')];
@@ -1918,7 +1925,8 @@
           : S.subject === 'geography' || S.subject === 'biology'
           ? '七八'.split('').map(function (x) { return [x, x + '年级']; })
           : S.subject === 'chemistry'
-          ? [['九', '九年级']]
+          ? [['九', '九年级'], ['必修一', '必修一'], ['必修二', '必修二'],
+            ['选必一', '选必一'], ['选必二', '选必二'], ['选必三', '选必三']]
           : S.subject === 'chinese'
           ? '一二三四五六七八九'.split('').map(function (x) { return [x, x + '年级']; })
           : S.subject === 'science' || S.subject === 'morality'
@@ -1980,7 +1988,7 @@
       shown += count;
       const openVol = S.subject === 'physics' ? '八上' : S.subject === 'english' ? '三上' : S.subject === 'chemistry' ? '九上' : S.subject === 'history' || S.subject === 'geography' || S.subject === 'biology' ? '七上' : '一上';
       const juniorOpen = S.subject === 'chemistry' ? '九上' : '七上';
-      const seniorOpen = S.subject === 'english' || S.subject === 'physics' ? '必修一' : '高一';
+      const seniorOpen = S.subject === 'english' || S.subject === 'physics' || S.subject === 'chemistry' ? '必修一' : '高一';
       const det = h('details', { class: 'vol', open: !!q || (S.startStage === 'j' ? vv[0] === juniorOpen : S.startStage === 'h' ? vv[0] === seniorOpen : vv[0] === openVol) },
         h('summary', null, vv[1] + '（' + count + ' 个知识点）'));
       chapters.forEach(function (c) {

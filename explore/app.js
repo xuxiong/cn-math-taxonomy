@@ -267,7 +267,16 @@
     15: ['选必三', '选必三 · 选择性必修第三册'],
     16: ['选必四', '选必四 · 选择性必修第四册']
   };
+  // 化学沿用数学式分册：12 是选必一，不是英语/物理的必修三。
+  var CHEM_BOOK = {
+    10: ['必修一', '必修一 · 必修第一册'],
+    11: ['必修二', '必修二 · 必修第二册'],
+    12: ['选必一', '选必一 · 选择性必修第一册'],
+    13: ['选必二', '选必二 · 选择性必修第二册'],
+    14: ['选必三', '选必三 · 选择性必修第三册']
+  };
   function gradeWord(grade) {
+    if (subject === 'chemistry' && CHEM_BOOK[grade]) return CHEM_BOOK[grade][0];
     if ((subject === 'english' || subject === 'physics') && EN_BOOK[grade]) return EN_BOOK[grade][0];
     if (grade === 10) return '高一';
     if (grade === 11) return '高二';
@@ -277,6 +286,7 @@
     return CN[grade] + '年级';
   }
   function gradeLabel(topic) {
+    if (subject === 'chemistry' && CHEM_BOOK[topic.grade]) return CHEM_BOOK[topic.grade][1];
     if ((subject === 'english' || subject === 'physics') && EN_BOOK[topic.grade]) return EN_BOOK[topic.grade][1];
     if (topic.grade === 10) return '高一 · 必修第一册';
     if (topic.grade === 11) return '高二 · 必修第二册';
@@ -380,8 +390,6 @@
     });
   }
 
-  var SIDE_COLLAPSED_KEY = 'explore.sideCollapsed';
-
   /* 宽屏把左侧知识点目录收起/展开：切 .explore 的 side-collapsed（CSS 已在 assets/explore.css），
    * 同步 aria-expanded 与按钮文案；窄屏按钮被 CSS 隐藏，这里不参与。 */
   function applySideCollapsed(collapsed) {
@@ -405,6 +413,13 @@
       cy.zoom(0.5);
       cy.center();
     }
+  }
+
+  /* 学段胶囊显隐：各学科只留自己有学段的阶段（hide 里列出的 stage 字母隐藏）。 */
+  function hideStages(hide) {
+    document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
+      button.hidden = hide.indexOf(button.getAttribute('data-stage')) >= 0;
+    });
   }
 
   function closeDrawerIfMobile() {
@@ -638,7 +653,7 @@
       box.replaceChildren(el('div', { class: 'detail-empty' },
         el('h1', { text: '选择一个知识点' }),
         el('p', { text: '可以搜索，也可以按年级、册、章展开。选中之后，中间只画它附近的先修，以及后面一层会用到它的知识点。' })));
-      document.title = subject === 'english' ? '知识图谱 · 英语' : subject === 'physics' ? '知识图谱 · 物理' : subject === 'chinese' ? '知识图谱 · 语文' : subject === 'science' ? '知识图谱 · 小学科学' : subject === 'morality' ? '知识图谱 · 小学道德与法治' : subject === 'history' ? '知识图谱 · 初中历史' : subject === 'geography' ? '知识图谱 · 初中地理' : subject === 'biology' ? '知识图谱 · 初中生物' : subject === 'chemistry' ? '知识图谱 · 初中化学' : '知识图谱 · 中小学·高中知识图谱';
+      document.title = subject === 'english' ? '知识图谱 · 英语' : subject === 'physics' ? '知识图谱 · 物理' : subject === 'chinese' ? '知识图谱 · 语文' : subject === 'science' ? '知识图谱 · 小学科学' : subject === 'morality' ? '知识图谱 · 小学道德与法治' : subject === 'history' ? '知识图谱 · 初中历史' : subject === 'geography' ? '知识图谱 · 初中地理' : subject === 'biology' ? '知识图谱 · 初中生物' : subject === 'chemistry' ? '知识图谱 · 化学' : '知识图谱 · 中小学·高中知识图谱';
       return;
     }
     var topic = byId.get(selected);
@@ -1193,9 +1208,7 @@
       }
     });
     if (subject === 'physics') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        button.hidden = button.getAttribute('data-stage') === 'p';
-      });
+      hideStages(['p']);
       var physicsGrade = $('fGrade');
       physicsGrade.replaceChildren();
       physicsGrade.append(el('option', { value: '', text: '全部年级' }));
@@ -1213,10 +1226,7 @@
       return;
     }
     if (subject === 'science') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        var sciStage = button.getAttribute('data-stage');
-        button.hidden = sciStage === 'j' || sciStage === 'h';
-      });
+      hideStages(['j', 'h']);
       var sciGrade = $('fGrade');
       sciGrade.replaceChildren();
       sciGrade.append(el('option', { value: '', text: '全部年级' }));
@@ -1229,10 +1239,7 @@
       return;
     }
     if (subject === 'morality') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        var morStage = button.getAttribute('data-stage');
-        button.hidden = morStage === 'j' || morStage === 'h';
-      });
+      hideStages(['j', 'h']);
       var morGrade = $('fGrade');
       morGrade.replaceChildren();
       morGrade.append(el('option', { value: '', text: '全部年级' }));
@@ -1245,10 +1252,7 @@
       return;
     }
     if (subject === 'history') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        var hisStage = button.getAttribute('data-stage');
-        button.hidden = hisStage === 'p' || hisStage === 'h';
-      });
+      hideStages(['p', 'h']);
       var hisGrade = $('fGrade');
       hisGrade.replaceChildren();
       hisGrade.append(el('option', { value: '', text: '全部年级' }));
@@ -1261,10 +1265,7 @@
       return;
     }
     if (subject === 'geography') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        var geoStage = button.getAttribute('data-stage');
-        button.hidden = geoStage === 'p' || geoStage === 'h';
-      });
+      hideStages(['p', 'h']);
       var geoGrade = $('fGrade');
       geoGrade.replaceChildren();
       geoGrade.append(el('option', { value: '', text: '全部年级' }));
@@ -1277,10 +1278,7 @@
       return;
     }
     if (subject === 'biology') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        var bioStage = button.getAttribute('data-stage');
-        button.hidden = bioStage === 'p' || bioStage === 'h';
-      });
+      hideStages(['p', 'h']);
       var bioGrade = $('fGrade');
       bioGrade.replaceChildren();
       bioGrade.append(el('option', { value: '', text: '全部年级' }));
@@ -1293,25 +1291,23 @@
       return;
     }
     if (subject === 'chemistry') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        var chemStage = button.getAttribute('data-stage');
-        button.hidden = chemStage === 'p' || chemStage === 'h';
-      });
+      hideStages(['p']);
       var chemGrade = $('fGrade');
       chemGrade.replaceChildren();
       chemGrade.append(el('option', { value: '', text: '全部年级' }));
-      [9].forEach(function (g) {
-        chemGrade.append(el('option', { value: String(g), text: CN[g] + '年级' }));
+      [
+        [9, '九年级'], [10, '必修第一册'], [11, '必修第二册'],
+        [12, '选择性必修第一册'], [13, '选择性必修第二册'], [14, '选择性必修第三册']
+      ].forEach(function (row) {
+        chemGrade.append(el('option', { value: String(row[0]), text: row[1] }));
       });
       var chemSample = $('pick-sample');
       if (chemSample) chemSample.textContent = '先看看「质量守恒定律」';
-      document.title = '知识图谱 · 初中化学';
+      document.title = '知识图谱 · 化学';
       return;
     }
     if (subject === 'chinese') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        button.hidden = button.getAttribute('data-stage') === 'h';
-      });
+      hideStages(['h']);
       var zhGrade = $('fGrade');
       zhGrade.replaceChildren();
       zhGrade.append(el('option', { value: '', text: '全部年级' }));
@@ -1357,7 +1353,7 @@
   function applyQuery() {
     var params = new URLSearchParams(location.search);
     var gradeValue = params.get('grade') || '';
-    var gradeOk = subject === 'english' ? /^(?:[3-9]|1[0-6])$/ : subject === 'physics' ? /^(?:[89]|1[0-5])$/ : subject === 'history' ? /^[7-9]$/ : subject === 'geography' || subject === 'biology' ? /^[78]$/ : subject === 'chemistry' ? /^9$/ : subject === 'chinese' ? /^[1-9]$/ : subject === 'science' || subject === 'morality' ? /^[1-6]$/ : /^(?:[1-9]|1[0-4])$/;
+    var gradeOk = subject === 'english' ? /^(?:[3-9]|1[0-6])$/ : subject === 'physics' ? /^(?:[89]|1[0-5])$/ : subject === 'history' ? /^[7-9]$/ : subject === 'geography' || subject === 'biology' ? /^[78]$/ : subject === 'chemistry' ? /^(?:9|1[0-4])$/ : subject === 'chinese' ? /^[1-9]$/ : subject === 'science' || subject === 'morality' ? /^[1-6]$/ : /^(?:[1-9]|1[0-4])$/;
     if (gradeOk.test(gradeValue)) grade = gradeValue;
     var stageValue = params.get('stage') || '';
     if (stageValue === 'p' || stageValue === 'j' || stageValue === 'h') stage = stageValue;
@@ -1453,14 +1449,9 @@
     $('btn-fit').addEventListener('click', fitGraph);
     /* 侧边栏可折叠（上游 2048c6e，#43）：按钮/样式已在树里但没接线 —— 宽屏点了是死按钮。 */
     $('side-collapse').addEventListener('click', function () {
-      var collapsed = !document.querySelector('.explore').classList.contains('side-collapsed');
-      applySideCollapsed(collapsed);
-      try { localStorage.setItem(SIDE_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch (e) {}
+      applySideCollapsed(!document.querySelector('.explore').classList.contains('side-collapsed'));
       requestAnimationFrame(fitGraph);
     });
-    var savedCollapsed = false;
-    try { savedCollapsed = localStorage.getItem(SIDE_COLLAPSED_KEY) === '1'; } catch (e) {}
-    applySideCollapsed(savedCollapsed);
     $('btn-zoom-in').addEventListener('click', function () { zoomBy(1.25); });
     $('btn-zoom-out').addEventListener('click', function () { zoomBy(0.8); });
     $('pick-sample').addEventListener('click', function () {

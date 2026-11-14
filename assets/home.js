@@ -155,7 +155,7 @@
   } else if (subject === 'chemistry') {
     document.title = '化学 · 中小学·高中知识图谱';
     var ceye = document.querySelector('.eyebrow');
-    if (ceye) ceye.textContent = '化学：初中九年级 · 人教版';
+    if (ceye) ceye.textContent = '化学：初中九年级 · 高中必修第一、二册和选择性必修第一、二、三册 · 人教版';
     var cprimary = document.querySelector('.hero-actions a.btn-primary');
     var cbrowse = document.querySelector('.hero-actions a.btn:not(.btn-primary)');
     if (cprimary) cprimary.setAttribute('href', 'diagnose/?subject=chemistry');
@@ -296,7 +296,15 @@
     } else if (wantBiology) {
       /* 初中生物只到八年级，九年级没有生物课 */
     } else if (wantChemistry) {
-      /* 初中化学只开九年级，没有小学、七八年级和高中卡片 */
+      /* 化学初中只开九年级；高中五册按实际录入情况出卡（上游 3ecd054 一族） */
+      var chemHs = [
+        [10, '必修一', '必修第一册'], [11, '必修二', '必修第二册'],
+        [12, '选必一', '选择性必修第一册'], [13, '选必二', '选择性必修第二册'], [14, '选必三', '选择性必修第三册']
+      ];
+      chemHs.forEach(function (book) {
+        if (!topics.some(function (topic) { return topic.grade === book[0]; })) return;
+        addCard(book[0], '高中化学', book[1], 'is-senior', book[2], 'explore/?subject=chemistry&grade=' + book[0]);
+      });
     } else if (wantPhysics) {
       addCard(10, '高中物理', '必修一', 'is-senior', '必修第一册', 'explore/?subject=physics&grade=10');
       addCard(11, '高中物理', '必修二', 'is-senior', '必修第二册', 'explore/?subject=physics&grade=11');
