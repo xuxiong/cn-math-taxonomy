@@ -1,0 +1,174 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 数据校验
+        run: python3 scripts/validate.py
+
+      - name: 课标映射严格模式（仅报告）
+        continue-on-error: true
+        env:
+          STRICT_STANDARDS: "1"
+        run: python3 scripts/validate.py
+
+      - name: 题库答案核验
+        run: python3 scripts/verify_questions.py --report /tmp/cn-math-taxonomy-verification-report.json
+
+      - name: 题目示意图检查
+        run: python3 scripts/check_figures.py
+
+      - name: 初中道法安全测试
+        run: python3 tests/test_jmor_safety.py
+
+      - name: 初中英语待核分类
+        run: python3 tests/test_enj_pending.py
+
+      - name: 初中道法前端测试
+        run: node tests/test_jmor_frontend.js
+
+      - name: CI 工作流测试
+        run: node tests/test_ci_workflow.js
+
+      - name: 诊断引擎测试
+        run: node tests/test_engine.js
+
+      - name: 盲区汇总测试
+        run: node tests/test_blindspots.js
+
+      - name: 档案备份恢复测试
+        run: node tests/test_children.js
+
+      - name: 题目 ID 格式测试
+        run: node tests/test_question_ids.js
+
+      - name: 题干改写历史兼容测试
+        run: node tests/test_stem_compat.js
+
+      - name: 诊断报错链接
+        run: node tests/test_report_link.js
+
+      - name: 首页题库异步加载
+        run: node tests/test_home.js
+
+      - name: 页面脚本缓存测试
+        run: node tests/test_pages_script_cache.js
+
+      - name: 知识点间隔离（ask 不带跨知识点上下文）
+        run: node tests/test_ask_graph_isolation.js
+      - name: Node 测试：browser module wiring
+        run: node tests/test_browser_module_wiring.js
+      - name: Node 测试：chat chips
+        run: node tests/test_chat_chips.js
+      - name: Node 测试：chatgraph
+        run: node tests/test_chatgraph.js
+      - name: Node 测试：construct num
+        run: node tests/test_construct_num.js
+      - name: Node 测试：data split
+        run: node tests/test_data_split.js
+      - name: Node 测试：deeplink aux
+        run: node tests/test_deeplink_aux.js
+      - name: Node 测试：explain
+        run: node tests/test_explain.js
+      - name: Node 测试：explain ask context
+        run: node tests/test_explain_ask_context.js
+      - name: Node 测试：explain layout
+        run: node tests/test_explain_layout.js
+      - name: Node 测试：explain reason
+        run: node tests/test_explain_reason.js
+      - name: Node 测试：explore detail retry
+        run: node tests/test_explore_detail_retry.js
+      - name: Node 测试：explore mobile detail
+        run: node tests/test_explore_mobile_detail.js
+      - name: Node 测试：explore topic ai
+        run: node tests/test_explore_topic_ai.js
+      - name: Node 测试：flow feedback
+        run: node tests/test_flow_feedback.js
+      - name: Node 测试：fork guards
+        run: node tests/test_fork_guards.js
+      - name: Node 测试：funclab
+        run: node tests/test_funclab.js
+      - name: Node 测试：funclab curves
+        run: node tests/test_funclab_curves.js
+      - name: Node 测试：funclab hs batch1
+        run: node tests/test_funclab_hs_batch1.js
+      - name: Node 测试：funclab hs batch16
+        run: node tests/test_funclab_hs_batch16.js
+      - name: Node 测试：funclab hs batch2
+        run: node tests/test_funclab_hs_batch2.js
+      - name: Node 测试：funclab hs batch3
+        run: node tests/test_funclab_hs_batch3.js
+      - name: Node 测试：funclab hs batch4
+        run: node tests/test_funclab_hs_batch4.js
+      - name: Node 测试：funclab labels
+        run: node tests/test_funclab_labels.js
+      - name: Node 测试：funclab notes
+        run: node tests/test_funclab_notes.js
+      - name: Node 测试：gap plan
+        run: node tests/test_gap_plan.js
+      - name: Node 测试：geomlab
+        run: node tests/test_geomlab.js
+      - name: Node 测试：home copy
+        run: node tests/test_home_copy.js
+      - name: Node 测试：labmatch
+        run: node tests/test_labmatch.js
+      - name: Node 测试：lazy load
+        run: node tests/test_lazy_load.js
+      - name: Node 测试：llm eval
+        run: node tests/test_llm_eval.js
+      - name: Node 测试：llm frontend wire
+        run: node tests/test_llm_frontend_wire.js
+      - name: Node 测试：llm gen gate
+        run: node tests/test_llm_gen_gate.js
+      - name: Node 测试：llm settings
+        run: node tests/test_llm_settings.js
+      - name: Node 测试：llm variants
+        run: node tests/test_llm_variants.js
+      - name: Node 测试：payload budget
+        run: node tests/test_payload_budget.js
+      - name: Node 测试：practice entry scope
+        run: node tests/test_practice_entry_scope.js
+      - name: Node 测试：pwa load
+        run: node tests/test_pwa_load.js
+      - name: Node 测试：questions split
+        run: node tests/test_questions_split.js
+      - name: Node 测试：result deadend
+        run: node tests/test_result_deadend.js
+      - name: Node 测试：resume engine
+        run: node tests/test_resume_engine.js
+      - name: Node 测试：route
+        run: node tests/test_route.js
+      - name: Node 测试：serve
+        run: node tests/test_serve.js
+      - name: Node 测试：socratic gate
+        run: node tests/test_socratic_gate.js
+      - name: Node 测试：sw preheat
+        run: node tests/test_sw_preheat.js
+      - name: Node 测试：textfmt
+        run: node tests/test_textfmt.js
+      - name: Node 测试：textfmt markup
+        run: node tests/test_textfmt_markup.js
+      - name: Node 测试：topic explain
+        run: node tests/test_topic_explain.js
+      - name: Node 测试：variants construct
+        run: node tests/test_variants_construct.js

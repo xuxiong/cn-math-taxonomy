@@ -746,7 +746,7 @@ test('管线 constants：MAX_RETRIES=3 / POOL_MAX=50', () => {
  * 13. 索引
  * ================================================================ */
 
-console.log('\n--- 13. 索引（全库 13335 题一次性预计算） ---');
+console.log('\n--- 13. 索引（全库 14375 题一次性预计算） ---');
 
 test('buildIndex：题面与骨架都入索引，知识点词表可查', () => {
   const idx = G.buildIndex({ questions: QUESTIONS, topics: TOPICS });

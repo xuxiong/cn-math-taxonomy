@@ -119,10 +119,8 @@
   }
 
   /* ------------------------------------------------ 详情重字段 / 样题 / 课标 的按需加载
-   * 首屏只带 topics-lite（无 description 等重字段）。点开详情先立刻渲染 lite 面板（年级 /
-   * 领域 / 类型 / 章节 / 先修 / 被依赖），再按 (学科,年级,章节) 从 topics-detail/<slug>.json
-   * 拉回重字段合并进内存对象；样题和课标正文再各自按需拉。任何失败都静默，保留 lite 面板，
-   * 绝不退回到全量文件。 */
+   * 首屏只带 topics-lite；点开详情先渲染 lite 面板，再按 (学科,年级,章节) 拉
+   * topics-detail/<slug>.json 合并重字段。失败一律静默，绝不退回全量文件。 */
 
   /** 详情索引：<subject>|<grade>|<chapter> → <slug>.json。每次页面加载只请求一次，内存缓存。 */
   function ensureDetailIndex() {
@@ -191,11 +189,13 @@
     if (!topic || questionsByTopic.has(topic.id)) return;
     questionsByTopic.set(topic.id, []); /* 先占位，避免重复请求；sampleFigureNodes 读到空数组 */
     ensureDetailIndex().then(function (index) {
-      var slug = index[topicBundleKey(topic)];
-      if (!slug) return;
-      return fetchQuestionsBundle(slug).then(function (rows) {
-        var mine = [];
-        (rows || []).forEach(function (q) { if (q && q.topicId === topic.id) mine.push(q); });
+      /* 章节题超 10KB 预算会切成 <slug>.json / <slug>-p2.json…：全取回再按 topicId 筛 */
+      var slugs = [].concat(index[topicBundleKey(topic)] || []);
+      if (!slugs.length) return;
+      return Promise.all(slugs.map(fetchQuestionsBundle)).then(function (lists) {
+        var rows = [], mine = [];
+        lists.forEach(function (l) { rows = rows.concat(l); });
+        rows.forEach(function (q) { if (q && q.topicId === topic.id) mine.push(q); });
         questionsByTopic.set(topic.id, mine);
         renderDetail();
       });
@@ -206,7 +206,8 @@
   function ensureDetail(topic) {
     if (!topic || topic.__detail) return;
     ensureDetailIndex().then(function (index) {
-      var slug = index[topicBundleKey(topic)];
+      /* topics-detail 按章节一包，多分片时取第一片（= 章节 slug） */
+      var slug = [].concat(index[topicBundleKey(topic)] || [])[0];
       if (!slug) return;
       return fetchDetailBundle(slug).then(function (entries) {
         var heavy = null;

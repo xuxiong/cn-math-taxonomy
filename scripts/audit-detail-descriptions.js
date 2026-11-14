@@ -107,7 +107,12 @@ subjectFiles.forEach(function (file) {
       pushSample(issues.indexMissing, describe(topic, key, '-'));
       return;
     }
-    const slug = index[key];
+    /* topics-detail 按章节一包；index 的值可能是多分片数组（questions 分片），详情取第一片。 */
+    const slug = [].concat(index[key] || [])[0];
+    if (!slug) {
+      pushSample(issues.indexMissing, describe(topic, key, '-'));
+      return;
+    }
     referencedSlugs.add(slug);
     const entries = loadBundle(slug);
     if (!entries) return;

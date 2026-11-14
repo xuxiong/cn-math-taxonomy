@@ -236,7 +236,9 @@ function () {
     var index = o.index || null;
     var key = o.key || null;
     if (!f || !index || !key) return Promise.resolve(null);
-    var file = typeof index[key] === 'string' ? index[key] : null;
+    var name = index[key];
+    /* index 的值：单分片是 string，超预算章节是多分片数组；topics-detail 按章节一包，取第一片。 */
+    var file = Array.isArray(name) ? (name[0] || null) : (typeof name === 'string' ? name : null);
     if (!file) return Promise.resolve(null);
     var base = o.base || '../data/topics-detail/';
     return Promise.resolve()

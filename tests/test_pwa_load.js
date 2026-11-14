@@ -65,11 +65,13 @@ function section(src, kind) {
 }
 
 /* ---------------------------------------------------------------- sw.js */
-test('sw.js：VERSION 已是 v10（旧 cnm-pwa-v8 缓存靠它清掉；预热预算那卡把清单改小了）', function () {
-  assert.ok(/var VERSION = 'v10';/.test(SW), 'VERSION 应该是 v10');
+test('sw.js：VERSION 已是 v26（旧 cnm-pwa-v* 缓存靠它清掉；预热预算那卡把清单改小了）', function () {
+  assert.ok(/var VERSION = 'v26';/.test(SW), 'VERSION 应该是 v26');
   assert.strictEqual(SW.indexOf("VERSION = 'v5'"), -1, 'VERSION 不应再是 v5');
   assert.strictEqual(SW.indexOf("VERSION = 'v8'"), -1, 'VERSION 不应再是 v8');
   assert.strictEqual(SW.indexOf("VERSION = 'v9'"), -1, 'VERSION 不应再是 v9');
+  assert.strictEqual(SW.indexOf("VERSION = 'v10'"), -1, 'VERSION 不应再是 v10');
+  assert.strictEqual(SW.indexOf("VERSION = 'v25'"), -1, 'VERSION 不应再是 v25（上游那版）');
 });
 
 test('sw.js：install 段内不再出现 cache.addAll(SHELL / cache.addAll(DATA', function () {

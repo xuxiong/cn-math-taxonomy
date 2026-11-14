@@ -937,14 +937,22 @@
    * 等于给孩子一个假结论（复核卡 t_588d8341 用注入 404 的服务实测过）。 */
   async function loadBundle(key) {
     const index = await ensureQuestionsIndex();
-    const file = index && typeof index[key] === 'string' ? index[key] : null;
-    if (file) {
-      const list = await fetchBundle(file);
-      if (Array.isArray(list)) { addQuestions(list); return true; }
-      if (typeof console !== 'undefined' && console.warn) {
-        console.warn('[questions] bundle 取不到，回退全量', key, file);
+    /* index 的值：单分片是文件名（string），超 10KB 预算的章节是文件名字符串数组。 */
+    const files = index && index[key] ? [].concat(index[key]) : null;
+    if (files && files.length) {
+      const all = [];
+      for (let i = 0; i < files.length; i++) {
+        const list = await fetchBundle(files[i]);
+        if (!Array.isArray(list)) {
+          if (typeof console !== 'undefined' && console.warn) {
+            console.warn('[questions] bundle 取不到，回退全量', key, files[i]);
+          }
+          return loadFullQuestions();
+        }
+        for (let j = 0; j < list.length; j++) all.push(list[j]);
       }
-      return loadFullQuestions();
+      addQuestions(all);
+      return true;
     }
     if (typeof console !== 'undefined' && console.warn) {
       console.warn('[questions] index 缺 key，回退全量', key);

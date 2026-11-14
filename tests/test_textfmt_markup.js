@@ -133,7 +133,7 @@ for (const q of QS) {
 console.log('\n--- 1. 无损：flatten(segments(x)) === normalize(x) ---');
 
 test('题库 ' + QS.length + ' 题 / ' + CORPUS.length + ' 条字符串逐条无损', () => {
-  /* 地板写 8 万：题库现有 13335 题 → 81532 条；掉到 8 万以下说明数据塌了，断言不能空转 */
+  /* 地板写 8 万：题库现有 14375 题 → 88736 条；掉到 8 万以下说明数据塌了，断言不能空转 */
   assert.ok(CORPUS.length > 80000, '语料条数异常：' + CORPUS.length);
   const bad = [];
   for (const it of CORPUS) {
