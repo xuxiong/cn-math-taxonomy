@@ -25,7 +25,7 @@
  * 改了 SHELL 或 DATA 列表、或数据结构变了，就把 VERSION 加一。 */
 'use strict';
 
-var VERSION = 'v26';
+var VERSION = 'v27';
 var CACHE = 'cnm-pwa-' + VERSION;
 var SCOPE = self.registration.scope;
 
@@ -55,7 +55,6 @@ var SHELL = [
   'assets/home.js',
   'assets/stats-config.js',
   'assets/stats.js',
-  'assets/stem-compat.js',
   'assets/children.js',
   'assets/blindspots.js',
   'manifest.webmanifest'
