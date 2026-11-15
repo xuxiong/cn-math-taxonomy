@@ -57,6 +57,76 @@
     offline: '画图功能暂时用不了'
   };
 
+/* ---------------- 等待计时 + 分阶段文案（出题 / 讲解） ----------------
+ * WHY：慢链路实测 96 s（cnm_h001 出题，单次生成请求 42 s），旧 UI 只有一行静态
+ * 「AI 正在出题…」，学生无从判断「是慢」还是「卡死了」。timeouts.chat 已抬到 45 s
+ * （宁可等、不丢内容），所以「已经等了多久」必须说出来。
+ *
+ * 三条纪律：
+ *   1. 只改该 span 的 textContent，每秒不重渲染整棵界面（render() 会重建题卡、丢焦点）；
+ *   2. 阈值与文案集中在这张表 —— 加一档只加一行，不写 if 阶梯；
+ *   3. 每个槽位最多一个 interval；渲染入口统一清、元素被替换时自杀，
+ *      不留悬挂计时器（切知识点后旧计时器还在跑 = bug）。
+ * 第 0 秒先显示原句（与改动前一致），满 1 秒才挂「（已等 Ns）」。 */
+const WAIT_STAGES = {
+  gen: [
+    { from: 0, text: 'AI 正在出题…' },
+    { from: 10, text: '这道题有点难，AI 还在想…' },
+    { from: 30, text: '长题可能要 1 分多钟，AI 还在认真想…' }
+  ],
+  explain: [
+    { from: 0, text: 'AI 正在看你的答案…' },
+    { from: 10, text: 'AI 老师正在一步步想…' },
+    { from: 30, text: '讲解要写不少字，可能要 1 分多钟，AI 还在认真写…' }
+  ]
+};
+
+/* sec = 本次等待已过的整秒数；取最后一个 from <= sec 的那档文案。 */
+function waitStageText(kind, sec) {
+  const table = WAIT_STAGES[kind] || [];
+  let text = '';
+  for (let i = 0; i < table.length; i++) if (sec >= table[i].from) text = table[i].text;
+  return sec > 0 ? text + '（已等 ' + sec + 's）' : text;
+}
+
+/* 槽位 → { id: interval 句柄, el: 正在被改写的那个 span } */
+const WAIT_TICKERS = Object.create(null);
+
+function stopWait(slot) {
+  const cur = WAIT_TICKERS[slot];
+  if (!cur) return;
+  clearInterval(cur.id);
+  WAIT_TICKERS[slot] = null;
+}
+
+function stopAllWait() {
+  for (const slot in WAIT_TICKERS) stopWait(slot);
+}
+
+/* startedAt：等待真正的起点（存在 S.ui 上），重渲染时沿用，避免「已等 Ns」被清零。
+ * 不传 / 非法则从此刻算起。 */
+function startWait(slot, el, kind, startedAt) {
+  stopWait(slot);
+  if (!el) return;
+  const t0 = (typeof startedAt === 'number' && startedAt > 0) ? startedAt : Date.now();
+  el.textContent = waitStageText(kind, Math.round((Date.now() - t0) / 1000));
+  const id = setInterval(function () {
+    /* 元素已被替换 / 卸载（切题、收起面板）：计时器自己收摊，不留悬挂 interval。
+     * 只在明确 false 时停 —— 测试基座的假节点没有 isConnected 字段。 */
+    if (el.isConnected === false) { stopWait(slot); return; }
+    el.textContent = waitStageText(kind, Math.round((Date.now() - t0) / 1000));
+  }, 1000);
+  if (id && typeof id.unref === 'function') id.unref();   // Node 测试里不因计时器吊住进程
+  WAIT_TICKERS[slot] = { id: id, el: el };
+}
+
+/* pending 状态行的唯一出口：文案 / 类名 / 计时都从这里出，两个面板共用一份口径。 */
+function waitSpan(slot, kind, startedAt, attrs) {
+  const el = h('span', attrs || { class: 'muted small', id: 'ask-another-state' });
+  startWait(slot, el, kind, startedAt);
+  return el;
+}
+
   /* ---------------- 卡 t_dc7163ea：AI 文本上屏走「受控微型标记」真排版 ----------------
    * 只给 AI 产物用（三步讲解 / 追问气泡 / chip 文本 / AI 题的题面与解析）。题库原题
    * 继续走纯文本：13335 条既有题面里 \frac 0 条，改它们的呈现只是白白多一份回归面。
@@ -242,6 +312,7 @@ function screenPendingText(bg) {
   }
 
 function render() {
+    stopAllWait();   // 整页重绘前先收掉等待计时器（换题 / 切知识点 / 进结果页都走这里）
     if (S.pracLoading) { renderPracticeLoading(); return; }   // O3 LLM 变式加载中
     if (S.prac) { renderQuestion(pracItem()); return; }   // T3 练习模式
     if (!S.session) return renderStart();
@@ -405,7 +476,7 @@ function askAnother(item, difficulty) {
     const tick = ++explainTick;   // 复用竞态令牌：出题慢，学生可能已交卷/翻题，只认当前面板这一次
     const startKey = S.ui.key;
     function gone() { return tick !== explainTick || !S.ui || S.ui.key !== startKey; }
-    S.ui.askAnother = { pending: difficulty };
+    S.ui.askAnother = { pending: difficulty, startedAt: Date.now() };
     renderQuestion(item);
 
     /* AI 标只认单一常量（卡 D）：notice 文案由 gen-route 统一拼，徽标文字从这里注入。 */
@@ -552,15 +623,18 @@ function askAnother(item, difficulty) {
     return n;
   }
 
-/* 练习答题面板的「再来一道」一行：pending 时三个按钮禁用并显示等待，notice 展示一次结果。 */
+/* 练习答题面板的「再来一道」一行：pending 时三个按钮禁用并显示等待（带计时 + 分阶段文案），
+ * notice 展示一次结果。 */
 function anotherRow(item) {
     const st = S.ui.askAnother;
+    const pending = !!(st && st.pending);
+    if (!pending) stopWait('gen-practice');   // 出题结束 / 失败 / 换题：状态行作废，计时器一起收
     return h('div', { class: 'row ask-again', id: 'ask-again' },
       h('span', { class: 'muted small' }, '再来一道：'),
-      h('button', { class: 'small', id: 'btn-another-easy', disabled: !!(st && st.pending), onclick: function () { askAnother(item, 'basic'); } }, '简单点'),
-      h('button', { class: 'small', id: 'btn-another-same', disabled: !!(st && st.pending), onclick: function () { askAnother(item, 'standard'); } }, '差不多'),
-      h('button', { class: 'small', id: 'btn-another-hard', disabled: !!(st && st.pending), onclick: function () { askAnother(item, 'advanced'); } }, '难一点'),
-      st && st.pending ? h('span', { class: 'muted small', id: 'ask-another-state' }, 'AI 正在出题…') : null,
+      h('button', { class: 'small', id: 'btn-another-easy', disabled: pending, onclick: function () { askAnother(item, 'basic'); } }, '简单点'),
+      h('button', { class: 'small', id: 'btn-another-same', disabled: pending, onclick: function () { askAnother(item, 'standard'); } }, '差不多'),
+      h('button', { class: 'small', id: 'btn-another-hard', disabled: pending, onclick: function () { askAnother(item, 'advanced'); } }, '难一点'),
+      pending ? waitSpan('gen-practice', 'gen', st.startedAt) : null,
       st && st.notice ? h('span', { class: 'muted small', id: 'ask-another-state', text: st.notice }) : null);
   }
 
@@ -855,13 +929,14 @@ function sessionEndsAfter(item, result) {
 function renderQuestion(item) {
     /* 面板每次重建都会重新挂画板：先销毁上一块几何画板（断开 ResizeObserver + 摘掉画布），
      * 否则来回翻步骤会累积画布与观察者（funclab 靠 DOM 替换回收，geomlab 显式销毁更稳）。 */
+    stopAllWait();   /* 面板重建 = 旧状态行即将作废：先清等待计时器，pending 会在下面重新挂上 */
     try { if (window.Geomlab && window.Geomlab.destroy) window.Geomlab.destroy(); } catch (e) { /* 不影响渲染 */ }
     const id = item.topicId;
     const q = item.question;
     const t = S.D.graph.byId[id];
     const pr = !!S.prac;   // T3 练习模式
     const key = id + '#' + item.attempt;
-    if (S.ui.key !== key) S.ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiNotice: null, aiRequested: false, askHistory: [], askPending: false, askScroll: false, askDraft: '', labCfg: null, labDesc: null, labAsk: null, labAskMsg: null, askSession: null, askChipBusy: null, askFreeOpen: false, askAnother: null, newQuestionNotice: false, hintLevel: 1 };
+    if (S.ui.key !== key) S.ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiNotice: null, aiStartedAt: null, aiRequested: false, askHistory: [], askPending: false, askScroll: false, askDraft: '', labCfg: null, labDesc: null, labAsk: null, labAskMsg: null, askSession: null, askChipBusy: null, askFreeOpen: false, askAnother: null, newQuestionNotice: false, hintLevel: 1 };
     /* 卡 D：渲染题面前先把追问会话锚定好 —— 换题（题面 hash 变了）在这里换新会话并置
      * newQuestionNotice，题卡上的提示行和 askBox 读的都是这一次锚定的结果。 */
     ensureAskSession(item);
@@ -1012,10 +1087,14 @@ function llmConfigured() {
 }
 
 /* 中性等待面板：只告诉学生「AI 正在看」，不出现任何引导/模板文本，也不提前渲染模型内容。
- * 灰条只是占位骨架，避免等待期页面塌成一片空白。 */
-function aiPendingPanel() {
+ * 灰条只是占位骨架，避免等待期页面塌成一片空白。
+ * 文案带实时计时 + 分阶段（WAIT_STAGES.explain）；startedAt 传本次请求的起点，
+ * 重渲染时沿用，别把「已等 Ns」清零。 */
+function aiPendingPanel(startedAt) {
+    const text = h('div', { class: 'ai-pending-text' });
+    startWait('explain', text, 'explain', startedAt);
     return h('div', { class: 'ai-pending', id: 'ai-pending' },
-      h('div', { class: 'ai-pending-text' }, 'AI 正在看你的答案…'),
+      text,
       h('div', { class: 'ai-skel', 'aria-hidden': 'true' },
         h('span', { class: 'ai-skel-bar' }),
         h('span', { class: 'ai-skel-bar' }),
@@ -1084,6 +1163,7 @@ function explainPanel(item) {
       S.ui.aiRequested = true;
       S.ui.aiState = 'loading';
       S.ui.aiNotice = null;
+      S.ui.aiStartedAt = Date.now();   // 计时 + 分阶段文案的起点（超时文案仍由 explain.js 的 noticeFor 出）
       const tick = ++explainTick;
       window.Explain.generate(t, q, S.ui.answer, S.ui.labDesc || null).then(function (res) {
         if (tick !== explainTick || !S.ui || S.ui.phase !== 'explain') return;
@@ -1100,7 +1180,7 @@ function explainPanel(item) {
     /* 只有 done 且模型确实给了三步，才渲染苏格拉底面板；loading / idle 一律中性等待。
      * 「三步」不再是「是否模板」的判据，而是「模型成功结果」的形状校验。 */
     if (S.ui.aiState !== 'done' || !Array.isArray(S.ui.aiSteps) || S.ui.aiSteps.length !== 3) {
-      return aiPendingPanel();
+      return aiPendingPanel(S.ui.aiStartedAt);
     }
     const steps = S.ui.aiSteps;
     const aiTag = h('span', { class: 'ai-tag' }, 'AI 讲解');
@@ -1475,9 +1555,13 @@ function askBox(item, steps) {
           sendChip('judge_mine', { solution: txt });
         } }, '判一判'),
         h('button', { id: 'btn-chip-cancel', onclick: function () { chipJudge.open = false; renderQuestion(item); } }, '先不判了'))) : null;
-    /* chip variant 在讲解面板触发的出题状态（练习面板的状态行在 anotherRow 里）。 */
+    /* chip variant 在讲解面板触发的出题状态（练习面板的状态行在 anotherRow 里）。
+     * 同样带计时 + 分阶段文案；出结果后状态行消失，计时器随之收掉。 */
+    if (S.ui.askAnother && !S.ui.askAnother.pending) stopWait('gen-chip');
     const anotherState = S.ui.askAnother
-      ? h('div', { class: 'muted small', id: 'ask-another-state' }, S.ui.askAnother.pending ? 'AI 正在出题…' : (S.ui.askAnother.notice || ''))
+      ? (S.ui.askAnother.pending
+        ? h('div', { class: 'muted small', id: 'ask-another-state' }, waitSpan('gen-chip', 'gen', S.ui.askAnother.startedAt, { class: 'muted small' }))
+        : h('div', { class: 'muted small', id: 'ask-another-state' }, S.ui.askAnother.notice || ''))
       : null;
     const inp = h('input', {
       type: 'text', class: 'ask-input', id: 'ask-input', autocomplete: 'off',
