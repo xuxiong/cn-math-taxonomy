@@ -105,6 +105,25 @@
     return !!(t && !t.external && graph.bank[id] && graph.bank[id].length);
   }
 
+  /* 筛查轮只沿「硬先修」回溯（上游 d3e2dac）：soft 先修是建议、不是必需 —— 沿 soft 推断会把
+   * 「学不学都行」的祖先也标成已掌握，把筛查范围虚增成一片绿。 */
+  function hardAncestorSet(graph, id) {
+    const memo = graph._hardAnc || (graph._hardAnc = Object.create(null));
+    if (memo[id]) return memo[id];
+    const visiting = graph._hardVisiting || (graph._hardVisiting = Object.create(null));
+    if (visiting[id]) throw new Error('先修图存在环：' + id);
+    visiting[id] = true;
+    const out = new Set();
+    graph.prereqs[id].forEach(function (p) {
+      if (p.strength !== 'hard') return;
+      out.add(p.id);
+      hardAncestorSet(graph, p.id).forEach(function (a) { out.add(a); });
+    });
+    visiting[id] = false;
+    memo[id] = out;
+    return out;
+  }
+
   function questionById(graph, qid) {
     const m = /^(.*)_q\d+$/.exec(qid || '');
     const list = m ? graph.bank[m[1]] : null;
@@ -358,9 +377,18 @@
     const s = cloneSession(session);
     if (s.status[id]) { delete s.status[id]; s.attempts[id] = []; } // 对已有结论的点重新作答 = 重新开始
     const prev = s.attempts[id] || [];
-    const q = pickQuestion(graph, s, id, prev.length + 1);
+    /* pin：补录/重放一条已知题号的作答（上游 283a7a1）。题号对得上这个知识点才记账，
+     * 否则原样返回 —— 退役题号被 StemCompat 剔掉后，会话里不留假账。 */
+    let q;
+    if (extra && extra.pin) {
+      q = extra.qid ? questionById(graph, extra.qid) : null;
+      if (!q || q.topicId !== id) return session;
+    } else {
+      q = pickQuestion(graph, s, id, prev.length + 1);
+    }
     const rec = { id: id, qid: q ? q.id : null, result: result };
     if (extra && extra.text != null && extra.text !== '') rec.text = String(extra.text);
+    if (extra && extra.prompt) rec.prompt = String(extra.prompt);
     s.answers.push(rec);
     s.attempts[id] = prev.concat([{ qid: rec.qid, result: result }]);
     const attempts = s.attempts[id];
@@ -370,7 +398,7 @@
     if (result === 'correct') {
       if (fails === 0 && corrects >= need) {
         s.status[id] = { s: 'mastered', src: 'direct' };
-        ancestorSet(graph, id).forEach(function (a) {
+        (s.mode === 'screen' ? hardAncestorSet(graph, id) : ancestorSet(graph, id)).forEach(function (a) {
           if (!s.status[a]) s.status[a] = { s: 'mastered', src: 'inferred' };
         });
       } else if (fails > 0) {
@@ -416,7 +444,14 @@
   /** 由作答记录重建会话（用于刷新恢复、撤销、更正）。 */
   function replay(graph, targets, answers, opts) {
     let s = createSession(graph, targets, opts);
-    answers.forEach(function (a) { s = applyAnswer(graph, s, a.id, a.result, { text: a.text }); });
+    answers.forEach(function (a) {
+      if (!a || a.exclude) return;   // 退役题号/被剔除的作答不参与重放（上游 c09bcfe/283a7a1）
+      const extra = {};
+      if (a.text != null && a.text !== '') extra.text = a.text;
+      if (a.prompt) extra.prompt = a.prompt;
+      if (a.qid) { extra.pin = true; extra.qid = a.qid; }
+      s = applyAnswer(graph, s, a.id, a.result, extra);
+    });
     return s;
   }
 

@@ -127,7 +127,7 @@ function recomputeStats() {
 function checkStatsConservation(stats) {
   const rec = recomputeStats();
   assert.strictEqual(Object.keys(stats.subjects).length, SUBJECTS.length, 'subjects 学科数不对');
-  const wantTotal = { topics: 3297, edges: 4868, questions: 13335, standards: 786 };
+  const wantTotal = { topics: 3557, edges: 5132, questions: 14375, standards: 855 };
   Object.keys(wantTotal).forEach((k) => {
     assert.strictEqual(stats.total[k], wantTotal[k], 'total.' + k + ' 应等于 ' + wantTotal[k] + '，实际 ' + stats.total[k]);
   });
@@ -146,7 +146,7 @@ function checkStatsConservation(stats) {
   });
 }
 
-test('stats.json：total 固定 3297/4868/13335/786，各学科与全量重算一致、求和等于 total', function () {
+test('stats.json：total 固定 3557/5132/14375/855，各学科与全量重算一致、求和等于 total', function () {
   const stats = JSON.parse(fs.readFileSync(path.join(DATA, 'stats.json'), 'utf8'));
   checkStatsConservation(stats);
 });
@@ -238,7 +238,8 @@ function checkQIConservation(qiBySubject) {
   const globalKeys = Object.keys(globalQI).sort();
   assert.deepStrictEqual(unionKeys, globalKeys, '各学科索引 key 的并集应与 questions-index.json 的 key 集合一致');
   unionKeys.forEach((k) => {
-    assert.strictEqual(union[k], globalQI[k], 'key ' + k + ' 的值不一致：' + union[k] + ' vs ' + globalQI[k]);
+    /* 值可能是 string（单分片）或多分片文件名数组 —— deepStrictEqual 逐元素比，判据不变 */
+    assert.deepStrictEqual(union[k], globalQI[k], 'key ' + k + ' 的值不一致：' + JSON.stringify(union[k]) + ' vs ' + JSON.stringify(globalQI[k]));
   });
 }
 
@@ -284,7 +285,8 @@ function checkTopicsDetailConservation(bundles) {
   });
   /* 每个 bundle 的 slug 都要在 questions-index.json 中（value 即 slug） */
   const globalQI = JSON.parse(fs.readFileSync(QI_PATH, 'utf8'));
-  const qiSlugs = new Set(Object.keys(globalQI).map((k) => globalQI[k]));
+  const qiSlugs = new Set();
+  Object.keys(globalQI).forEach((k) => { [].concat(globalQI[k]).forEach((v) => qiSlugs.add(v)); });
   Object.keys(bundles).forEach((slug) => {
     assert.ok(qiSlugs.has(slug), 'bundle ' + slug + ' 的 slug 不在 questions-index.json 中');
   });
@@ -597,8 +599,8 @@ function checkExploreConservation(liteBySubject, depsBySubject) {
     assert.deepStrictEqual(appDeps, expect, s + ' explore 边（allow 过滤后）应等于全量过滤结果');
     edges += appDeps.length;
   });
-  assert.strictEqual(nodes, 3297, 'explore 各学科 lite 节点和应为 3297，实际 ' + nodes);
-  assert.strictEqual(edges, 4868, 'explore 各学科边和应为 4868，实际 ' + edges);
+  assert.strictEqual(nodes, 3557, 'explore 各学科 lite 节点和应为 3557，实际 ' + nodes);
+  assert.strictEqual(edges, 5132, 'explore 各学科边和应为 5132，实际 ' + edges);
 }
 
 test('explore/index.html：同源首屏脚本恰好是 app/stats-config/stats/pwa/lazyload 五件（无渲染库 vendor）', function () {
@@ -670,7 +672,7 @@ test('explore/app.js：不再首屏 fetch 全量 topics/dependencies/questions�
   });
 });
 
-test('explore 守恒：逐学科 lite 条数=全量过滤，边（allow 过滤后）=全量过滤，总数 3297/4868', function () {
+test('explore 守恒：逐学科 lite 条数=全量过滤，边（allow 过滤后）=全量过滤，总数 3557/5132', function () {
   const lite = {};
   const dep = {};
   SUBJECTS.forEach((s) => {

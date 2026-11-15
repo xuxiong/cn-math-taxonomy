@@ -136,7 +136,9 @@ export function buildTopicsDetail(topics, index) {
   });
   const files = {};
   const slugsMissing = [];
-  const values = new Set(Object.keys(index).map((k) => index[k]));
+  /* index 的值：单分片是 string，超 10KB 预算的章节是多分片数组 —— 展平后再判详情 slug 是否登记过。 */
+  const values = new Set();
+  Object.keys(index).forEach((k) => { [].concat(index[k]).forEach((v) => values.add(v)); });
   groups.forEach((group) => {
     const list = [];
     group.forEach((t) => {
@@ -202,7 +204,7 @@ function main() {
 
   /* 守卫：四个总数必须精确匹配，否则说明数据源变了，直接停。 */
   const stats = buildStats(topics, deps, questions, topicsById, standards);
-  const want = { topics: 3297, edges: 4868, questions: 13335, standards: 786 };
+  const want = { topics: 3557, edges: 5132, questions: 14375, standards: 855 };
   Object.keys(want).forEach((k) => {
     if (stats.total[k] !== want[k]) {
       console.error(`build-payload-split: total.${k} = ${stats.total[k]}，期望 ${want[k]}，中止`);

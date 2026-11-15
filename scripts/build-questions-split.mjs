@@ -25,6 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -74,15 +75,45 @@ function sanitize(s) {
 
 /* ------------------------------------------------------------ 纯函数层（测试可直接 import 复用） */
 
-/** questions + topics → { index: {key: '<slug>.json'}, bundles: {key: [question...]} }。
+/* 单个 bundle 的 gzip 预算：tests/test_questions_split.js 守 < 10KB（判据不动）。
+ * 章节题太多时按输入顺序切成多个分片，文件名：
+ *   <slug>.json、<slug>-p2.json、<slug>-p3.json …（slug 形状与哈希口径都不变，只多一个 -pN 后缀）
+ * index 的值：单分片仍是字符串（老格式原样）；多分片是文件名字符串数组，第一个元素就是章节 slug，
+ * topics-detail/<slug>.json 与详情索引仍按它寻址。客户端读索引一律用 [].concat(index[key])。 */
+export const BUNDLE_GZIP_BUDGET = 10 * 1024;
+/* 便宜的预筛：原文还不到这个字节数时连 gzip 都不必算（中文 JSON 的 gzip 比约 1/3.5）。 */
+const GZIP_PROBE_RAW = 8 * 1024;
+
+/** 一章节的题按顺序切成若干分片，每片 gzip 都 < budget。
+ *  单题自己就超预算时不再拆（一片一题），保证顺序与守恒都不变。 */
+export function splitByBudget(list, budget) {
+  const limit = budget || BUNDLE_GZIP_BUDGET;
+  const parts = [];
+  let cur = [];
+  list.forEach((q) => {
+    cur.push(q);
+    const text = jsonText(cur);
+    if (Buffer.byteLength(text) < GZIP_PROBE_RAW) return;
+    if (zlib.gzipSync(Buffer.from(text, 'utf8')).length < limit) return;
+    if (cur.length === 1) { parts.push(cur); cur = []; return; }
+    const last = cur.pop();
+    parts.push(cur);
+    cur = [last];
+  });
+  if (cur.length) parts.push(cur);
+  return parts;
+}
+
+/** questions + topics → { index: {key: '<slug>.json' | ['<slug>.json', '<slug>-p2.json']},
+ *  bundles: {key: [[question...], ...]}, files: {'<slug>.json': [question...]} }。
  *  题目顺序严格按输入顺序；没有对应 topic 的题（脏数据）直接丢掉并在摘要里报数。 */
-export function splitQuestions(questions, topics) {
+export function splitQuestions(questions, topics, budget) {
   if (!Array.isArray(questions)) throw new Error('questions 必须是数组');
   if (!Array.isArray(topics)) throw new Error('topics 必须是数组');
   const byId = new Map();
   topics.forEach((t) => { if (t && t.id) byId.set(t.id, t); });
   const bundles = new Map();
-  const index = {};
+  const keyTopic = new Map();
   let orphan = 0;
   questions.forEach((q) => {
     const t = q && byId.get(q.topicId);
@@ -92,7 +123,7 @@ export function splitQuestions(questions, topics) {
     if (!b) {
       b = [];
       bundles.set(key, b);
-      index[key] = slugOf(t) + '.json';
+      keyTopic.set(key, t);
     }
     b.push(q);
   });
@@ -100,8 +131,16 @@ export function splitQuestions(questions, topics) {
   const keys = Array.from(bundles.keys()).sort();
   const sortedBundles = {};
   const sortedIndex = {};
-  keys.forEach((k) => { sortedBundles[k] = bundles.get(k); sortedIndex[k] = index[k]; });
-  return { index: sortedIndex, bundles: sortedBundles, orphan };
+  const files = {};
+  keys.forEach((k) => {
+    const parts = splitByBudget(bundles.get(k), budget);
+    const base = slugOf(keyTopic.get(k));
+    const names = parts.map((list, i) => (i === 0 ? base + '.json' : base + '-p' + (i + 1) + '.json'));
+    names.forEach((name, i) => { files[name] = parts[i]; });
+    sortedBundles[k] = parts;
+    sortedIndex[k] = names.length === 1 ? names[0] : names;
+  });
+  return { index: sortedIndex, bundles: sortedBundles, files: files, orphan };
 }
 
 /** 紧凑 JSON 文本（中文不转义 + 末尾一个换行，便于 git 显示）。字段顺序沿用输入对象。 */
@@ -123,7 +162,7 @@ function main() {
 
   const questions = JSON.parse(fs.readFileSync(inPath, 'utf8'));
   const topics = JSON.parse(fs.readFileSync(topicsPath, 'utf8'));
-  const { index, bundles, orphan } = splitQuestions(questions, topics);
+  const { index, files, orphan } = splitQuestions(questions, topics);
 
   fs.mkdirSync(outDir, { recursive: true });
 
@@ -133,12 +172,11 @@ function main() {
   let total = 0;
   let maxBytes = 0;
   let maxFile = '';
-  Object.keys(bundles).sort().forEach((key) => {
-    const name = index[key];
-    const text = jsonText(bundles[key]);
+  Object.keys(files).sort().forEach((name) => {
+    const text = jsonText(files[name]);
     fs.writeFileSync(path.join(outDir, name), text);
     wanted.add(name);
-    total += bundles[key].length;
+    total += files[name].length;
     const bytes = Buffer.byteLength(text);
     if (bytes > maxBytes) { maxBytes = bytes; maxFile = name; }
   });
@@ -154,8 +192,10 @@ function main() {
   fs.writeFileSync(indexPath, jsonText(index));
 
   if (orphan) console.warn(`⚠ ${orphan} 道题的 topicId 在 topics.json 里查不到，已跳过`);
-  console.log(`questions-split: ${Object.keys(bundles).length} 个 bundle、${total} 题、`
+  const multi = Object.keys(index).filter((k) => Array.isArray(index[k])).length;
+  console.log(`questions-split: ${Object.keys(files).length} 个 bundle、${total} 题、`
     + `最大文件 ${maxBytes} 字节（${maxFile}）、清理 ${removed} 个陈旧文件`);
+  console.log(`  ${Object.keys(index).length} 个章节，其中 ${multi} 个章节超 10KB 预算、已按顺序分片（<slug>.json / <slug>-p2.json …）`);
   console.log(`  输出：${outDir}`);
   console.log(`  索引：${indexPath}（${Buffer.byteLength(jsonText(index))} 字节）`);
 }

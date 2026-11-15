@@ -52,12 +52,17 @@ function topicById(id) {
 const QUESTIONS_CACHE = {};
 function questionsFor(topic) {
   const key = SUBJECT_BY_PREFIX[String(topic.id).split('_')[0]] + '|' + topic.grade + '|' + topic.chapter;
-  const file = QIDX[key];
-  if (!file) return [];
-  if (!QUESTIONS_CACHE[file]) {
-    QUESTIONS_CACHE[file] = require(path.join(ROOT, 'data', 'questions', file));
-  }
-  return QUESTIONS_CACHE[file].filter((q) => q.topicId === topic.id);
+  /* index 的值可能是多分片文件名数组（单章节超 10KB 预算时按顺序切），全部取回再筛 */
+  const files = [].concat(QIDX[key] || []);
+  if (!files.length) return [];
+  let rows = [];
+  files.forEach((file) => {
+    if (!QUESTIONS_CACHE[file]) {
+      QUESTIONS_CACHE[file] = require(path.join(ROOT, 'data', 'questions', file));
+    }
+    rows = rows.concat(QUESTIONS_CACHE[file]);
+  });
+  return rows.filter((q) => q.topicId === topic.id);
 }
 
 function buildFor(topic, opts) {

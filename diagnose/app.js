@@ -252,6 +252,11 @@
 
   function ensureFlowEngine() {
     if (!flowEnginePromise) {
+      /* 退役题号清单（assets/stem-compat.js）：markSeen / 引擎的 pin 过滤都要它。
+       * WHY 不挂在首屏 <script> 链上：diagnose 首屏请求上限是 17（tests/test_payload_budget.js
+       * REQ_CAP.diagnose），第 4 个静态脚本会把实测推到 18。「data-lazy 的运行期注入不计」是该上限的
+       * 既定口径，所以这里随引擎一起按需注入；失败不阻塞流程（调用点都做了 window.StemCompat 存在性判断）。 */
+      Lazy.load('../assets/stem-compat.js').then(null, function () { /* 清单缺失只影响退役题号过滤，不挡出题 */ });
       /* 只有这两个文件可以并发：app-flow.js 顶部只从 CORE 拿 app.js 已提供的东西，引擎走 eng() → CORE.E
        * getter（每次用时读），两个脚本谁先执行都不影响。Lazy.load 文档里要求串行的那些链
        * （funclab→labmatch→chatgraph、llm-eval→…）不动 —— 那些链里有顶层抓引用，串行是硬约束。
@@ -493,8 +498,8 @@
       if (S.volSel === '全') S.volSel = '';
     }
     if (S.subject === 'morality') {
-      document.title = '诊断 · 小学道德与法治';
-      if ('一二三四五六'.indexOf(S.gradeSel) < 0) S.gradeSel = '一';
+      document.title = '诊断 · 道德与法治';
+      if ('一二三四五六七八九'.indexOf(S.gradeSel) < 0) S.gradeSel = '一';
       if (S.volSel === '全') S.volSel = '';
     }
     if (S.subject === 'history') {
@@ -513,8 +518,10 @@
       if (S.volSel === '全') S.volSel = '';
     }
     if (S.subject === 'chemistry') {
-      document.title = '诊断 · 初中化学';
-      if (S.gradeSel !== '九') S.gradeSel = '九';
+      document.title = '诊断 · 化学';
+      /* 化学高中五册（上游 3ecd054）：必修一/必修二/选必一/选必二/选必三 ——
+       * 旧口径只认九年级，高中知识点在化学页里根本选不到。 */
+      if (S.gradeSel !== '九' && !/^(必修[一二]|选必[一二三])$/.test(S.gradeSel)) S.gradeSel = '九';
       if (S.volSel === '全') S.volSel = '';
     }
     if (S.subject === 'chinese') {
@@ -570,6 +577,9 @@
   function seenList() { const v = lsGet(LS_SEEN); return Array.isArray(v) ? v : []; }
   function markSeen(qid) {
     if (!qid || S.demo) return;
+    /* 退役题号（园地一旧题号一族）不进「已见」清单：它们不会再被抽到，进清单只会挤掉真题号。
+     * 清单本身在 assets/stem-compat.js（sw.js SHELL 已带），这里只做早退（上游 c09bcfe）。 */
+    if (window.StemCompat && StemCompat.isRetiredQid && StemCompat.isRetiredQid(qid)) return;
     const v = seenList();
     if (v.indexOf(qid) < 0) { v.push(qid); lsSet(LS_SEEN, v); }
   }
@@ -581,7 +591,9 @@
     S.pathTipLock = false;
     if (S.pathCy) { S.pathCy.destroy(); S.pathCy = null; window.__pathCy = null; }
   }
-  function show(node) { teardownPath(); const cs = flow('closeShare'); if (cs) cs(); clearRoot(); root.append(node); window.scrollTo(0, 0); }
+  /* keepScroll：同一题的重渲染（答题提交、翻讲解步骤、追问）保位置，别把学生拉回页首；
+   * 换题/切页不传，照旧回顶部（上游 2048c6e）。 */
+  function show(node, keepScroll) { teardownPath(); const cs = flow('closeShare'); if (cs) cs(); clearRoot(); root.append(node); if (!keepScroll) window.scrollTo(0, 0); }
   function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
   function theme() {
     return {
@@ -937,14 +949,22 @@
    * 等于给孩子一个假结论（复核卡 t_588d8341 用注入 404 的服务实测过）。 */
   async function loadBundle(key) {
     const index = await ensureQuestionsIndex();
-    const file = index && typeof index[key] === 'string' ? index[key] : null;
-    if (file) {
-      const list = await fetchBundle(file);
-      if (Array.isArray(list)) { addQuestions(list); return true; }
-      if (typeof console !== 'undefined' && console.warn) {
-        console.warn('[questions] bundle 取不到，回退全量', key, file);
+    /* index 的值：单分片是文件名（string），超 10KB 预算的章节是文件名字符串数组。 */
+    const files = index && index[key] ? [].concat(index[key]) : null;
+    if (files && files.length) {
+      const all = [];
+      for (let i = 0; i < files.length; i++) {
+        const list = await fetchBundle(files[i]);
+        if (!Array.isArray(list)) {
+          if (typeof console !== 'undefined' && console.warn) {
+            console.warn('[questions] bundle 取不到，回退全量', key, files[i]);
+          }
+          return loadFullQuestions();
+        }
+        for (let j = 0; j < list.length; j++) all.push(list[j]);
       }
-      return loadFullQuestions();
+      addQuestions(all);
+      return true;
     }
     if (typeof console !== 'undefined' && console.warn) {
       console.warn('[questions] index 缺 key，回退全量', key);
@@ -1531,7 +1551,7 @@
     if (S.demo || !S.session) return;
     lsSet(sessionKey(), {
       v: 2, mode: S.session.mode, targets: S.session.targets, limit: S.session.limit, confirm: S.session.confirm,
-      label: S.sessionMeta.label, answers: S.session.answers,
+      label: S.sessionMeta.label, excluded: (S.sessionMeta && S.sessionMeta.excluded) || [], answers: S.session.answers,
       seed: S.session.seed, avoid: S.session.avoid, savedAt: new Date().toISOString()
     });
   }
@@ -1681,10 +1701,10 @@
     const mk = disabled
       ? function (value, label) { return h('button', { type: 'button', class: 'stage-tab', role: 'tab', 'aria-selected': 'false', disabled: 'disabled' }, label); }
       : stageButton;
-    const list = S.subject === 'physics' ? [mk('', '全部'), mk('j', '初中'), mk('h', '高中')]
-      : S.subject === 'history' || S.subject === 'geography' || S.subject === 'biology' || S.subject === 'chemistry' ? [mk('', '全部'), mk('j', '初中')]
-      : S.subject === 'chinese' ? [mk('', '全部'), mk('p', '小学'), mk('j', '初中')]
-      : S.subject === 'science' || S.subject === 'morality' ? [mk('', '全部'), mk('p', '小学')]
+    const list = S.subject === 'physics' || S.subject === 'chemistry' ? [mk('', '全部'), mk('j', '初中'), mk('h', '高中')]
+      : S.subject === 'history' || S.subject === 'geography' || S.subject === 'biology' ? [mk('', '全部'), mk('j', '初中')]
+      : S.subject === 'chinese' || S.subject === 'morality' ? [mk('', '全部'), mk('p', '小学'), mk('j', '初中')]
+      : S.subject === 'science' ? [mk('', '全部'), mk('p', '小学')]
       : [mk('', '全部'), mk('p', '小学'), mk('j', '初中'), mk('h', '高中')];
     return h('div', { class: 'stage-tabs', role: 'tablist', 'aria-label': '学段' }, list);
   }
@@ -1905,11 +1925,11 @@
           : S.subject === 'geography' || S.subject === 'biology'
           ? '七八'.split('').map(function (x) { return [x, x + '年级']; })
           : S.subject === 'chemistry'
-          ? [['九', '九年级']]
-          : S.subject === 'chinese'
-          ? '一二三四五六七八九'.split('').map(function (x) { return [x, x + '年级']; })
-          : S.subject === 'science' || S.subject === 'morality'
-          ? '一二三四五六'.split('').map(function (x) { return [x, x + '年级']; })
+          ? [['九', '九年级'], ['必修一', '必修一'], ['必修二', '必修二'],
+            ['选必一', '选必一'], ['选必二', '选必二'], ['选必三', '选必三']]
+          : S.subject === 'chinese' ? '一二三四五六七八九'.split('').map(function (x) { return [x, x + '年级']; })
+          : S.subject === 'morality' ? '一二三四五六七八九'.split('').map(function (x) { return [x, x + '年级']; })
+          : S.subject === 'science' ? '一二三四五六'.split('').map(function (x) { return [x, x + '年级']; })
           : GRADES.map(function (x) { return [x, x + '年级']; }).concat([
             ['高一', '高一'], ['高二', '高二'], ['选必一', '选必一'], ['选必二', '选必二'], ['选必三', '选必三']
           ]), S.gradeSel, function (v) {
@@ -1967,7 +1987,7 @@
       shown += count;
       const openVol = S.subject === 'physics' ? '八上' : S.subject === 'english' ? '三上' : S.subject === 'chemistry' ? '九上' : S.subject === 'history' || S.subject === 'geography' || S.subject === 'biology' ? '七上' : '一上';
       const juniorOpen = S.subject === 'chemistry' ? '九上' : '七上';
-      const seniorOpen = S.subject === 'english' || S.subject === 'physics' ? '必修一' : '高一';
+      const seniorOpen = S.subject === 'english' || S.subject === 'physics' || S.subject === 'chemistry' ? '必修一' : '高一';
       const det = h('details', { class: 'vol', open: !!q || (S.startStage === 'j' ? vv[0] === juniorOpen : S.startStage === 'h' ? vv[0] === seniorOpen : vv[0] === openVol) },
         h('summary', null, vv[1] + '（' + count + ' 个知识点）'));
       chapters.forEach(function (c) {

@@ -300,7 +300,8 @@ test('fetchDetail：按 questions-index 的 key 取分片，取不到返回 null
   const t = JSON.parse(fs.readFileSync(path.join(ROOT, 'data/topics-lite.json'), 'utf8')).filter((x) => x.id === VERIFY_TOPIC)[0];
   const key = 'math|' + t.grade + '|' + t.chapter;
   const idx = JSON.parse(fs.readFileSync(path.join(ROOT, 'data/questions-index/math.json'), 'utf8'));
-  const file = idx[key];
+  /* index 的值可能是多分片数组；topics-detail 按章节一包，取第一片 */
+  const file = [].concat(idx[key] || [])[0];
   assert.ok(file, '前提：' + key + ' 应在 questions-index 里');
   const doc = JSON.parse(fs.readFileSync(path.join(ROOT, 'data/topics-detail', file), 'utf8'));
   const fakeFetch = function (url) {

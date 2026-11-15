@@ -717,11 +717,11 @@ test('英语：小学 197、初中 180–260、高中 220–320，不与数学�
   assert.strictEqual(en8.label, '八年级上册');
   assert.ok(en8.ids.length > 0 && en8.ids.every((id) => id.startsWith('cne_j') && RG.byId[id].grade === 8 && RG.byId[id].semester === '上'));
   assert.ok(E.gradeTargets(RG, '八上').ids.every((id) => id.startsWith('cnm_')));
-  const en9 = E.gradeTargets(RG, '九全', 'english');
-  assert.strictEqual(en9.label, '九年级全一册');
-  assert.ok(en9.ids.length > 0 && en9.ids.every((id) => id.startsWith('cne_j') && RG.byId[id].grade === 9 && RG.byId[id].semester === '全'));
+  const en9 = E.gradeTargets(RG, '九上', 'english');
+  assert.strictEqual(en9.label, '九年级上册');
+  assert.ok(en9.ids.length > 0 && en9.ids.every((id) => id.startsWith('cne_j') && RG.byId[id].grade === 9 && RG.byId[id].semester === '上'));
   const enGrade9 = E.gradeTargets(RG, '九年级', 'english');
-  assert.ok(enGrade9.volumes.indexOf('九全') >= 0 && enGrade9.ids.every((id) => id.startsWith('cne_')));
+  assert.ok(enGrade9.volumes.indexOf('九上') >= 0 && enGrade9.ids.every((id) => id.startsWith('cne_')));
   const mathGrade9 = E.gradeTargets(RG, '九年级');
   assert.ok(mathGrade9.ids.length > 0 && mathGrade9.ids.every((id) => id.startsWith('cnm_') && RG.byId[id].semester !== '全'));
   assert.deepStrictEqual(
@@ -757,11 +757,21 @@ test('英语：小学 197、初中 180–260、高中 220–320，不与数学�
   assert.strictEqual(E.subjectOf(topics.find((t) => t.id === 'cnm_p001')), 'math');
   const ces = stdFile.items.filter((it) => String(it.id).startsWith('ces-2022:'));
   const ces3 = ces.filter((it) => String(it.id).indexOf('ces-2022:3.') === 0);
+  /* 上游已把英语课标条目核到人教社电子书印刷页（text 仍是转述，verbatim 仍为 false）：
+   * 原断言「全部 page_or_ref=待核」是当时的状态承诺，现在 72 条里 56 条已有页号、16 条仍待核。
+   * 改成守住强度：verbatim 一律 false、引用不许为空、已核条目必须写明「印刷页N，表M…」、且过半已核。 */
   assert.ok(ces.length >= 20 && ces3.length >= 20, '三级课标 ' + ces3.length);
-  assert.ok(ces.every((it) => it.verbatim === false && it.page_or_ref === '待核'));
+  assert.ok(ces.every((it) => it.verbatim === false && it.page_or_ref), '英语课标引用不许为空');
+  const cesPaged = ces.filter((it) => it.page_or_ref !== '待核');
+  assert.ok(cesPaged.length >= Math.ceil(ces.length / 2), '英语课标过半已核到印刷页 ' + cesPaged.length + '/' + ces.length);
+  assert.ok(cesPaged.every((it) => /印刷页\d+/.test(it.page_or_ref)), '已核条目要写明印刷页与表号');
   const cesH = stdFile.items.filter((it) => String(it.id).startsWith('ces-2017:H.'));
   assert.ok(cesH.length >= 20, '高中英语课标 ' + cesH.length);
-  assert.ok(cesH.every((it) => it.verbatim === false && it.page_or_ref === '待核'));
+  /* 高中英语课标同样在核页中（44 条里 32 条已有页号）：守住「verbatim=false + 引用非空 + 已核必有页号 + 过半已核」。 */
+  assert.ok(cesH.every((it) => it.verbatim === false && it.page_or_ref), '高中英语课标引用不许为空');
+  const cesHPaged = cesH.filter((it) => it.page_or_ref !== '待核');
+  assert.ok(cesHPaged.length >= Math.ceil(cesH.length / 2), '高中英语课标过半已核 ' + cesHPaged.length + '/' + cesH.length);
+  assert.ok(cesHPaged.every((it) => /印刷页\d+/.test(it.page_or_ref)), '已核条目要写明印刷页与表号');
   assert.ok(cesH.some((it) => String(it.id).indexOf('ces-2017:H.B.') === 0));
   assert.ok(cesH.some((it) => String(it.id).indexOf('ces-2017:H.S.') === 0));
   assert.strictEqual(stdFile.english.senior.year, 2025);
@@ -1071,7 +1081,9 @@ test('题库：初中地理有内联示意图', () => {
 
 test('题库：初中化学有内联示意图', () => {
   const chem = questions.filter((q) => String(q.topicId || '').startsWith('cnk_') && q.figure);
-  assert.ok(chem.length >= 35 && chem.length <= 50, '化学配图题数 ' + chem.length);
+  /* 上游合入（548320e）后实测 109 道；原区间 35–50 是上游旧数据口径。
+   * 按「上调到实测值」处理：109 ± 10% = 98.1–119.9，取整为 98–120，仍能挡住配图整批丢失。 */
+  assert.ok(chem.length >= 98 && chem.length <= 120, '化学配图题数 ' + chem.length);
   ['cnk_j010_q1', 'cnk_j007_q2', 'cnk_j024_q1'].forEach((id) => {
     const q = questions.find((item) => item.id === id);
     assert.ok(q && q.figure && q.figure.indexOf('currentColor') > 0, id);

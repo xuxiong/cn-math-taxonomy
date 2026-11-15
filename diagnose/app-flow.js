@@ -171,7 +171,7 @@ function startSession(targets, label, limit, mode) {
     S.session = eng().createSession(graph, targets, {
       mode: mode, limit: limit || (screen ? st.screenLimit : st.limit), confirm: st.confirm, seed: newSeed(), avoid: seenList()
     });
-    S.sessionMeta = { label: label };
+    S.sessionMeta = { label: label, excluded: [] };
     resetUi();
     save();
     /* 兜底：题源还在路上（lite 没有 diagnostic_question + 题库没到 + 全量没到）时开出的会话
@@ -211,7 +211,7 @@ function restoreSession(saved) {
       S.session = eng().replay(S.D.graph, saved.targets, saved.answers, {
         mode: saved.mode, limit: saved.limit, confirm: saved.confirm, seed: saved.seed, avoid: saved.avoid
       });
-      S.sessionMeta = { label: saved.label || saved.targets.map(nameOf).join('、') };
+      S.sessionMeta = { label: saved.label || saved.targets.map(nameOf).join('、'), excluded: Array.isArray(saved.excluded) ? saved.excluded : [] };
       return true;
     } catch (e) { return false; }
   }
@@ -845,6 +845,15 @@ function answerText(q) {
     return q.answer;
   }
 
+/* 题目报错链接（上游 b17bbe7）。只带题目 ID：题面/答案/解析/会话/孩子信息一概不进 URL，
+ * 免得把孩子的作答内容泄到公开 issue 里。 */
+const ISSUE_NEW_URL = 'https://github.com/xiaoyang111222/cn-math-taxonomy/issues/new';
+
+function reportUrl(q) {
+    return ISSUE_NEW_URL + '?template=question-fix.yml&title=' + encodeURIComponent('[题目] ' + q.id) +
+      '&question_id=' + encodeURIComponent(q.id);
+  }
+
 function feedbackBlock(q) {
     /* 卡 t_dc7163ea：AI 题的解析走受控微型标记渲染（分式真上下堆叠）；
      * 题库原题的解析仍是纯文本，呈现方式与今天一致。 */
@@ -855,8 +864,10 @@ function feedbackBlock(q) {
       : null;
     return h('div', { class: 'feedback' },
       h('div', { class: 'refans' }, h('b', null, '参考答案：'), answerText(q)),
-      exEl);
-}
+      exEl,
+      q.id ? h('div', { class: 'report-link no-print' },
+        h('a', { id: 'report-q', href: reportUrl(q), target: '_blank', rel: 'noopener noreferrer' }, '这道题有错？报错')) : null);
+  }
 
 function answerKeys(q) {
     const raw = q && q.answer;
@@ -936,7 +947,9 @@ function renderQuestion(item) {
     const t = S.D.graph.byId[id];
     const pr = !!S.prac;   // T3 练习模式
     const key = id + '#' + item.attempt;
-    if (S.ui.key !== key) S.ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiNotice: null, aiStartedAt: null, aiRequested: false, askHistory: [], askPending: false, askScroll: false, askDraft: '', labCfg: null, labDesc: null, labAsk: null, labAskMsg: null, askSession: null, askChipBusy: null, askFreeOpen: false, askAnother: null, newQuestionNotice: false, hintLevel: 1 };
+    /* 同题重渲染（答题提交 / 翻讲解步骤 / 追问回显）不把页面拉回顶部：位置留给学生 */
+    const isNewQuestion = S.ui.key !== key;
+    if (isNewQuestion) S.ui = { key: key, phase: 'ask', answer: '', verdict: null, picked: null, explainStep: 0, aiSteps: null, aiState: 'idle', aiNotice: null, aiStartedAt: null, aiRequested: false, askHistory: [], askPending: false, askScroll: false, askDraft: '', labCfg: null, labDesc: null, labAsk: null, labAskMsg: null, askSession: null, askChipBusy: null, askFreeOpen: false, askAnother: null, newQuestionNotice: false, hintLevel: 1 };
     /* 卡 D：渲染题面前先把追问会话锚定好 —— 换题（题面 hash 变了）在这里换新会话并置
      * newQuestionNotice，题卡上的提示行和 askBox 读的都是这一次锚定的结果。 */
     ensureAskSession(item);
@@ -976,6 +989,8 @@ function renderQuestion(item) {
       if (qt) qt.insertAdjacentElement('afterend', stemFig);
     }
 
+    /* 结果区起点：提交后同题重渲染要把「判定/解析」滚进视野（上游 2048c6e 的 diagnose 面）。 */
+    const resultStart = card.children.length;
     if (S.ui.phase === 'ask') {
       if (q.type === 'choice') {
         append(card, choicesBlock(q, { item: item, readonly: false, pickedKey: S.ui.picked }));
@@ -991,7 +1006,7 @@ function renderQuestion(item) {
           onkeydown: function (e) { if (e.key === 'Enter' && !e.isComposing) judgeAndGo(item); }
         }));
       }
-      card.append(h('div', { class: 'row', style: 'margin-top:10px' },
+      card.append(h('div', { class: 'row actions-sticky', style: 'margin-top:10px' },
         q.type === 'self' ? null : h('button', { class: 'primary', id: 'btn-submit', onclick: function () { judgeAndGo(item); } }, '提交答案'),
         q.type === 'choice' ? null : h('button', { id: 'btn-peek', onclick: function () { S.ui.phase = 'self'; S.ui.verdict = null; renderQuestion(item); } }, '看参考答案并自评'),
         h('button', { id: 'btn-skip', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiNotice = null; S.ui.aiRequested = false; renderQuestion(item); } }, '不会')));
@@ -1008,7 +1023,7 @@ function renderQuestion(item) {
           : answerEcho(q, S.ui.answer),
         h('div', { class: 'verdict ' + (ok ? 'ok' : 'no') }, ok ? '自动判定：正确' : '自动判定：不正确'),
         feedbackBlock(q),
-        h('div', { class: 'row' },
+        h('div', { class: 'row actions-sticky' },
           ok ? null : h('button', { class: 'primary', id: 'btn-explain', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiNotice = null; S.ui.aiRequested = false; renderQuestion(item); } }, '为什么错了？一起想想'),
           h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer(nextResult); } }, ends ? '看结果' : '下一题'),
           h('button', { id: 'btn-flip', onclick: function () { finishAnswer(ok ? 'wrong' : 'correct'); } }, ok ? '判错了，我其实没做对' : '判错了，我其实做对了'),
@@ -1032,7 +1047,7 @@ function renderQuestion(item) {
           ? choicesBlock(q, { item: item, readonly: true, correctKey: answerKeys(q), pickedKey: null })
           : answerEcho(q, null),
         feedbackBlock(q),
-        h('div', { class: 'row' }, h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer('skip'); } }, sessionEndsAfter(item, 'skip') ? '看结果' : '下一题')));
+        h('div', { class: 'row actions-sticky' }, h('button', { class: 'primary', id: 'btn-next', onclick: function () { finishAnswer('skip'); } }, sessionEndsAfter(item, 'skip') ? '看结果' : '下一题')));
     } else {
       /* 原生 card.append 会把三目里的 null 字符串化成文本节点（self 阶段、ui.verdict 还空时）。
        * 自定义 append(el, c) 只吃一个子节点，兄弟节点要放进数组里传；它天生跳过 null。 */
@@ -1043,7 +1058,7 @@ function renderQuestion(item) {
         q.type === 'self' ? h('div', { class: 'muted' }, '开放题：请对照参考答案自己判断。')
           : (S.ui.verdict ? h('div', { class: 'muted' }, '这道题的答案无法被自动可靠地判定，请对照参考答案自己判断。') : null),
         feedbackBlock(q),
-        h('div', { class: 'row' },
+        h('div', { class: 'row actions-sticky' },
           h('button', { class: 'good', id: 'btn-right', onclick: function () { finishAnswer('correct'); } }, '对（我做对了）'),
           h('button', { class: 'bad', id: 'btn-wrong', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiNotice = null; S.ui.aiRequested = false; renderQuestion(item); } }, '不对'),
           h('button', { id: 'btn-skip2', onclick: function () { S.ui.phase = 'explain'; S.ui.explainStep = 0; S.ui.aiSteps = null; S.ui.aiState = 'idle'; S.ui.aiNotice = null; S.ui.aiRequested = false; renderQuestion(item); } }, '不会'))]);
@@ -1065,8 +1080,16 @@ function renderQuestion(item) {
     if (S.demo) page.append(demoBanner());
     append(page, childBar('question'));
     page.append(card);
-    show(withRouteBack(page));
-    // 必须放在 show() 之后：show() 内有 window.scrollTo(0,0) 会把页面拉回顶部，且此时节点还没进 document，提前调用 scrollIntoView 无效。
+    show(withRouteBack(page), !isNewQuestion);
+    /* 同题重渲染（提交后出判定/解析）把结果区滚进视野 —— 长解析下不用再往下翻找结论
+     * （上游 2048c6e 的 diagnose 面：滚动定位 + 操作栏贴底）。换题时不滚，交给上面的回顶。 */
+    const resultEl = S.ui.phase === 'ask' ? null : card.children[resultStart];
+    if (resultEl && !isNewQuestion) {
+      const head = document.querySelector('.site-header');
+      resultEl.style.scrollMarginTop = ((head ? head.offsetHeight : 0) + 12) + 'px';
+      const calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      resultEl.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'start' });
+    }
     if (S.ui.askScroll) {
       const items = page.querySelectorAll('.ask-item');
       const last = items.length ? items[items.length - 1] : null;
@@ -1076,8 +1099,10 @@ function renderQuestion(item) {
     /* 卡 D：换题提示显示过一次就清 —— 翻步骤/重渲染不重复提示；再换题时 ensureAskSession 会重新置位。 */
     S.ui.newQuestionNotice = false;
     const inp = document.getElementById('ans');
-    if (inp && inp.setSelectionRange && inp.tagName === 'INPUT') { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
-    else if (inp) inp.focus();
+    /* 同题重渲染时聚焦输入框不许连带滚动（preventScroll），否则 keepScroll 白做 */
+    const focusOpts = { preventScroll: !isNewQuestion };
+    if (inp && inp.setSelectionRange && inp.tagName === 'INPUT') { inp.focus(focusOpts); inp.setSelectionRange(inp.value.length, inp.value.length); }
+    else if (inp) inp.focus(focusOpts);
   }
 
 /* 是否配置了 LLM：唯一判据是 LLMConfig.isConfigured()（base+model+key 三者齐）。
@@ -2169,7 +2194,7 @@ function standardsCard(sum) {
         : S.subject === 'science'
         ? '目标与学习路径上的知识点对应的《义务教育科学课程标准（2022年版）》第一至第三学段学习内容的公开转述。'
         : S.subject === 'morality'
-        ? '目标与学习路径上的知识点对应的《义务教育道德与法治课程标准（2022年版）》第一至第三学段内容要求的公开转述。'
+        ? '目标与学习路径上的知识点对应的《义务教育道德与法治课程标准（2022年版）》第一至第三学段内容要求的公开转述；初中第四学段目前仅作主题推断，非逐字课标原文，页码待核。七至九年级上册已按官方目录录入，九下未建，不含高中。'
         : S.subject === 'history'
         ? '目标与学习路径上的知识点对应的《义务教育历史课程标准（2022年版）》第四学段内容要求的公开转述。'
         : S.subject === 'geography'
@@ -2331,6 +2356,7 @@ function resolveTargets(params) {
     }
     if (grade >= 1 && grade <= 9) return cn[grade] + '年级';
     if (S.subject === 'physics') return { 10: '必修一', 11: '必修二', 12: '必修三', 13: '选必一', 14: '选必二', 15: '选必三' }[grade] || ('册' + grade);
+    if (S.subject === 'chemistry') return { 10: '必修一', 11: '必修二', 12: '选必一', 13: '选必二', 14: '选必三' }[grade] || ('册' + grade);
     const math = { 10: '高一', 11: '高二', 12: '选必一', 13: '选必二', 14: '选必三' };
     return math[grade] || ('年级' + grade);
   }

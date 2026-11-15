@@ -119,10 +119,8 @@
   }
 
   /* ------------------------------------------------ 详情重字段 / 样题 / 课标 的按需加载
-   * 首屏只带 topics-lite（无 description 等重字段）。点开详情先立刻渲染 lite 面板（年级 /
-   * 领域 / 类型 / 章节 / 先修 / 被依赖），再按 (学科,年级,章节) 从 topics-detail/<slug>.json
-   * 拉回重字段合并进内存对象；样题和课标正文再各自按需拉。任何失败都静默，保留 lite 面板，
-   * 绝不退回到全量文件。 */
+   * 首屏只带 topics-lite；点开详情先渲染 lite 面板，再按 (学科,年级,章节) 拉
+   * topics-detail/<slug>.json 合并重字段。失败一律静默，绝不退回全量文件。 */
 
   /** 详情索引：<subject>|<grade>|<chapter> → <slug>.json。每次页面加载只请求一次，内存缓存。 */
   function ensureDetailIndex() {
@@ -191,11 +189,13 @@
     if (!topic || questionsByTopic.has(topic.id)) return;
     questionsByTopic.set(topic.id, []); /* 先占位，避免重复请求；sampleFigureNodes 读到空数组 */
     ensureDetailIndex().then(function (index) {
-      var slug = index[topicBundleKey(topic)];
-      if (!slug) return;
-      return fetchQuestionsBundle(slug).then(function (rows) {
-        var mine = [];
-        (rows || []).forEach(function (q) { if (q && q.topicId === topic.id) mine.push(q); });
+      /* 章节题超 10KB 预算会切成 <slug>.json / <slug>-p2.json…：全取回再按 topicId 筛 */
+      var slugs = [].concat(index[topicBundleKey(topic)] || []);
+      if (!slugs.length) return;
+      return Promise.all(slugs.map(fetchQuestionsBundle)).then(function (lists) {
+        var rows = [], mine = [];
+        lists.forEach(function (l) { rows = rows.concat(l); });
+        rows.forEach(function (q) { if (q && q.topicId === topic.id) mine.push(q); });
         questionsByTopic.set(topic.id, mine);
         renderDetail();
       });
@@ -206,7 +206,8 @@
   function ensureDetail(topic) {
     if (!topic || topic.__detail) return;
     ensureDetailIndex().then(function (index) {
-      var slug = index[topicBundleKey(topic)];
+      /* topics-detail 按章节一包，多分片时取第一片（= 章节 slug） */
+      var slug = [].concat(index[topicBundleKey(topic)] || [])[0];
       if (!slug) return;
       return fetchDetailBundle(slug).then(function (entries) {
         var heavy = null;
@@ -224,7 +225,7 @@
     }).then(function () {
       if (topic && topic.__detail) { renderDetail(); loadQuestionsFor(topic); }
     }).catch(function () {
-      /* 任何失败都静默，保留 lite 面板；只留一个可重试标记（再点同一节点会重新进来）。 */
+      /* 失败静默，保留 lite 面板，只留可重试标记。 */
       if (topic) {
         topic.__detailFailed = true;
         try { renderDetail(true); } catch (e) { /* 只重绘提示；重绘失败也不再向外抛 */ }
@@ -266,7 +267,16 @@
     15: ['选必三', '选必三 · 选择性必修第三册'],
     16: ['选必四', '选必四 · 选择性必修第四册']
   };
+  // 化学沿用数学式分册：12 是选必一，不是英语/物理的必修三。
+  var CHEM_BOOK = {
+    10: ['必修一', '必修一 · 必修第一册'],
+    11: ['必修二', '必修二 · 必修第二册'],
+    12: ['选必一', '选必一 · 选择性必修第一册'],
+    13: ['选必二', '选必二 · 选择性必修第二册'],
+    14: ['选必三', '选必三 · 选择性必修第三册']
+  };
   function gradeWord(grade) {
+    if (subject === 'chemistry' && CHEM_BOOK[grade]) return CHEM_BOOK[grade][0];
     if ((subject === 'english' || subject === 'physics') && EN_BOOK[grade]) return EN_BOOK[grade][0];
     if (grade === 10) return '高一';
     if (grade === 11) return '高二';
@@ -276,6 +286,7 @@
     return CN[grade] + '年级';
   }
   function gradeLabel(topic) {
+    if (subject === 'chemistry' && CHEM_BOOK[topic.grade]) return CHEM_BOOK[topic.grade][1];
     if ((subject === 'english' || subject === 'physics') && EN_BOOK[topic.grade]) return EN_BOOK[topic.grade][1];
     if (topic.grade === 10) return '高一 · 必修第一册';
     if (topic.grade === 11) return '高二 · 必修第二册';
@@ -379,6 +390,37 @@
     });
   }
 
+  /* 宽屏收起/展开左侧目录：切 .explore 的 side-collapsed，同步 aria-expanded 与按钮文案。 */
+  function applySideCollapsed(collapsed) {
+    var box = document.querySelector('.explore');
+    if (box) box.classList.toggle('side-collapsed', !!collapsed);
+    var btn = $('side-collapse');
+    if (btn) {
+      btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      btn.textContent = collapsed ? '展开目录' : '收起目录';
+    }
+  }
+
+  /* 图重排（原内联在「适配」按钮里）：收起/展开后画布宽度变了，重新 resize + fit。 */
+  function fitGraph() {
+    if (!cy) return;
+    cy.resize();
+    var many = cy.nodes().length > 80;
+    if (many) cy.minZoom(0.5);
+    cy.fit(undefined, 36);
+    if (many && cy.zoom() < 0.5) {
+      cy.zoom(0.5);
+      cy.center();
+    }
+  }
+
+  /* 学段胶囊显隐：各学科只留自己有学段的阶段（hide 里列出的 stage 字母隐藏）。 */
+  function hideStages(hide) {
+    document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
+      button.hidden = hide.indexOf(button.getAttribute('data-stage')) >= 0;
+    });
+  }
+
   function closeDrawerIfMobile() {
     if (!window.matchMedia('(max-width: 900px)').matches) return;
     $('side').classList.remove('open');
@@ -387,7 +429,7 @@
     toggle.textContent = '知识点目录';
   }
 
-  /* 窄屏把详情面板排到图下方，选中后要把它带进视口；桌面三栏本来就并排可见，不动。 */
+  /* 窄屏选中后把详情带进视口；桌面三栏并排可见，不动。 */
   function revealDetailOnMobile() {
     if (!window.matchMedia('(max-width: 900px)').matches) return;
     var detail = $('detail');
@@ -562,11 +604,8 @@
     return el('div', { class: wide ? 'span-2' : '' }, el('dt', { text: label }), el('dd', { text: value || '—' }));
   }
 
-  /* O4 卡B：知识点 AI 讲解入口。模块已加载过就直接交给它渲染（状态在模块里，切回来不重发请求）；
-   * 没加载过就先出按钮，点下去才按序加载 5 个脚本，加载失败给可点重试的错误行（不静默）。 */
-  /* 卡I：ensureDetail / loadQuestionsFor 回包后 renderDetail 会 replaceChildren 重建面板，
-   * 入口盒子的身份会换。这里登记「当前这次渲染的挂载点」，脚本加载完回来画到「现在这个」盒子上，
-   * 而不是点击那一刻捕获的那个（否则 5 段画进已脱离文档的旧盒子，真机可见面板 0 段）。 */
+  /* O4 卡B：知识点 AI 讲解入口；模块已加载就交给它渲染，否则先出按钮、点了才按序加载脚本。 */
+  /* 卡I：renderDetail 会 replaceChildren 重建面板、盒子身份会换，故登记这次渲染的挂载点。 */
   var taiHosts = {};
 
   function mountTopicAI(box, topic) {
@@ -610,7 +649,7 @@
       box.replaceChildren(el('div', { class: 'detail-empty' },
         el('h1', { text: '选择一个知识点' }),
         el('p', { text: '可以搜索，也可以按年级、册、章展开。选中之后，中间只画它附近的先修，以及后面一层会用到它的知识点。' })));
-      document.title = subject === 'english' ? '知识图谱 · 英语' : subject === 'physics' ? '知识图谱 · 物理' : subject === 'chinese' ? '知识图谱 · 语文' : subject === 'science' ? '知识图谱 · 小学科学' : subject === 'morality' ? '知识图谱 · 小学道德与法治' : subject === 'history' ? '知识图谱 · 初中历史' : subject === 'geography' ? '知识图谱 · 初中地理' : subject === 'biology' ? '知识图谱 · 初中生物' : subject === 'chemistry' ? '知识图谱 · 初中化学' : '知识图谱 · 中小学·高中知识图谱';
+      document.title = subject === 'english' ? '知识图谱 · 英语' : subject === 'physics' ? '知识图谱 · 物理' : subject === 'chinese' ? '知识图谱 · 语文' : subject === 'science' ? '知识图谱 · 小学科学' : subject === 'morality' ? '知识图谱 · 道德与法治' : subject === 'history' ? '知识图谱 · 初中历史' : subject === 'geography' ? '知识图谱 · 初中地理' : subject === 'biology' ? '知识图谱 · 初中生物' : subject === 'chemistry' ? '知识图谱 · 化学' : '知识图谱 · 中小学·高中知识图谱';
       return;
     }
     var topic = byId.get(selected);
@@ -1165,9 +1204,7 @@
       }
     });
     if (subject === 'physics') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        button.hidden = button.getAttribute('data-stage') === 'p';
-      });
+      hideStages(['p']);
       var physicsGrade = $('fGrade');
       physicsGrade.replaceChildren();
       physicsGrade.append(el('option', { value: '', text: '全部年级' }));
@@ -1185,10 +1222,7 @@
       return;
     }
     if (subject === 'science') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        var sciStage = button.getAttribute('data-stage');
-        button.hidden = sciStage === 'j' || sciStage === 'h';
-      });
+      hideStages(['j', 'h']);
       var sciGrade = $('fGrade');
       sciGrade.replaceChildren();
       sciGrade.append(el('option', { value: '', text: '全部年级' }));
@@ -1201,26 +1235,20 @@
       return;
     }
     if (subject === 'morality') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        var morStage = button.getAttribute('data-stage');
-        button.hidden = morStage === 'j' || morStage === 'h';
-      });
+      hideStages(['h']);
       var morGrade = $('fGrade');
       morGrade.replaceChildren();
       morGrade.append(el('option', { value: '', text: '全部年级' }));
-      [1, 2, 3, 4, 5, 6].forEach(function (g) {
+      [1, 2, 3, 4, 5, 6, 7, 8, 9].forEach(function (g) {
         morGrade.append(el('option', { value: String(g), text: CN[g] + '年级' }));
       });
       var morSample = $('pick-sample');
       if (morSample) morSample.textContent = '先看看「我向国旗敬个礼」';
-      document.title = '知识图谱 · 小学道德与法治';
+      document.title = '知识图谱 · 道德与法治';
       return;
     }
     if (subject === 'history') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        var hisStage = button.getAttribute('data-stage');
-        button.hidden = hisStage === 'p' || hisStage === 'h';
-      });
+      hideStages(['p', 'h']);
       var hisGrade = $('fGrade');
       hisGrade.replaceChildren();
       hisGrade.append(el('option', { value: '', text: '全部年级' }));
@@ -1233,10 +1261,7 @@
       return;
     }
     if (subject === 'geography') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        var geoStage = button.getAttribute('data-stage');
-        button.hidden = geoStage === 'p' || geoStage === 'h';
-      });
+      hideStages(['p', 'h']);
       var geoGrade = $('fGrade');
       geoGrade.replaceChildren();
       geoGrade.append(el('option', { value: '', text: '全部年级' }));
@@ -1249,10 +1274,7 @@
       return;
     }
     if (subject === 'biology') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        var bioStage = button.getAttribute('data-stage');
-        button.hidden = bioStage === 'p' || bioStage === 'h';
-      });
+      hideStages(['p', 'h']);
       var bioGrade = $('fGrade');
       bioGrade.replaceChildren();
       bioGrade.append(el('option', { value: '', text: '全部年级' }));
@@ -1265,25 +1287,23 @@
       return;
     }
     if (subject === 'chemistry') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        var chemStage = button.getAttribute('data-stage');
-        button.hidden = chemStage === 'p' || chemStage === 'h';
-      });
+      hideStages(['p']);
       var chemGrade = $('fGrade');
       chemGrade.replaceChildren();
       chemGrade.append(el('option', { value: '', text: '全部年级' }));
-      [9].forEach(function (g) {
-        chemGrade.append(el('option', { value: String(g), text: CN[g] + '年级' }));
+      [
+        [9, '九年级'], [10, '必修第一册'], [11, '必修第二册'],
+        [12, '选择性必修第一册'], [13, '选择性必修第二册'], [14, '选择性必修第三册']
+      ].forEach(function (row) {
+        chemGrade.append(el('option', { value: String(row[0]), text: row[1] }));
       });
       var chemSample = $('pick-sample');
       if (chemSample) chemSample.textContent = '先看看「质量守恒定律」';
-      document.title = '知识图谱 · 初中化学';
+      document.title = '知识图谱 · 化学';
       return;
     }
     if (subject === 'chinese') {
-      document.querySelectorAll('#stage-tabs [data-stage]').forEach(function (button) {
-        button.hidden = button.getAttribute('data-stage') === 'h';
-      });
+      hideStages(['h']);
       var zhGrade = $('fGrade');
       zhGrade.replaceChildren();
       zhGrade.append(el('option', { value: '', text: '全部年级' }));
@@ -1329,11 +1349,11 @@
   function applyQuery() {
     var params = new URLSearchParams(location.search);
     var gradeValue = params.get('grade') || '';
-    var gradeOk = subject === 'english' ? /^(?:[3-9]|1[0-6])$/ : subject === 'physics' ? /^(?:[89]|1[0-5])$/ : subject === 'history' ? /^[7-9]$/ : subject === 'geography' || subject === 'biology' ? /^[78]$/ : subject === 'chemistry' ? /^9$/ : subject === 'chinese' ? /^[1-9]$/ : subject === 'science' || subject === 'morality' ? /^[1-6]$/ : /^(?:[1-9]|1[0-4])$/;
+    var gradeOk = subject === 'english' ? /^(?:[3-9]|1[0-6])$/ : subject === 'physics' ? /^(?:[89]|1[0-5])$/ : subject === 'history' ? /^[7-9]$/ : subject === 'geography' || subject === 'biology' ? /^[78]$/ : subject === 'chemistry' ? /^(?:9|1[0-4])$/ : subject === 'morality' ? /^[1-9]$/ : subject === 'chinese' ? /^[1-9]$/ : subject === 'science' ? /^[1-6]$/ : /^(?:[1-9]|1[0-4])$/;
     if (gradeOk.test(gradeValue)) grade = gradeValue;
     var stageValue = params.get('stage') || '';
     if (stageValue === 'p' || stageValue === 'j' || stageValue === 'h') stage = stageValue;
-    if (subject === 'chinese' && stage === 'h') stage = '';
+    if ((subject === 'chinese' || subject === 'morality') && stage === 'h') stage = '';
     domain = params.get('domain') || '';
   }
 
@@ -1422,16 +1442,11 @@
       $('list-toggle').setAttribute('aria-expanded', open ? 'true' : 'false');
       $('list-toggle').textContent = open ? '收起目录' : '知识点目录';
     });
-    $('btn-fit').addEventListener('click', function () {
-      if (!cy) return;
-      cy.resize();
-      var many = cy.nodes().length > 80;
-      if (many) cy.minZoom(0.5);
-      cy.fit(undefined, 36);
-      if (many && cy.zoom() < 0.5) {
-        cy.zoom(0.5);
-        cy.center();
-      }
+    $('btn-fit').addEventListener('click', fitGraph);
+    /* 宽屏折叠按钮（上游 2048c6e）：按钮/样式已在树里但没接线，点了是死按钮。 */
+    $('side-collapse').addEventListener('click', function () {
+      applySideCollapsed(!document.querySelector('.explore').classList.contains('side-collapsed'));
+      requestAnimationFrame(fitGraph);
     });
     $('btn-zoom-in').addEventListener('click', function () { zoomBy(1.25); });
     $('btn-zoom-out').addEventListener('click', function () { zoomBy(0.8); });
@@ -1506,11 +1521,8 @@
   }
 
   async function load() {
-    /* 首屏只取 BOOT_FILES 展开后的三份：当前学科 topics-lite（轻量行）+ 当前学科先修边
-     * + 旧编号别名表。物理额外再取一份数学 lite 做 mathLinks 的名字。
-     * 8-10KB/s 链路下这几份加起来 ≤80KB gz（见 tests/test_payload_budget.js），不再首屏拉
-     * topics.json(337KB gz) / dependencies.json(112KB) / cn-curriculum-standards(45KB) /
-     * questions.json(1246KB)，它们都改到详情面板按需加载。 */
+    /* 首屏只取 BOOT_FILES 展开的三份（lite/先修边/别名，物理多一份数学 lite），
+     * 重数据改到详情面板按需加载；预算见 tests/test_payload_budget.js。 */
     var files = BOOT_FILES.map(function (p) { return p.replace('{subject}', subject); });
     if (subject === 'physics') files.push('../data/topics-lite/math.json');
     var responses = await Promise.all(files.map(function (file) { return fetch(file); }));

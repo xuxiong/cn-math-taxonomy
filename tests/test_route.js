@@ -57,21 +57,23 @@ const idOf = (nm) => {
 
 console.log('\n--- 数据前提 ---');
 
-test('topics.json 共 3297 个知识点，数学 870 / 英语 791', () => {
+test('topics.json 共 3557 个知识点，数学 870 / 英语 791', () => {
   /* 上游 dc764bd 新增地理/历史/物理/化学/生物/道法并扩充数学英语，原断言作废：
-     原意是「数据快照 = 数学 802 + 英语 701 = 1503」；现按合并后的真实数据锁死 */
-  assert.strictEqual(TOPICS.length, 3297);
+     原意是「数据快照 = 数学 802 + 英语 701 = 1503」；现按合并后的真实数据锁死
+     （2026-11-14 合入上游 548320e 后实测 3557，高中化学五册与科学拆课是主要增量） */
+  assert.strictEqual(TOPICS.length, 3557);
   assert.strictEqual(TOPICS.filter((t) => t.id.startsWith('cnm')).length, 870);
   assert.strictEqual(TOPICS.filter((t) => t.id.startsWith('cne')).length, 791);
   assert.strictEqual(INFO.topics, 870, 'setData 只留数学');
 });
 
-test('依赖边 4868 条，hard 2537 / soft 2331', () => {
-  /* 上游 dc764bd 扩充了数据，原断言作废：原意是「2176 条，hard 1323 / soft 853」 */
-  assert.strictEqual(DEPS.length, 4868);
-  assert.strictEqual(INFO.dependencies, 4868);
-  assert.strictEqual(DEPS.filter((d) => d.strength === 'hard').length, 2537);
-  assert.strictEqual(DEPS.filter((d) => d.strength === 'soft').length, 2331);
+test('依赖边 5132 条，hard 2702 / soft 2430', () => {
+  /* 上游 dc764bd 扩充了数据，原断言作废：原意是「2176 条，hard 1323 / soft 853」
+     后经 3297/4868（hard 2537 / soft 2331），2026-11-14 合入上游 548320e 后实测如下 */
+  assert.strictEqual(DEPS.length, 5132);
+  assert.strictEqual(INFO.dependencies, 5132);
+  assert.strictEqual(DEPS.filter((d) => d.strength === 'hard').length, 2702);
+  assert.strictEqual(DEPS.filter((d) => d.strength === 'soft').length, 2430);
 });
 
 /* ================================================================

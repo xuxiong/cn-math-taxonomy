@@ -92,11 +92,27 @@ const topicById = new Map();
 topics.forEach(function (t) { if (t && t.id) topicById.set(t.id, t); });
 const index = fs.existsSync(INDEX_PATH) ? JSON.parse(fs.readFileSync(INDEX_PATH, 'utf8')) : null;
 
+/* index 的值有两种形状：单分片是文件名（string，老格式原样）；单个章节的题超过 10KB 预算时
+ * 按顺序切成多片 <slug>.json / <slug>-p2.json …，值是这些文件名的数组。
+ * 客户端一律用 [].concat(index[key]) 归一，测试也一样。 */
+function filesOf(name) { return [].concat(name || []); }
+function indexFiles() {
+  const out = [];
+  Object.keys(index || {}).forEach(function (key) {
+    filesOf(index[key]).forEach(function (f) { out.push({ key: key, file: f }); });
+  });
+  return out;
+}
+
 function readBundles() {
   const out = new Map();
   Object.keys(index || {}).forEach(function (key) {
-    const file = path.join(DIR, index[key]);
-    out.set(key, JSON.parse(fs.readFileSync(file, 'utf8')));
+    const rows = [];
+    filesOf(index[key]).forEach(function (f) {
+      const list = JSON.parse(fs.readFileSync(path.join(DIR, f), 'utf8'));
+      list.forEach(function (q) { rows.push(q); });
+    });
+    out.set(key, rows);
   });
   return out;
 }
@@ -154,17 +170,18 @@ test('data/questions-index.json 存在，key 数 = questions.json 里出现过�
 
 test('所有 index 指向的文件都存在，且 data/questions/ 下没有 index 之外的残留文件', function () {
   const referenced = new Set();
-  Object.keys(index).forEach(function (k) {
-    const name = index[k];
-    assert.strictEqual(typeof name, 'string', 'index 的值应是文件名（string）：' + k);
+  indexFiles().forEach(function (row) {
+    const name = row.file;
+    assert.strictEqual(typeof name, 'string', 'index 的值应只由文件名字符串组成：' + row.key);
+    assert.ok(/^[\x21-\x7e]+\.json$/.test(name), '文件名必须纯 ASCII：' + name);
     const p = path.join(DIR, name);
-    assert.ok(fs.existsSync(p), 'index 指向的文件不存在：' + name + '（key ' + k + '）');
+    assert.ok(fs.existsSync(p), 'index 指向的文件不存在：' + name + '（key ' + row.key + '）');
     referenced.add(name);
   });
   const onDisk = fs.readdirSync(DIR);
   const orphan = onDisk.filter(function (n) { return !referenced.has(n); });
   assert.deepStrictEqual(orphan, [], 'data/questions/ 下有 index 没引用的残留文件：' + orphan.slice(0, 5).join('、'));
-  assert.strictEqual(onDisk.length, Object.keys(index).length, '文件数应与 index 的 key 数一致');
+  assert.strictEqual(onDisk.length, referenced.size, '文件数应与 index 引用的文件名数一致');
 });
 
 test('所有 bundle 的题目总数 = data/questions.json 的题数（不写死数字）', function () {
@@ -231,15 +248,23 @@ test('每个 bundle 的 gzip 体积 < 10KB', function () {
   console.log('       最大 bundle gzip：' + max + ' 字节（' + maxFile + '）');
 });
 
-test('slug 纯 ASCII 且形如 <subject>__<grade>__<10 位十六进制>', function () {
-  Object.keys(index).forEach(function (key) {
-    const name = index[key];
+test('slug 纯 ASCII 且形如 <subject>__<grade>__<10 位十六进制>（超预算分片多 -pN 后缀）', function () {
+  indexFiles().forEach(function (row) {
+    const name = row.file;
     assert.ok(/^[\x21-\x7e]+\.json$/.test(name), 'slug 必须纯 ASCII：' + name);
-    const m = /^([a-z0-9-]+)__([a-z0-9-]+)__([0-9a-f]{10})\.json$/.exec(name);
-    assert.ok(m, 'slug 形状不对（应为 <subject>__<grade>__<sha1 前 10 位>.json）：' + name);
-    const chapter = key.split('|').slice(2).join('|');
+    const m = /^([a-z0-9-]+)__([a-z0-9-]+)__([0-9a-f]{10})(?:-p([2-9][0-9]*))?\.json$/.exec(name);
+    assert.ok(m, 'slug 形状不对（应为 <subject>__<grade>__<sha1 前 10 位>.json 或 …-pN.json）：' + name);
+    const chapter = row.key.split('|').slice(2).join('|');
     const want = crypto.createHash('sha1').update(chapter, 'utf8').digest('hex').slice(0, 10);
     assert.strictEqual(m[3], want, 'slug 里的 hash 不是章节名的 sha1 前 10 位：' + name);
+    /* 分片序号必须从 p2 起、连续，且第一片不带后缀（它就是章节 slug，topics-detail 也按它寻址） */
+    const names = filesOf(index[row.key]);
+    assert.ok(/^[a-z0-9-]+__[a-z0-9-]+__[0-9a-f]{10}\.json$/.test(names[0]),
+      '分片组的第一片必须是章节 slug（不带 -pN）：' + names[0]);
+    names.forEach(function (n, i) {
+      if (i === 0) return;
+      assert.strictEqual(n, names[0].replace(/\.json$/, '-p' + (i + 1) + '.json'), '分片名必须是 <slug>-pN.json 且序号连续：' + n);
+    });
   });
 });
 
@@ -276,7 +301,7 @@ test('构建脚本的摘要包含文件数 / 总题数 / 最大文件字节数',
   const out = runBuild();
   const m = /(\d+) 个 bundle、(\d+) 题、最大文件 (\d+) 字节/.exec(out);
   assert.ok(m, '构建摘要里缺「N 个 bundle、M 题、最大文件 K 字节」：' + out.trim());
-  assert.strictEqual(parseInt(m[1], 10), Object.keys(index).length, '摘要的文件数与 index 不一致');
+  assert.strictEqual(parseInt(m[1], 10), indexFiles().length, '摘要的文件数与 index 引用的文件数不一致');
   assert.strictEqual(parseInt(m[2], 10), questions.length, '摘要的题数与 questions.json 不一致');
 });
 
@@ -355,7 +380,7 @@ test('sw.js：预热清单不含 data/questions.json、不含 data/questions/*�
   assert.deepStrictEqual(anyBundle, [], 'DATA 里不许预热 data/questions/ 下的 bundle（948 个，预热毫无意义）');
   ['data/topics-lite.json', 'data/id-aliases.json', 'data/questions-index.json']
     .forEach(function (p) { assert.ok(items.indexOf("'" + p + "'") >= 0, 'DATA 里仍应有 ' + p); });
-  assert.ok(/var VERSION = 'v10';/.test(SW), 'VERSION 应已是 v10');
+  assert.ok(/var VERSION = 'v27';/.test(SW), 'VERSION 应已是 v27');
   const core = /var CORE = \[([\s\S]*?)\];/.exec(SW);
   assert.strictEqual((core[1].match(/'/g) || []).length, 10, 'CORE 应仍是 5 项');
 });
@@ -523,7 +548,7 @@ async function runDegradeTests() {
   /* ---- ① bundle 404：warn + 回退全量一次（现有 index 缺 key 分支的行为） ---- */
   await testAsync('真跑 loadBundle：bundle 404 时 warn「bundle 取不到，回退全量」且 questions.json 被请求一次', async function () {
     const key = Object.keys(index)[0];
-    const file = index[key];
+    const file = filesOf(index[key])[0];
     APP_MOD.resetQuestionsCache();
     const calls = stubFetch([
       { test: /questions-index\.json$/, res: { ok: true, status: 200, json: async function () { return index; } } },
@@ -677,7 +702,7 @@ function gateHoldFetcher(gateFiles, released) {
 }
 function gateFileSet(gateKeys) {
   const out = Object.create(null);
-  gateKeys.forEach(function (k) { if (index[k]) out[index[k]] = true; });
+  gateKeys.forEach(function (k) { filesOf(index[k]).forEach(function (f) { out[f] = true; }); });
   return out;
 }
 function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -791,7 +816,9 @@ async function runScreenGateTests() {
     assert.strictEqual(ids.length, 119, '七年级数学目标数应为 119，实际 ' + ids.length);
     const split = APP_MOD.gateTargetsOf(ids, 'screen');
     const gateKeys = APP_MOD.chapterKeysOf(split.gate);
-    const gateFiles = gateKeys.map(function (k) { return index[k]; }).sort();
+    const gateFiles = [];
+    gateKeys.forEach(function (k) { filesOf(index[k]).forEach(function (f) { gateFiles.push(f); }); });
+    gateFiles.sort();
     const calls = stubFetchDynamic(bundleFetcher());
     try {
       const ok = await APP_MOD.ensureFlowReady(ids, null, 'screen');
@@ -844,7 +871,7 @@ async function runScreenGateTests() {
     setupMathGrade(7);
     const ids = CHAPTER.gradeTargets(APP_MOD.S.D.graph, '七年级', 'math').ids;
     const split = APP_MOD.gateTargetsOf(ids, 'screen');
-    const tryFile = index[APP_MOD.chapterKeysOf([split.rest[0]])[0]];
+    const tryFile = filesOf(index[APP_MOD.chapterKeysOf([split.rest[0]])[0]])[0];
     const counts = Object.create(null);
     const normal = bundleFetcher();
     const calls = stubFetchDynamic(function (u) {
@@ -875,7 +902,9 @@ async function runScreenGateTests() {
     const gateKeys = APP_MOD.chapterKeysOf(split.gate);
     const gateQs = [];
     gateKeys.forEach(function (k) {
-      gateQs.push.apply(gateQs, JSON.parse(fs.readFileSync(path.join(DIR, index[k]), 'utf8')));
+      filesOf(index[k]).forEach(function (f) {
+        gateQs.push.apply(gateQs, JSON.parse(fs.readFileSync(path.join(DIR, f), 'utf8')));
+      });
     });
     const g = CHAPTER.buildGraph(ts, [], gateQs);
     const session = ENGINE.createSession(g, ids, { mode: 'screen', limit: 40, confirm: 3, seed: 'gate' });

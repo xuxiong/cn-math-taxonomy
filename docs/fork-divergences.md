@@ -33,6 +33,32 @@
 | 9 | 引入 Umami 匿名访问统计（`cloud.umami.is`，5 个页面各一个 script） | 孩子端上线后无法得知有没有人访问；Pages 与仓库 Insights 都不提供站点访问数据。统计口径刻意收窄：不带 cookie、不采集 URL 查询参数、只认 `xuxiong.github.io`、尊重 DNT；上游自建采集 worker（第 5 条）仍然关闭 | 本次提交 | `tests/test_fork_guards.js` (i) |
 | 10 | 首页导航「使用手册」→ `bcntjxmosoi0.feishu.cn/docx/AZGudD6Hgo9zvxxKeg4cSePwn9g`（飞书文档） | 使用手册托管在飞书，站内没有静态副本；本 fork 自有内容，非上游推广位 | 本次提交 | `tests/test_fork_guards.js` (b) 白名单 + `scripts/fork-guard.mjs` 白名单 |
 
+## 第 11 条：上游首页测试按 payload-split 改写（不是放宽，是换断言对象）
+
+上游 `tests/test_home.js` 与 `tests/test_jmor_frontend.js` 用假 fetch 逼 `assets/home.js` 去取
+`data/topics.json`、`data/dependencies.json`、`data/cn-curriculum-standards.json`、`data/questions.json`。
+本 fork 走 payload-split：首屏只取 `data/stats.json` + `data/topics-lite/<subject>.json`，
+且 `tests/test_payload_budget.js` 的 `FORBIDDEN` 明令 `assets/home.js` 整文件不许出现那四个串。
+两套测试映射的是同一批行为，所以**只换断言的 URL / 数据文件，行为强度一条不降**（不删用例、不降级成「不崩就行」）：
+
+| 原用例（上游） | 改写后断言（本 fork） |
+|---|---|
+| `test_home`「元数据到后可渲染，题库先显示 …」→ 取 topics/deps/standards 后 `n-topics=2`，题库未到 `n-questions=…` | 取 `stats.json`+`topics-lite` 前后：三格初值 `…`、`grades[aria-busy]`、到货后 `n-topics/n-edges/n-questions` 与年级卡；并断言首屏 URL 恰好两份 |
+| 「题库 404 显示 — 且不整页 fail」 | 「`stats` 404 → 三格 `—`、年级卡清空、错误条给出刷新/本地起服务路径」 |
+| 「题库非数组显示 —」 | 「`lite` 非数组 → 三格 `—` 且报『数据格式无法识别』」 |
+| 「题库网络错误会重试至多 2 次」 | 同：首发 1 次 → 断网后 2 次 → 第二次成功照常渲染 |
+| 「进行中 Promise 去重（fetchInflight / fetchJsonWithRetry）」 | 同：两个符号存在性 + 每个首屏 URL 只发一次 |
+| 「topics 无效仍 fail」 | 「`lite` 404 也走失败分支，坏的 lite 不许拿 stats 顶上」 |
+| 「英语学科计数过滤」 | 同：只取 `topics-lite/english.json`，计数取 `stats.subjects.english`；并核年级卡首张＝三年级、高中册次卡在后 |
+| `test_jmor_frontend` 首页两条（`topics.json` + 课标条数） | 改取 `stats.json` + `topics-lite/morality.json`；年级卡标题 / 册次 / eyebrow 文案 / `n-topics=5` 逐条保留；`n-standards` 因本 fork 首屏已删课标统计格（`ddc83fb`），改为断言「该格不被写入且 home.js 不引用」 |
+| `test_jmor_frontend`「图谱年级含七至九」按 `fillMoralityGrades()` 抽函数断言 | 本 fork 是学科配置里的内联分支：断言 `hideStages(['h'])`（只隐藏高中）、`[1..9]` 年级集、语文与道法共用年级集、隐藏实现按 `data-stage` 命中集合、道法分支已接线 |
+| `test_jmor_frontend`「诊断说明 / 学段」读单体 `diagnose/app.js` 与 `stageButton(...)` | 文案本 fork 在 `diagnose/app-flow.js`，学段按钮工厂叫 `mk(...)`：文案与三条学段项逐条保留，只换读取文件与工厂名 |
+
+> 为让上表的后两条成立，同时把上游 `3ecd054` 一族里道法的**初中接线**补回生产码
+> （首页年级卡到九年级且空年级不画卡、`moralityJuniorEyebrow` 数据驱动文案、explore 年级下拉 1–9 且只隐藏高中、
+> diagnose 年级 1–9 与「小学/初中」学段、标准卡文案补初中第四学段说明）——数据侧 `topics-lite/morality.json`
+> 已含七至九年级，缺的只是 UI 接线。顺带修掉 `assets/home.js` 里高中册次卡引用未定义变量 `topics` 的运行时 ReferenceError。
+
 ## 维护方式
 
 - **新删掉任何上游的东西** → 同时在上面表里加一行，并给 `tests/test_fork_guards.js` 加一条断言

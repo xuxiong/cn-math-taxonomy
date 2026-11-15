@@ -101,9 +101,9 @@
       sdemo.textContent = '先看一遍演示：一年级上册科学';
     }
   } else if (subject === 'morality') {
-    document.title = '小学道德与法治 · 中小学·高中知识图谱';
+    document.title = '道德与法治 · 中小学·高中知识图谱';
     var meye = document.querySelector('.eyebrow');
-    if (meye) meye.textContent = '道德与法治：小学一至六年级 · 统编版';
+    if (meye) meye.textContent = '道德与法治：小学与初中 · 统编版 · 只列出已录入册次';
     var mprimary = document.querySelector('.hero-actions a.btn-primary');
     var mbrowse = document.querySelector('.hero-actions a.btn:not(.btn-primary)');
     if (mprimary) mprimary.setAttribute('href', 'diagnose/?subject=morality');
@@ -155,7 +155,7 @@
   } else if (subject === 'chemistry') {
     document.title = '化学 · 中小学·高中知识图谱';
     var ceye = document.querySelector('.eyebrow');
-    if (ceye) ceye.textContent = '化学：初中九年级 · 人教版';
+    if (ceye) ceye.textContent = '化学：初中九年级 · 高中必修第一、二册和选择性必修第一、二、三册 · 人教版';
     var cprimary = document.querySelector('.hero-actions a.btn-primary');
     var cbrowse = document.querySelector('.hero-actions a.btn:not(.btn-primary)');
     if (cprimary) cprimary.setAttribute('href', 'diagnose/?subject=chemistry');
@@ -271,7 +271,7 @@
     }
     var wantEnglish = subject === 'english';
     var wantPhysics = subject === 'physics';
-    var wantPrimary = subject === 'science' || subject === 'morality';
+    var wantPrimary = subject === 'science';
     var wantHistory = subject === 'history';
     var wantGeography = subject === 'geography';
     var wantBiology = subject === 'biology';
@@ -283,12 +283,17 @@
       var up = list.filter(function (topic) { return topic.semester === '上'; }).length;
       var down = list.filter(function (topic) { return topic.semester === '下'; }).length;
       var whole = list.filter(function (topic) { return topic.semester === '全'; }).length;
+      /* 道法小学与初中册次不齐：空年级不画卡，册次只列已录入的那些（上游 3ecd054 一族）。 */
+      if (subject === 'morality' && !list.length) continue;
       var splitText = whole ? '全一册 ' + whole : '上 ' + up + ' · 下 ' + down;
+      if (subject === 'morality' && !whole) {
+        splitText = (up ? '上 ' + up : '') + (up && down ? ' · ' : '') + (down ? '下 ' + down : '');
+      }
       var href = subject !== 'math' ? 'explore/?subject=' + subject + '&grade=' + g : 'explore/?grade=' + g;
       addCard(g, g <= 6 ? '小学' : (wantPhysics ? '初中物理' : '初中'), CN[g] + '年级', g <= 6 ? 'is-primary' : 'is-junior', splitText, href);
     }
-    if (wantPrimary || subject === 'chinese') {
-      /* 语文到九年级（上下册），科学和道德与法治到六年级；都不加高中卡片 */
+    if (wantPrimary || subject === 'chinese' || subject === 'morality') {
+      /* 语文、道德与法治到九年级且无高中卡；科学只到六年级。道法空年级不画卡 */
     } else if (wantHistory) {
       /* 初中历史只到九年级 */
     } else if (wantGeography) {
@@ -296,7 +301,15 @@
     } else if (wantBiology) {
       /* 初中生物只到八年级，九年级没有生物课 */
     } else if (wantChemistry) {
-      /* 初中化学只开九年级，没有小学、七八年级和高中卡片 */
+      /* 化学初中只开九年级；高中五册按实际录入情况出卡（上游 3ecd054 一族） */
+      var chemHs = [
+        [10, '必修一', '必修第一册'], [11, '必修二', '必修第二册'],
+        [12, '选必一', '选择性必修第一册'], [13, '选必二', '选择性必修第二册'], [14, '选必三', '选择性必修第三册']
+      ];
+      chemHs.forEach(function (book) {
+        if (!lite.some(function (topic) { return topic.grade === book[0]; })) return;
+        addCard(book[0], '高中化学', book[1], 'is-senior', book[2], 'explore/?subject=chemistry&grade=' + book[0]);
+      });
     } else if (wantPhysics) {
       addCard(10, '高中物理', '必修一', 'is-senior', '必修第一册', 'explore/?subject=physics&grade=10');
       addCard(11, '高中物理', '必修二', 'is-senior', '必修第二册', 'explore/?subject=physics&grade=11');
@@ -321,23 +334,73 @@
     }
   }
 
+  /* 首屏数据重试 + inflight 去重（上游 b17bbe7 的 fetchJsonWithRetry）：弱网一次抖动不炸整页，
+   * 同一 url 的并发请求共用一条 promise；HTTP 4xx/5xx 不重试（重试也不会变好，直接报错）。 */
+  var fetchInflight = {};
+  function fetchJsonWithRetry(url, attempts) {
+    attempts = attempts || 2;
+    if (fetchInflight[url]) return fetchInflight[url];
+    function tryOnce(left) {
+      return fetch(url).then(function (response) {
+        if (!response.ok) {
+          var httpErr = new Error('HTTP ' + response.status);
+          httpErr.noRetry = true;
+          throw httpErr;
+        }
+        return response.json();
+      }).catch(function (err) {
+        if (err && err.noRetry) throw err;
+        if (left > 1) return tryOnce(left - 1);
+        throw err;
+      });
+    }
+    /* 只登记「本次尝试链」，成功/失败都摘掉：下次再来重新发，不缓存失败。 */
+    fetchInflight[url] = tryOnce(attempts).then(function (data) {
+      delete fetchInflight[url];
+      return data;
+    }, function (err) {
+      delete fetchInflight[url];
+      throw err;
+    });
+    return fetchInflight[url];
+  }
+
+  /* 道法首屏说明：只报已录入的初中册次，九年级缺哪册就点名（上游 3ecd054 一族）。 */
+  function moralityJuniorEyebrow(list) {
+    var has = {};
+    (list || []).forEach(function (topic) {
+      if (topic.grade >= 7 && topic.grade <= 9 && (topic.semester === '上' || topic.semester === '下')) {
+        has[topic.grade + topic.semester] = 1;
+      }
+    });
+    var present = [];
+    [[7, '上', '七上'], [7, '下', '七下'], [8, '上', '八上'], [8, '下', '八下'], [9, '上', '九上'], [9, '下', '九下']].forEach(function (row) {
+      if (has[row[0] + row[1]]) present.push(row[2]);
+    });
+    var junior = present.length ? '初中现含' + present.join('、') : '初中册次尚未录入';
+    var g9note = '九年级未录入';
+    if (has['9上'] && has['9下']) g9note = '九年级上下册均已录入';
+    else if (has['9上']) g9note = '九下未录入';
+    else if (has['9下']) g9note = '九上未录入';
+    return '道德与法治：小学与初中 · 统编版 · 只列出已录入册次（' + junior + '；' + g9note + '）';
+  }
+
   /* 首屏只取两份：stats.json（各学科计数） + 当前学科 topics-lite（年级卡 + 盲区名称）。
    * 同一份 Promise 链，任一失败走统一 fail()，计数器回退为 —；fetch 本身在 8-10KB/s 下
    * 比整包 topics/deps/questions/课标省下约 1630KB gz（≈160s 首次绘制）。 */
   Promise.all([
-    fetch('data/stats.json'),
-    fetch('data/topics-lite/' + subject + '.json')
-  ]).then(function (responses) {
-    responses.forEach(function (response, index) {
-      if (!response.ok) throw new Error('HTTP ' + response.status);
-    });
-    return Promise.all(responses.map(function (response) { return response.json(); }));
-  }).then(function (data) {
+    fetchJsonWithRetry('data/stats.json'),
+    fetchJsonWithRetry('data/topics-lite/' + subject + '.json')
+  ]).then(function (data) {
     var stats = data[0];
     var lite = data[1];
     if (!Array.isArray(lite)) throw new Error('数据格式无法识别');
     renderCounters(stats, lite);
     renderGrades(lite);
+    if (subject === 'morality') {
+      var morEye = document.querySelector('.eyebrow');
+      if (morEye) morEye.textContent = moralityJuniorEyebrow(lite);
+    }
     renderBlindHome(lite);
   }).catch(function (error) {
     /* 首屏数据没到：计数器和年级卡都给占位，不空白；错误条提示重试路径（刷新即重拉）。 */
