@@ -729,6 +729,20 @@ test('英语：小学 197、初中 180–260、高中 220–320，不与数学�
     { volume: '八下', chapterNo: '第8单元', chapterName: 'Have you read Treasure Island yet', section: '' }
   );
   assert.deepStrictEqual(
+    E.parseChapter('七年级上册 待核'),
+    { volume: '七上', chapterNo: '待核', chapterName: '未挂到具体单元', section: '' }
+  );
+  const en7 = E.gradeTargets(RG, '七上', 'english');
+  assert.ok(en7.ids.indexOf('cne_j001') >= 0);
+  assert.strictEqual(en7.ids.filter((id) => RG.byId[id].chapter === '七年级上册 待核').length, 4);
+  assert.deepStrictEqual(
+    E.parseChapter('七年级下册 待核'),
+    { volume: '七下', chapterNo: '待核', chapterName: '未挂到具体单元', section: '' }
+  );
+  const en7b = E.gradeTargets(RG, '七下', 'english');
+  const pending7b = en7b.ids.filter((id) => RG.byId[id].chapter === '七年级下册 待核').sort();
+  assert.deepStrictEqual(pending7b, ['cne_j097']);
+  assert.deepStrictEqual(
     E.parseChapter('必修第一册 欢迎单元 Welcome Unit'),
     { volume: '必修一', chapterNo: '欢迎单元', chapterName: 'Welcome Unit', section: '' }
   );
@@ -985,7 +999,9 @@ test('真实数据：诊断题答案能被自己的判题器接受（判对率�
 test('真实数据：章节名可解析', () => {
   formal.forEach((t) => {
     const c = E.parseChapter(t.chapter);
-    assert.ok(c.volume && c.chapterNo && c.chapterName, t.chapter);
+    assert.ok(c.volume && c.chapterNo, t.chapter);
+    // 必修一绪言、选必一/选必二/选必三引言没有「第×章」后面的章名。其余正式点仍要有章名。
+    if (t.chapter !== '必修一 绪言' && t.chapter !== '选必一 引言' && t.chapter !== '选必二 引言' && t.chapter !== '选必三 引言') assert.ok(c.chapterName, t.chapter);
   });
 });
 

@@ -93,6 +93,9 @@
     const s = chapter || '';
     const pm = /^([一二三四五六七八九])年级([上下全])册 (第\d+单元|预备单元\d) (.+)$/.exec(s);
     if (pm) return { volume: pm[1] + pm[2], chapterNo: pm[3], chapterName: pm[4], section: '' };
+    // 资源页没有写进某一课的项目，例如「七年级上册 待核」。仍算进该册，不假装有单元号。
+    const pend = /^([一二三四五六七八九])年级([上下全])册 待核$/.exec(s);
+    if (pend) return { volume: pend[1] + pend[2], chapterNo: '待核', chapterName: '未挂到具体单元', section: '' };
     const pi = /^([一二三四五六])年级([上下])册 (综合与实践) (.+)$/.exec(s);
     if (pi) return { volume: pi[1] + pi[2], chapterNo: pi[3], chapterName: pi[4], section: '' };
     // 小学英语复习 / Recycle（如「四年级上册 复习 Let's help!」）
@@ -112,8 +115,30 @@
     const hs = /^(高[一二]|选必[一二三]) (数学建模|数学探究) (\S+)$/.exec(s);
     if (hs) return { volume: hs[1], chapterNo: hs[2], chapterName: hs[3], section: '' };
     const m = /^(\S+) (第\S+章) (\S+?)(?: (\S+))?$/.exec(s);
-    if (!m) return { volume: '', chapterNo: '', chapterName: s, section: '' };
-    return { volume: m[1], chapterNo: m[2], chapterName: m[3], section: m[4] || '' };
+    if (m) return { volume: m[1], chapterNo: m[2], chapterName: m[3], section: m[4] || '' };
+    // 高中化学章名可以有多个词，例如「铁 金属材料」「物质结构 元素周期律」，绪言/引言也没有「第×章」。
+    // 只在上面的通用格式对不上、且首词是必修一/二/三或选必一/二/三时使用。
+    // 数学、英语、物理已经对上的章节不会落到这里。
+    const book = /^(必修[一二三]|选必[一二三])(?:\s+(.+))?$/.exec(s);
+    if (book) {
+      const rest = book[2] || '';
+      if (!rest || rest === '绪言' || rest === '引言') {
+        return { volume: book[1], chapterNo: rest || '绪言', chapterName: '', section: '' };
+      }
+      const ch = /^(第\S+章)\s+(.+)$/.exec(rest);
+      if (ch) {
+        let body = ch[2];
+        let section = '';
+        const sec = /^(.*)\s(\d+(?:\.\d+)*|整理与提升|实验活动\d*)$/.exec(body);
+        if (sec && sec[1]) {
+          body = sec[1];
+          section = sec[2];
+        }
+        return { volume: book[1], chapterNo: ch[1], chapterName: body, section: section };
+      }
+      return { volume: book[1], chapterNo: rest, chapterName: '', section: '' };
+    }
+    return { volume: '', chapterNo: '', chapterName: s, section: '' };
   }
 
   /** 学科：显式 subject 优先，否则 cne_ 是英语、cnp_ 是物理、cnc_ 是语文、cns_ 是科学、cnd_ 是道德与法治、cnh_ 是历史、cng_ 是地理、cnb_ 是生物、cnk_ 是化学，其余算数学。 */
